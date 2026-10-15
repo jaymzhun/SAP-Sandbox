@@ -7,6 +7,9 @@
 
   // trigger corrections discovered while verifying (dump class collapses friend variants)
   const TRIGGER_FIX = {
+    // "PlayedSpellOn" in the game data = eating food (triggers from the wiki)
+    Rabbit: 'FriendlyAteFood', Weevil: 'FriendlyAteFood', Chimpanzee: 'FriendAteCorncob', Jerboa: 'EatsApple',
+    Seal: 'EatsFood', QuailChick: 'EatsFood', SarcasticFringehead: 'EatsFood', WhiteWhale: 'EatsFood',
     Shark: 'FriendFaints', Spinosaurus: 'FriendFaints', Lamprey: 'FriendFaints', ShimaEnaga: 'FriendFaints',
     Kitsune: 'FriendFaints', MuskOx: 'FriendAheadFaints', Ox: 'FriendAheadFaints', Tatzelwurm: 'FriendAheadFaints',
     Fly: 'FriendFaints', Pteranodon: 'FriendFaints', Mosasaurus: 'Shop', FlyingSquirrel: 'Shop',
@@ -31,7 +34,7 @@
   // activation limits checked on the wiki for each pet (number = same for all levels, array = per level)
   Object.assign(FAINT_LIMITS, {
     Pengobble: 2, AraripeManakin: 2, Bat: [1, 2, 3], Jackalope: 3, SakerFalcon: 3, AxehandleHound: 1, Hare: [1, 2, 3],
-    Seagull: [1, 2, 3], Falcon: 3, Hippo: 3, RuspolisTuraco: [1, 2, 3], SaigaAntelope: 3, WhiteBootedRacketTail: [1, 2, 3], Boitata: [2, 4, 6],
+    Seagull: [1, 2, 3], Rabbit: 3, Weevil: 3, Jerboa: 1, Falcon: 3, Hippo: 3, RuspolisTuraco: [1, 2, 3], SaigaAntelope: 3, WhiteBootedRacketTail: [1, 2, 3], Boitata: [2, 4, 6],
     LovelandFrogman: 1, Racoon: [1, 2, 3], HoodedSeal: 2, Pteranodon: [1, 2, 3], Reindeer: [1, 2, 3], Wildebeest: [1, 2, 3],
     AfterFirstAttackOnce: 1,
   });
@@ -437,11 +440,11 @@
     S.VampireParrot = (t) => { const [a, h] = nums(t); return c => { const s = new Set(H.F(c).filter(p => p.perk && c.B.isAilment(p.perk.id)).map(p => p.perk.id)); c.B.buff(c.self, a * s.size, h * s.size, c.self); }; };
     S.Werewolf = (t) => { const [pc, mana] = nums(t); return c => { if (c.B.opts.turn % 2 === 0) c.B.buff(c.self, Math.floor(c.self.atk * pc / 100), Math.floor(c.self.hp * pc / 100), c.self); else c.B.gainMana(c.self, mana, c.self); }; };
     S.WhiteBelliedHeron = () => c => giveTo(c, 'MeatBone', cc => { const f = cc.B.team(cc.self.side); const i = f.indexOf(cc.self); return i > 0 ? [f[i - 1]] : []; });
-    S.FarmerPig = (t) => c => { for (const f of adjacent(c, 1, false)) H.corn(c.B, f, 2, c.self); };
-    S.FarmerMouse = (t) => c => { const f = target('nearest friend behind')(c)[0]; if (f) H.corn(c.B, f, 1, c.self); };
-    S.FarmerCrow = (t) => { const [k] = nums(t); return c => { const f = target('nearest friend behind')(c)[0]; if (f) H.corn(c.B, f, 3 * (k || 3), c.self); }; };
+    S.FarmerPig = (t) => c => { for (const f of adjacent(c, 1, false)) c.B.feed(f, 'Corn', c.self, 2); };
+    S.FarmerMouse = (t) => c => { const f = target('nearest friend behind')(c)[0]; if (f) c.B.feed(f, 'Corn', c.self); };
+    S.FarmerCrow = (t) => { const [k] = nums(t); return c => { const f = target('nearest friend behind')(c)[0]; if (f) for (let i = 0; i < 3; i++) c.B.feed(f, 'Corn', c.self, k || 3); }; };
     S.FarmerCat = () => 'shop';
-    S.Pony = () => c => { const f = target('nearest friend behind')(c)[0]; if (f) c.B.buff(f, 2, 2, c.self); };
+    S.Pony = (t, L) => c => { const f = target('nearest friend behind')(c)[0]; if (f) for (let i = 0; i < L; i++) c.B.feed(f, 'Apple2', c.self); };
     S.RedLippedBatfish = () => c => { const e = opp(c); if (!e) return; const k = H.randomPet(c.B, d => d.t === Math.max(1, c.B.tier(e) - 1) && /Faint/.test(d.tr)); if (k) c.B.transform(e, k, { base: true, lvl: 1, src: c.self }); };
     S.RolowayMonkey = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const ahead = f.slice(0, i).reverse().slice(0, 2); ahead.forEach((p, j) => { const k = H.randomPet(c.B, d => d.t === 2 + j && /Faint/.test(d.tr)); if (k) c.B.transform(p, k, { base: true, lvl: 1, src: c.self }); }); };
     S.SilkySifaka = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); for (const p of f.slice(i + 1, i + 3)) { const k = H.randomPet(c.B, d => d.t === 6 && /Faint/.test(d.tr)); if (k) c.B.transform(p, k, { base: true, lvl: 1, src: c.self }); } };
@@ -564,6 +567,9 @@
     S.GermanShepard = (t) => { const [pc] = nums(t); return c => { const it = c.ev.pet; if (it) c.B.buff(it, Math.floor(c.self.atk * pc / 100), 0, c.self); }; };
     S.QueenBee = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it) return; c.B.buff(it, a, h, c.self); }; };
     S.Salmon = (t) => { const [d, per] = nums(t); return c => { const k = Math.max(1, Math.floor(c.self.hp / (per || 25))); for (let i = 0; i < k; i++) { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) c.B.damage(c.self, e, d, 'ability'); } }; };
+    S.SarcasticFringehead = () => 'shop'; // swallows a shop pet: nothing to do in battle
+    S.QuailChick = () => c => c.B.transform(c.self, 'Quail', { src: c.self });
+    S.Quail = (t) => { const [a, h] = nums(t); return c => { const f = H.F(c)[0]; if (f) c.B.buff(f, 2 * a, 2 * h, c.self); }; };
     S.Seagull = () => c => { const it = c.ev.pet, pk = c.self.perk && c.self.perk.id; if (!it || !pk || c.B.isAilment(pk) || c.B.hasPerk(it, pk)) return false; return c.B.givePerk(it, pk, c.self) ? undefined : false; };
     S.Pheasant = () => c => { const it = c.ev.pet; if (it) c.B.givePerk(it, 'Strawberry', c.self); };
     S.Axolotl = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (it) c.B.buff(it, a, h, c.self); }; };
@@ -647,8 +653,8 @@
     ET.Baku = (t) => { const [h] = nums(t); return c => { for (const f of c.B.shuffle(H.F(c).filter(f => ail(c.B, f))).slice(0, 2)) { c.B.losePerk(f, c.self, 'used'); c.B.buff(f, 0, h, c.self); } }; };
     ET.Leafling = (t) => { const [a] = nums(t); return c => { const f = ahead(c, 1)[0]; if (f) { c.B.buff(f, a, 0, c.self); c.B.givePerk(f, 'Scared', c.self); } }; };
     ET.Amphisbaena = (t) => { const [a, h] = nums(t); return c => { const f = ahead(c, 1)[0]; if (f) c.B.buff(f, c.B.opts.turn % 2 ? a : 0, c.B.opts.turn % 2 ? 0 : h, c.self); }; };
-    ET.FarmerChicken = (t, L) => c => { for (const f of ahead(c, L)) H.corn(c.B, f, 1, c.self); };
-    ET.FarmerDog = (t, L) => c => { for (const f of H.F(c)) H.corn(c.B, f, L, c.self); };
+    ET.FarmerChicken = (t, L) => c => { for (const f of ahead(c, L)) c.B.feed(f, 'Corn', c.self); };
+    ET.FarmerDog = (t, L) => c => { for (const f of H.F(c)) for (let i = 0; i < L; i++) c.B.feed(f, 'Corn', c.self); };
     ET.Saola = (t) => { const [a, h] = nums(t); return c => { const f = H.F(c).sort((x, y) => y.atk - x.atk)[0]; if (f) { c.B.removeAttack(f, a, c.self); c.B.buff(f, 0, h, c.self); } }; };
     ET.Yak = (t) => { const [d, a] = nums(t); return c => { c.B.damage(c.self, c.self, d, 'ability'); if (c.B.alive(c.self)) c.B.buff(c.self, a, 0, c.self); }; };
     ET.Baboon = (t) => { const [a, h] = nums(t); return c => { const f = c.B.pick(c.self, H.F(c).filter(f => c.B.tier(f) >= shopTier(c.B)), 1, 'friend')[0]; if (f) c.B.buff(f, a, h, c.self); }; };

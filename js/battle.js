@@ -285,7 +285,7 @@
         case 'xp': return `${N(st.tgt)} gains ${st.n} experience${st.lvlup ? ' and levels up' : ''}`;
         case 'mana': return `${N(st.tgt)} gains ${st.n} mana`;
         case 'trumpet': return `${esc(state.meta.teams[st.side].name)} ${st.n > 0 ? 'gains' : 'spends'} ${Math.abs(st.n)} trumpet${Math.abs(st.n) === 1 ? '' : 's'}`;
-        case 'note': return esc(st.text);
+        case 'note': return st.tgt && sideOf(st.tgt) != null ? `${N(st.tgt)}: ${esc(st.text)}` : esc(st.text);
         case 'end': return `<b>${st.result === 'draw' ? 'Draw' : esc(state.meta.teams[st.result === 'win' ? 0 : 1].name) + ' wins'}</b>`;
       }
       return null;

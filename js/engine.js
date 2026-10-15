@@ -591,6 +591,13 @@
         case 'FriendlyLevelUp': ok(type === 'LevelUp' && e && e.side === p.side); break;
         case 'FriendGainedXp': ok(type === 'GainedXp' && friend); break;
         case 'EnemyFaints': ok(type === 'Faint' && enemy); break;
+        // eating food (PlayedSpellOn in the game data)
+        case 'EatsFood': ok(type === 'AteFood' && e === p); break;
+        case 'EatsApple': ok(type === 'AteFood' && e === p && /^Apple/.test(ev.food)); break;
+        case 'FriendAteFood': ok(type === 'AteFood' && friend); break;
+        case 'FriendlyAteFood': ok(type === 'AteFood' && e && e.side === p.side); break;
+        case 'PetAteFood': ok(type === 'AteFood'); break;
+        case 'FriendAteCorncob': ok(type === 'AteFood' && friend && ev.food === 'Corn'); break;
         default:
           if (trig && trig.startsWith('Count:')) {
             const [, what, nStr] = trig.split(':'); const need = +nStr;
@@ -779,6 +786,22 @@
         for (const q of rel) this.release(q.pet, q.ev.slot);
         this.checkRetriever();
       }
+    }
+
+    /**
+     * A pet eats food in battle (Farmer pets' Corncobs, Pony's Better Apples...). Applies the food and fires the
+     * food triggers: Eats food, Eats apple, Friend / Friendly / Pet ate food, Friend ate Corncob.
+     * mult = "with double/triple effect".
+     */
+    feed(p, food, src, mult = 1) {
+      if (!this.alive(p)) return false;
+      const name = { Corn: 'Corncob', Apple: 'Apple', Apple2: 'Better Apple', Apple3: 'Best Apple', Pear: 'Pear' }[food] || food;
+      this.rec('note', { tgt: p.uid, text: 'Ate ' + name });
+      const stats = { Apple: 1, Apple2: 2, Apple3: 3, Pear: 2 }[food];
+      if (food === 'Corn') { for (let i = 0; i < mult; i++) { if (p.atk <= p.hp) this.buff(p, 1, 0, src); else this.buff(p, 0, 1, src); } }
+      else if (stats) this.buff(p, stats * mult, stats * mult, src);
+      this.emit('AteFood', { pet: p, food, src });
+      return true;
     }
 
     /** swallowing knocks the pet out: it faints (faint abilities fire) and the swallower gets the knock out */

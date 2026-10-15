@@ -26,7 +26,7 @@
   const wait = ms => new Promise(r => setTimeout(r, ms));
 
   // ------------------------------------------------------------------ labels
-  const TRIG_LABEL = { EndTurn: 'End turn (Pink Robin)', SOB: 'Start of battle', BeforeBattle: 'Before battle', BeforeAttack: 'Before attack', BeforeFriendAttacks: 'Before friend attacks',
+  const TRIG_LABEL = { EatsFood: 'Eats food', EatsApple: 'Eats apple', FriendAteFood: 'Friend ate food', FriendlyAteFood: 'Friendly ate food', PetAteFood: 'Pet ate food', FriendAteCorncob: 'Friend ate Corncob', EndTurn: 'End turn (Pink Robin)', SOB: 'Start of battle', BeforeBattle: 'Before battle', BeforeAttack: 'Before attack', BeforeFriendAttacks: 'Before friend attacks',
     Hurt: 'Hurt', FriendAheadHurt: 'Friend ahead hurt', FriendHurt: 'Friend hurt', EnemyHurt: 'Enemy hurt', EnemyHurtOrPushed: 'Enemy hurt or pushed',
     AnyoneBehindHurt: 'Anyone behind hurt', AnyoneHurt: 'Anyone hurt', FourFriendsHurt: 'Four friends hurt', BeforeFaint: 'Faint', Faint: 'Faint',
     FriendFaints: 'Friend faints', FriendAheadFaints: 'Friend ahead faints', KnockOut: 'Knock out', Summoned: 'Summoned', FriendSummoned: 'Friend summoned',
