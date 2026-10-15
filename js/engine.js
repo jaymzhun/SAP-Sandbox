@@ -844,7 +844,10 @@
         this.emit('BeforeAttack', { pet: p, target: t });
         if (this.perkId(p)) this.queue.push({ pet: p, ev: { target: t }, bap: true });
       }
-      const pre = this.byAttackOrder(this.queue.splice(0));
+      // the attacking pets' own before-attack perks / ailments go first (Rambutan's mana is there for Caladrius),
+      // then everyone's Before attack / Before friend attacks abilities in attack order
+      const all = this.queue.splice(0);
+      const pre = this.byAttackOrder(all.filter(q => q.bap)).concat(this.byAttackOrder(all.filter(q => !q.bap)));
       for (const q of pre) this.execute(q);
       this.queue = saved.concat(this.queue);
     }

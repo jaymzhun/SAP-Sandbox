@@ -519,7 +519,7 @@
     S.Calygreyhound = (t) => { const [per] = nums(t); return c => { const m = c.self.mana; c.self.mana = 0; for (const e of H.E(c).sort((a, b) => b.hp - a.hp).slice(0, 2)) c.B.removeHealth(e, m * (per || 1), c.self); }; };
     S.Lusca = (t) => { const [per] = nums(t); return c => { const m = c.self.mana; c.self.mana = 0; const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) { c.B.removeAttack(e, m * per, c.self); c.B.removeHealth(e, m * per, c.self); } }; };
     S.Kitsune = (t) => { const [plus] = nums(t); return c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const tg = f[i - 1]; if (!tg) return; let m = plus; for (const p of f) if (p !== tg) { m += p.mana; p.mana = 0; } c.B.gainMana(tg, m, c.self); }; };
-    S.Caladrius = (t) => { const [m, a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.mana < m) return; it.mana -= m; c.B.buff(it, a, h, c.self); }; };
+    S.Caladrius = (t) => { const [m, a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.mana < m) return false; it.mana -= m; c.B.buff(it, a, h, c.self); }; };
     S.RuspolisTuraco = (t) => { const [m] = nums(t); return c => { const it = c.ev.pet; if (!it || !c.B.hasPerk(it, 'Strawberry')) return; c.B.losePerk(it, c.self); c.B.gainMana(it, m, c.self); }; };
     S.WhiteBootedRacketTail = (t) => { const [a] = nums(t); return c => { const it = c.ev.pet; if (!it) return; c.B.givePerk(it, 'Strawberry', c.self); c.B.buff(it, a, 0, c.self); }; };
     S.Jackalope = (t) => { const [a] = nums(t); return c => { const it = c.ev.pet; if (it) c.B.buff(it, it.flags.jumped ? a * 2 : a, 0, c.self); }; };
