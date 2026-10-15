@@ -311,7 +311,7 @@
       const filters = el('div', { class: 'filters' });
       const tabs = ['All', 1, 2, 3, 4, 5, 6, 'Tokens', 'Custom'];
       for (const t of tabs) {
-        const b = el('button', { class: 'tier-tab' }, t === 'All' || t === 'Tokens' ? t : 'Tier ' + t);
+        const b = el('button', { class: 'tier-tab' }, typeof t === 'number' ? 'Tier ' + t : t);
         b.addEventListener('click', () => { pickerState.tier = t; draw(); });
         b.dataset.t = t; filters.append(b);
       }
