@@ -210,7 +210,7 @@
     function hop(u, h = 26) {
       const e = state.els.get(u); if (!e) return Promise.resolve();
       return e.querySelector('.bp-body').animate([{ transform: 'translateY(0)' }, { transform: `translateY(-${h}px) scale(1.06)` }, { transform: 'translateY(0)' }],
-        { duration: 300 / state.speed, easing: 'ease-out' }).finished.catch(() => { });
+        { duration: 200 / state.speed, easing: 'ease-out' }).finished.catch(() => { });
     }
     function shake(u) {
       const e = state.els.get(u); if (!e) return;
@@ -222,11 +222,11 @@
       if (!a || !b || fromU === toU) return;
       const p = fxEl('b-proj ' + (img ? 'img' : kind || ''), a[0], a[1] - 30, img ? `<img src="${img}" alt="">` : '');
       const dx = b[0] - a[0], dy = b[1] - a[1];
-      const arc = Math.min(170, 70 + Math.abs(dx) * .25);
+      const arc = Math.min(130, 50 + Math.abs(dx) * .2);
       await p.animate([{ transform: 'translate(-50%,-50%) scale(.6) rotate(0deg)' },
         { transform: `translate(-50%,-50%) translate(${dx / 2}px,${dy / 2 - arc}px) scale(1.1) rotate(180deg)`, offset: .5 },
         { transform: `translate(-50%,-50%) translate(${dx}px,${dy}px) scale(.9) rotate(360deg)` }],
-        { duration: 380 / state.speed, easing: 'ease-in-out' }).finished.catch(() => { });
+        { duration: 250 / state.speed, easing: 'ease-in-out' }).finished.catch(() => { });
       p.remove();
     }
     async function rocketIn(e, side, delay) {
@@ -326,13 +326,37 @@
       await W(300);
     }
 
+    // hits and stat gains that one pet hands out at once play together (Hedgehog, Flamingo, Ant...)
+    const groupKey = st => !st.src ? '' : st.kind === 'damage' && st.dk !== 'attack' ? 'hit' : st.kind === 'remove' ? 'hit' : st.kind === 'buff' ? 'buff' : st.kind === 'perk' ? 'perk' : '';
+    async function multiStep(grp, my) {
+      const sp = state.speed, W = ms => wait(ms / sp).then(() => { if (my !== gen || !root) throw STALE; });
+      for (const st of grp) logLine(describe(st));
+      const kind = groupKey(grp[0]);
+      const tgts = [...new Set(grp.map(st => st.tgt))];
+      await Promise.all(tgts.filter(t => t !== grp[0].src).map(t => {
+        const pk = kind === 'perk' ? grp.find(st => st.tgt === t).perk : null;
+        return projectile(grp[0].src, t, kind === 'buff' ? 'heal' : '', pk ? foodImg(pk) : undefined);
+      }));
+      if (my !== gen || !root) throw STALE;
+      for (const t of tgts) {
+        const mine = grp.filter(st => st.tgt === t);
+        if (kind === 'hit') { shake(t); const n = mine.reduce((a, st) => a + (st.kind === 'damage' ? st.n : -(st.dh || 0)), 0); if (n) bigNumber(t, n); }
+        else if (kind === 'buff') {
+          const da = mine.reduce((a, st) => a + (st.da || 0), 0), dh = mine.reduce((a, st) => a + (st.dh || 0), 0);
+          const txt = da && dh ? `${da > 0 ? '+' : ''}${da}/${dh > 0 ? '+' : ''}${dh}` : da ? `${da > 0 ? '+' : ''}${da}` : dh ? `${dh > 0 ? '+' : ''}${dh}` : '';
+          if (txt) floatText(t, txt, da < 0 || dh < 0 ? 'neg' : da && !dh ? 'atk' : dh && !da ? 'hp' : 'both');
+        }
+      }
+      render(grp[grp.length - 1].snap);
+      await W(kind === 'buff' ? 110 : 140);
+    }
     async function step(st, my) {
       const sp = state.speed, W = ms => wait(ms / sp).then(() => { if (my !== gen || !root) throw STALE; });
       if (st.kind === 'summon' || st.kind === 'transform') st.snap.t.forEach((t, s) => t.forEach(d => state.names.set(d.u, { id: d.id, side: s })));
       logLine(describe(st));
       switch (st.kind) {
         case 'start': break;
-        case 'ability': await hop(st.src); render(st.snap); break;
+        case 'ability': hop(st.src); await W(110); render(st.snap); break;
         case 'attack': {
           const a = state.els.get(st.a), b = state.els.get(st.b);
           if (a && b) {
@@ -355,12 +379,12 @@
         case 'damage': {
           if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '');
           shake(st.tgt); bigNumber(st.tgt, st.n);
-          render(st.snap); await W(st.dk === 'attack' ? 120 : 280); break;
+          render(st.snap); await W(st.dk === 'attack' ? 120 : 130); break;
         }
         case 'remove': {
           if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '');
           shake(st.tgt); if (st.dh) bigNumber(st.tgt, -st.dh);
-          render(st.snap); await W(240); break;
+          render(st.snap); await W(130); break;
         }
         case 'block': floatText(st.tgt, 'Blocked!', 'block'); render(st.snap); await W(220); break;
         case 'buff': {
@@ -368,11 +392,11 @@
           const neg = st.da < 0 || st.dh < 0;
           const t = st.da && st.dh ? `${st.da > 0 ? '+' : ''}${st.da}/${st.dh > 0 ? '+' : ''}${st.dh}` : st.da ? `${st.da > 0 ? '+' : ''}${st.da}` : st.dh ? `${st.dh > 0 ? '+' : ''}${st.dh}` : '';
           if (t) floatText(st.tgt, t, neg ? 'neg' : st.da && !st.dh ? 'atk' : st.dh && !st.da ? 'hp' : 'both');
-          render(st.snap); await W(240); break;
+          render(st.snap); await W(110); break;
         }
         case 'perk':
           if (st.perk && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '', foodImg(st.perk));
-          render(st.snap); await W(220); break;
+          render(st.snap); await W(140); break;
         case 'perkfx': { const e = state.els.get(st.src); if (e) flash(e.querySelector('.bp-perk')); await hop(st.src, 14); render(st.snap); break; }
         case 'faint': await W(160); faintOut(st.tgt); await W(260); render(st.snap); break;
         case 'summon': render(st.snap); await W(320); break;
@@ -385,7 +409,7 @@
         }
         case 'transform': render(st.snap); await W(340); break;
         case 'xp': floatText(st.tgt, st.lvlup ? 'Level up!' : `+${st.n} xp`, 'xp'); render(st.snap); await W(280); break;
-        case 'mana': floatText(st.tgt, `+${st.n}`, 'mana'); render(st.snap); await W(180); break;
+        case 'mana': floatText(st.tgt, `+${st.n}`, 'mana'); render(st.snap); await W(110); break;
         case 'trumpet': render(st.snap); await W(150); break;
         case 'note': if (st.tgt) floatText(st.tgt, st.text, 'note'); await W(200); break;
         case 'end': render(st.snap); await W(700); if (my === gen) await result(st.result); break;
@@ -423,7 +447,10 @@
         for (state.i = 1; state.i < log.length; state.i++) {
           while (!state.playing && my === gen) await wait(80);
           if (my !== gen) return;
-          await step(log[state.i], my);
+          const st = log[state.i];
+          const grp = [st];
+          if (groupKey(st)) while (state.i + 1 < log.length && groupKey(log[state.i + 1]) === groupKey(st) && log[state.i + 1].src === st.src) grp.push(log[++state.i]);
+          if (grp.length > 1) await multiStep(grp, my); else await step(st, my);
           if (my !== gen) return;
         }
       } catch (e) { if (e !== STALE && my === gen) throw e; }
