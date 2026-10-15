@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Super Auto Pets Sandbox</title>
+<link rel="icon" href="img/pets/Ant.webp">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="rotate"><img src="img/pets/Ant.webp" alt=""><div>Turn your device sideways<br>to play the sandbox</div></div>
+<div id="viewport">
+  <div id="stage">
+    <div id="bg"></div>
+    <div id="bg-shade"></div>
+
+    <!-- top bar -->
+    <div id="topbar">
+      <div class="plaque title"><span>Sandbox</span></div>
+      <div class="top-actions">
+        <button class="ibtn" id="btn-bg" title="Background"><img src="img/ui/Paw.webp" alt=""><span>Look</span></button>
+        <button class="ibtn" id="btn-settings" title="Battle settings"><img src="img/ui/Star.webp" alt=""><span>Settings</span></button>
+        <button class="ibtn" id="btn-share" title="Copy a link to these teams"><img src="img/ui/Merge.webp" alt=""><span>Share</span></button>
+      </div>
+    </div>
+
+    <!-- team headers -->
+    <div class="team-head left" id="head-0">
+      <div class="plank-label"><span class="tname" contenteditable="true" spellcheck="false">Team 1</span></div>
+      <div class="team-tools">
+        <button class="sbtn" data-act="random" data-side="0" title="Randomize team"><img src="img/ui/Dice.webp" alt=""></button>
+        <button class="sbtn" data-act="clear" data-side="0" title="Clear team"><img src="img/ui/Cross.webp" alt=""></button>
+        <button class="sbtn" data-act="look" data-side="0" title="Player name, mascot, background"><img src="img/mascot/Tyrannosaurus_Battle.webp" alt=""></button>
+      </div>
+    </div>
+    <div class="team-head right" id="head-1">
+      <div class="team-tools">
+        <button class="sbtn" data-act="look" data-side="1" title="Player name, mascot, background"><img src="img/mascot/Bee_Battle.webp" alt=""></button>
+        <button class="sbtn" data-act="clear" data-side="1" title="Clear team"><img src="img/ui/Cross.webp" alt=""></button>
+        <button class="sbtn" data-act="random" data-side="1" title="Randomize team"><img src="img/ui/Dice.webp" alt=""></button>
+      </div>
+      <div class="plank-label"><span class="tname" contenteditable="true" spellcheck="false">Team 2</span></div>
+    </div>
+
+    <!-- arena -->
+    <div id="arena"></div>
+    <div id="fx"></div>
+    <div id="trumpets"><div class="tr left" id="tr-0"></div><div class="tr right" id="tr-1"></div></div>
+
+    <!-- bottom bar (edit) -->
+    <div id="bottombar" class="edit-only">
+      <button class="obtn ghost" id="btn-swap" title="Swap the two teams"><img src="img/ui/Refresh.webp" alt=""><span>Swap</span></button>
+      <button class="obtn big" id="btn-fight"><img src="img/ui/Swords.webp" alt=""><span>Fight!</span></button>
+      <button class="obtn ghost" id="btn-odds" title="Simulate many battles"><img src="img/ui/Trophy.webp" alt=""><span>Odds</span></button>
+    </div>
+    <div id="odds" class="edit-only" hidden></div>
+    <div id="hint" class="edit-only">Click a slot to add a pet · click a pet to edit · drag to reorder</div>
+
+    <!-- battle controls -->
+    <div id="battlebar" class="battle-only">
+      <button class="sbtn" id="bb-back" title="Back to teams"><img src="img/ui/Back.webp" alt=""></button>
+      <button class="sbtn" id="bb-play" title="Pause / play"><img src="img/ui/Pause.webp" alt=""></button>
+      <button class="sbtn speed" id="bb-speed" title="Speed"><img src="img/ui/Speed1.webp" alt=""></button>
+      <button class="sbtn" id="bb-skip" title="Skip to the end"><img src="img/ui/FastForward.webp" alt=""></button>
+      <button class="sbtn" id="bb-replay" title="Replay"><img src="img/ui/Replay.webp" alt=""></button>
+      <button class="sbtn" id="bb-rerun" title="Fight again (new random rolls)"><img src="img/ui/Dice.webp" alt=""></button>
+      <button class="sbtn" id="bb-log" title="Battle log"><img src="img/ui/Plaque1.webp" alt=""></button>
+    </div>
+    <div id="phase" class="battle-only"></div>
+    <div id="logpanel" hidden><div class="lp-head">Battle log</div><ol id="loglist"></ol></div>
+
+    <div id="result" hidden>
+      <img class="mascot" alt="">
+      <div class="ribbon"><span></span></div>
+      <div class="result-sub"></div>
+    </div>
+
+    <!-- modal layer -->
+    <div id="modal" hidden>
+      <div class="modal-backdrop"></div>
+      <div class="panel" id="panel"></div>
+    </div>
+    <div id="toast" hidden></div>
+    <div id="tooltip" hidden></div>
+  </div>
+</div>
+<script src="data/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/abilities.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
