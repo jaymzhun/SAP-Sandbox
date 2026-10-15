@@ -521,3 +521,6 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .cb-spr { background: #fff; border-radius: 10px; box-shadow: 0 0 0 2px var(--ink); padding: 3px; cursor: pointer; display: grid; place-items: center; }
 .cb-spr img { width: 52px; height: 52px; object-fit: contain; }
 .cb-spr:hover, .cb-spr.on { background: #ffe9a8; }
+
+/* last-updated stamp in Settings */
+.build-stamp { margin-top: 10px; text-align: right; font: 13px 'Pangolin', sans-serif; color: #8d8170; }

@@ -815,6 +815,12 @@
         row('Fixed random seed', 'Same random targets every fight', tog('fixedSeed')),
         row('Seed', null, num('seed', 0, 999999)));
       p.append(body);
+      const built = window.SAP_BUILD && new Date(window.SAP_BUILD);
+      if (built && !isNaN(built)) {
+        const h = built.getHours(), hh = h % 12 || 12, mm = String(built.getMinutes()).padStart(2, '0');
+        const yy = String(built.getFullYear()).slice(-2);
+        p.append(el('div', { class: 'build-stamp', title: built.toString() }, `Last updated ${hh}:${mm}${h < 12 ? 'AM' : 'PM'} ${built.getMonth() + 1}/${built.getDate()}/${yy}`));
+      }
     });
   }
   function setBg() { $('#bg').style.backgroundImage = `url('img/bg/${S.bg}.webp')`; document.body.classList.toggle('bg-white', S.bg === 'WhiteBattle'); }
