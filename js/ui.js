@@ -318,7 +318,7 @@
       const newBtn = el('button', { class: 'tier-tab new-custom', title: 'Build your own pet' }, '+ Custom pet');
       newBtn.addEventListener('click', () => openCustomBuilder(null, { side, i, replace }));
       filters.append(newBtn);
-      const search = el('input', { class: 'search', placeholder: 'Search pets or abilities…', value: pickerState.q });
+      const search = el('input', { class: 'search', placeholder: 'Search pets, abilities or triggers…', value: pickerState.q });
       search.addEventListener('input', () => { pickerState.q = search.value; draw(); });
       filters.append(search);
       const packs = el('div', { class: 'filters' });
@@ -335,7 +335,11 @@
         const q = pickerState.q.trim().toLowerCase();
         let list = Object.keys(D.pets).filter(k => {
           const d = D.pets[k];
-          if (q) return d.n.toLowerCase().includes(q) || (d.ab[0] || '').toLowerCase().includes(q);
+          if (q) { // name, ability text or trigger ("faint", "start of battle", "hurt"...); every word must match
+            const trig = (trigLabel(k) || '').toLowerCase();
+            const hay = (d.n + ' ' + COMPILED.normText(d.ab[0] || '') + ' ' + trig).toLowerCase();
+            return trig.includes(q) || hay.includes(q) || q.split(/\s+/).every(w => hay.includes(w));
+          }
           if (pickerState.tier === 'Custom') return !!d.custom;
           if (d.custom) return false;
           if (pickerState.tier === 'Tokens') return !d.r;

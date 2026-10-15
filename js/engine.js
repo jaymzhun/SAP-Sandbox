@@ -167,7 +167,12 @@
     name(p) { return (this.D.pets[p.id] || {}).n || p.id; }
     tier(p) { return (this.D.pets[p.id] || {}).t || 1; }
     alive(p) { return p && p.onBoard && p.hp > 0; }
-    team(s) { return this.t[s].filter(p => this.alive(p)); }
+    team(s) { const sk = this.skip; return this.t[s].filter(p => this.alive(p) && !(sk && p !== sk.keep && sk.pred(p))); }
+    /** run fn while pets that already have perk `id` are skipped by targeting (perk givers pick the next pet instead) */
+    withPerkSkip(id, self, fn) {
+      const prev = this.skip; this.skip = { pred: p => !!(p.perk && p.perk.id === id), keep: self };
+      try { return fn(); } finally { this.skip = prev; }
+    }
     enemiesOf(p) { return this.team(1 - p.side); }
     friendsOf(p) { return this.team(p.side).filter(x => x !== p); }
     idx(p) { return this.t[p.side].indexOf(p); }
@@ -203,7 +208,8 @@
     // ---------------- logging
     snap() {
       const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p) });
-      return { t: [this.t[0].filter(p => p.onBoard).map(s), this.t[1].filter(p => p.onBoard).map(s)], tr: this.trumpets.slice() };
+      const vis = p => p.onBoard && !p.swallowedBy;
+      return { t: [this.t[0].filter(vis).map(s), this.t[1].filter(vis).map(s)], tr: this.trumpets.slice() };
     }
     rec(kind, data = {}) {
       data.kind = kind; data.snap = this.snap();
@@ -653,7 +659,12 @@
       this.steps++;
       this.rec('ability', { src: p.uid, id: p.id, trig: q.tr });
       try {
-        fn({ B: this, self: p, ev: q.ev, lvl: p.lvl });
+        const at = this.log.length;
+        if (fn({ B: this, self: p, ev: q.ev, lvl: p.lvl }) === false) {
+          p.uses[key]--; this.steps--;
+          if (this.log.length === at) this.log.pop(); // drop the "activates" line: nothing happened
+          return;
+        }
         // Tiger behind: repeat the ability as if level = Tiger's level
         const t = this.t[p.side]; const i = t.indexOf(p);
         const tg = i >= 0 ? t[i + 1] : (q.ev && q.ev.slot != null ? t[q.ev.slot] : null);
@@ -768,6 +779,13 @@
         for (const q of rel) this.release(q.pet, q.ev.slot);
         this.checkRetriever();
       }
+    }
+
+    /** swallowing knocks the pet out: it faints (faint abilities fire) and the swallower gets the knock out */
+    swallow(src, tgt, stored) {
+      src.swallowed = stored;
+      this.rec('swallow', { src: src.uid, tgt: tgt.uid });
+      tgt.swallowedBy = src; tgt.killer = src; tgt.hp = 0;
     }
 
     release(p, slot) {
