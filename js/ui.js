@@ -912,7 +912,7 @@
   }
 
   // ------------------------------------------------------------------ battle
-  function battleTeams() { return S.teams.map(t => t.filter(Boolean).map(p => ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0 }))); }
+  function battleTeams() { return S.teams.map(t => t.map((p, slot) => p && ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0, slot })).filter(Boolean)); }
   function simulate(seed) {
     const b = new Engine.Battle(D, AB, battleTeams(), Object.assign({}, S.settings, { seed }));
     return b.run();

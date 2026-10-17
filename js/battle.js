@@ -164,12 +164,12 @@
         seen.add(d.u); state.names.set(d.u, { id: d.id, side });
         let e = state.els.get(d.u);
         if (!e) {
-          e = petEl(side, d); place(e, side, i);
+          e = petEl(side, d); place(e, side, d.s != null ? d.s : i);
           $r('.b-arena').append(e); state.els.set(d.u, e);
           if (opts.pop !== false) { puff(cx(side, i), SPRITE_CY, 3); e.classList.add('pop'); setTimeout(() => e.classList.remove('pop'), 420); }
         } else {
           if (e.dataset.id !== d.id) { puff(cx(side, i), SPRITE_CY, 3); e.classList.add('pop'); setTimeout(() => e.classList.remove('pop'), 420); }
-          update(e, d); place(e, side, i);
+          update(e, d); place(e, side, d.s != null ? d.s : i);
         }
       }));
       for (const [u, e] of state.els) if (!seen.has(u) && !e.classList.contains('gone')) { e.remove(); state.els.delete(u); }
@@ -274,6 +274,7 @@
         case 'jump': return `${N(st.src)} jump-attacks ${N(st.tgt)}`;
         case 'damage': return `${N(st.tgt)} takes ${st.n} damage` + (st.src && st.src !== st.tgt ? ` from ${N(st.src)}` : '');
         case 'remove': return `${N(st.tgt)} loses ${-st.dh} health`;
+        case 'move': return st.closeGaps ? 'Pets move up into the empty spaces' : `${N(st.tgt)} moves`;
         case 'block': return `${N(st.tgt)} blocks the damage`;
         case 'buff': { const a = st.da || st.ra, h = st.dh || st.rh; const t = (a ? `${st.da < 0 ? '' : '+'}${st.da || 0} attack` : '') + (a && h ? ', ' : '') + (h ? `${st.dh < 0 ? '' : '+'}${st.dh || 0} health` : ''); return t ? `${N(st.tgt)} ${t}${(st.ra && !st.da) || (st.rh && !st.dh) ? ' (at max)' : ''}` : null; }
         case 'perk': return st.perk ? `${N(st.tgt)} gains <b>${esc(perkName(st.perk))}</b>` : `${N(st.tgt)} loses <b>${esc(perkName(st.lost))}</b>`;
@@ -313,8 +314,8 @@
         const team = snap.t[side];
         const jobs = team.map((d, i) => {
           state.names.set(d.u, { id: d.id, side });
-          const e = petEl(side, d); place(e, side, i); $r('.b-arena').append(e); state.els.set(d.u, e);
-          return rocketIn(e, side, (team.length - 1 - i) * 90);
+          const e = petEl(side, d); place(e, side, d.s != null ? d.s : i); $r('.b-arena').append(e); state.els.set(d.u, e);
+          return rocketIn(e, side, (team.length - 1 - (d.s != null ? d.s : i)) * 90);
         });
         await Promise.all(jobs);
         if (my !== gen) return;

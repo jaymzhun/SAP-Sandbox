@@ -144,9 +144,13 @@
       for (let s = 0; s < 2; s++) {
         for (const p of teams[s]) {
           if (!p || !this.D.pets[p.id]) continue;
-          this.t[s].push(this.makePet(p.id, s, p));
+          const pet = this.makePet(p.id, s, p);
+          pet.slot0 = p.slot != null ? p.slot : this.t[s].length; // slot it was put in (teams can have gaps)
+          this.t[s].push(pet);
         }
       }
+      // empty spaces left in the lineup are kept until the battle starts (Emu can use an empty front space)
+      this.gaps = this.t.some(t => t.some((p, i) => p.slot0 !== i));
     }
 
     // ---------------- pet helpers
@@ -207,7 +211,7 @@
 
     // ---------------- logging
     snap() {
-      const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p) });
+      const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p), s: this.gaps && p.slot0 != null ? p.slot0 : undefined });
       const vis = p => p.onBoard && !p.swallowedBy;
       return { t: [this.t[0].filter(vis).map(s), this.t[1].filter(vis).map(s)], tr: this.trumpets.slice() };
     }
@@ -460,6 +464,7 @@
     }
     compact() { for (let s = 0; s < 2; s++) this.t[s] = this.t[s].filter(p => p.onBoard); }
     move(p, newIndex, src) {
+      this.gaps = false; // anything moving closes the starting gaps
       const arr = this.t[p.side];
       const i = arr.indexOf(p); if (i < 0) return;
       arr.splice(i, 1);
@@ -921,6 +926,12 @@
 
     run() {
       this.rec('start');
+      if (this.gaps) {
+        // front space left empty: "Empty front space" abilities (Emu...) go off first, then everyone moves up
+        for (let s = 0; s < 2; s++) if (this.t[s].length && Math.min(...this.t[s].map(p => p.slot0)) > 0) this.emit('EmptyFront', { side: s });
+        this.flush();
+        if (this.gaps) { this.gaps = false; this.rec('move', { closeGaps: true }); }
+      }
       // perks that fire before battle, in attack order
       this.phase = 'before';
       for (const p of this.team(0).concat(this.team(1)).sort((x, y) => y.atk - x.atk)) this.firePerk(p, 'beforeBattle');
