@@ -780,6 +780,7 @@
     'Level-up': { core: k => /LevelUp|GainedXp/.test(trigOf(k)), support: k => /experience/i.test(abText(k)), perks: [] },
   };
   const THEME_NAMES = Object.keys(THEMES);
+  const ORDER = window.SAPOrder.create(D, STATUS, COMPILED.normText);
   const battleReady = k => STATUS[k] && ['ok', 'passive'].includes(STATUS[k].status);
   const pickOne = arr => arr[Math.floor(Math.random() * arr.length)];
   function themedPicks(pool, size, themeName) {
@@ -806,7 +807,8 @@
     let pool = ROLLABLE.filter(k => D.pets[k].t <= o.maxTier && (o.pack === 'All' || (D.pets[k].p || []).includes(o.pack)));
     if (!pool.length) pool = ROLLABLE;
     const themed = o.theme !== 'None' ? themedPicks(pool, o.size, o.theme && o.theme !== 'Random' ? o.theme : null) : null;
-    const ids = themed ? themed.ids : Array.from({ length: o.size }, () => pickOne(pool));
+    // lineup that sets up the triggers (Shark / Vulture in back, Woodpecker behind hurt pets, Albatross between snipers...)
+    const ids = ORDER.bestOrder(themed ? themed.ids : Array.from({ length: o.size }, () => pickOne(pool)));
     const t = Array(5).fill(null);
     ids.forEach((k, i) => {
       const p = newPet(k);
@@ -823,6 +825,13 @@
     S.teams[side] = t;
     S.themes = S.themes || [null, null]; S.themes[side] = themed ? themed.theme : null;
     return themed ? themed.theme : null;
+  }
+  function orderTeam(side) {
+    const pets = S.teams[side].filter(Boolean);
+    // order pets (not ids, so duplicates and custom pets keep their own stats)
+    const byIdx = ORDER.bestOrder(pets.map(p => p.id));
+    const left = pets.slice(); const out = byIdx.map(id => left.splice(left.findIndex(p => p.id === id), 1)[0]);
+    S.teams[side] = out.concat(Array(5 - out.length).fill(null)); save();
   }
   function openRandomizer(side) {
     openModal('form', p => {
@@ -846,7 +855,10 @@
       go.addEventListener('click', () => { const th = randomTeam(side); renderEdit(); toast(`${S.names[side]}: ${say(th)}`); });
       const both = el('button', { class: 'obtn ghost' }, el('span', {}, 'Roll both teams'));
       both.addEventListener('click', () => { const a = randomTeam(0), b = randomTeam(1); renderEdit(); toast(`${say(a)} vs ${say(b)}`); });
-      p.append(el('div', { style: 'display:flex;gap:12px;justify-content:center' }, both, go));
+      const ord = el('button', { class: 'obtn ghost' }, el('span', {}, 'Best order'));
+      ord.title = 'Rearrange this team so its triggers line up (keeps the same pets)';
+      ord.addEventListener('click', () => { orderTeam(side); renderEdit(); toast('Team re-ordered'); });
+      p.append(el('div', { class: 'rnd-acts' }, ord, both, go));
     });
   }
 
