@@ -226,7 +226,8 @@
       const add = (v, d, cap) => (d >= 0 ? Math.max(Math.min(v, cap), Math.min(cap, v + d)) : v + d);
       p.atk = Math.max(opts.minAtk || 0, add(p.atk, da, capOf(p.id, 'atk')));
       p.hp = add(p.hp, dh, capOf(p.id, 'hp'));
-      if (p.atk !== a0 || p.hp !== h0) this.rec('buff', { tgt: p.uid, src: src && src.uid, da: p.atk - a0, dh: p.hp - h0 });
+      // logged even when capped (a 50/50 pet shows +0/+0); ra / rh = which stats it tried to raise
+      if (p.atk !== a0 || p.hp !== h0 || da > 0 || dh > 0) this.rec('buff', { tgt: p.uid, src: src && src.uid, da: p.atk - a0, dh: p.hp - h0, ra: da !== 0, rh: dh !== 0 });
     }
     setStats(p, a, h, src) {
       const a0 = p.atk, h0 = p.hp;

@@ -274,7 +274,7 @@
         case 'damage': return `${N(st.tgt)} takes ${st.n} damage` + (st.src && st.src !== st.tgt ? ` from ${N(st.src)}` : '');
         case 'remove': return `${N(st.tgt)} loses ${-st.dh} health`;
         case 'block': return `${N(st.tgt)} blocks the damage`;
-        case 'buff': { const t = (st.da ? `${st.da > 0 ? '+' : ''}${st.da} attack` : '') + (st.da && st.dh ? ', ' : '') + (st.dh ? `${st.dh > 0 ? '+' : ''}${st.dh} health` : ''); return t ? `${N(st.tgt)} ${t}` : null; }
+        case 'buff': { const a = st.da || st.ra, h = st.dh || st.rh; const t = (a ? `${st.da < 0 ? '' : '+'}${st.da || 0} attack` : '') + (a && h ? ', ' : '') + (h ? `${st.dh < 0 ? '' : '+'}${st.dh || 0} health` : ''); return t ? `${N(st.tgt)} ${t}${(st.ra && !st.da) || (st.rh && !st.dh) ? ' (at max)' : ''}` : null; }
         case 'perk': return st.perk ? `${N(st.tgt)} gains <b>${esc(perkName(st.perk))}</b>` : `${N(st.tgt)} loses <b>${esc(perkName(st.lost))}</b>`;
         case 'perkfx': return `${N(st.src)}'s <b>${esc(perkName(st.perk))}</b> activates`;
         case 'faint': return `${N(st.tgt)} faints`;
@@ -326,6 +326,13 @@
       await W(300);
     }
 
+    // "+2/+2", "+3", "+0/+0" (capped pets still show what they were given)
+    const sgn = n => (n < 0 ? '' : '+') + n;
+    function statText(da, dh, ra, rh) {
+      const a = da || ra, h = dh || rh;
+      return a && h ? `${sgn(da || 0)}/${sgn(dh || 0)}` : a ? sgn(da || 0) : h ? sgn(dh || 0) : '';
+    }
+    const statKind = (da, dh, ra, rh) => { const a = da || ra, h = dh || rh; return a && !h ? 'atk' : h && !a ? 'hp' : 'both'; };
     // hits and stat gains that one pet hands out at once play together (Hedgehog, Flamingo, Ant...)
     const groupKey = st => !st.src ? '' : st.kind === 'damage' && st.dk !== 'attack' ? 'hit' : st.kind === 'remove' ? 'hit' : st.kind === 'buff' ? 'buff' : st.kind === 'perk' ? 'perk' : '';
     async function multiStep(grp, my) {
@@ -343,8 +350,9 @@
         if (kind === 'hit') { shake(t); const n = mine.reduce((a, st) => a + (st.kind === 'damage' ? st.n : -(st.dh || 0)), 0); if (n) bigNumber(t, n); }
         else if (kind === 'buff') {
           const da = mine.reduce((a, st) => a + (st.da || 0), 0), dh = mine.reduce((a, st) => a + (st.dh || 0), 0);
-          const txt = da && dh ? `${da > 0 ? '+' : ''}${da}/${dh > 0 ? '+' : ''}${dh}` : da ? `${da > 0 ? '+' : ''}${da}` : dh ? `${dh > 0 ? '+' : ''}${dh}` : '';
-          if (txt) floatText(t, txt, da < 0 || dh < 0 ? 'neg' : da && !dh ? 'atk' : dh && !da ? 'hp' : 'both');
+          const ra = mine.some(st => st.ra), rh = mine.some(st => st.rh);
+          const txt = statText(da, dh, ra, rh);
+          if (txt) floatText(t, txt, da < 0 || dh < 0 ? 'neg' : statKind(da, dh, ra, rh));
         }
       }
       render(grp[grp.length - 1].snap);
@@ -390,8 +398,8 @@
         case 'buff': {
           if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'heal');
           const neg = st.da < 0 || st.dh < 0;
-          const t = st.da && st.dh ? `${st.da > 0 ? '+' : ''}${st.da}/${st.dh > 0 ? '+' : ''}${st.dh}` : st.da ? `${st.da > 0 ? '+' : ''}${st.da}` : st.dh ? `${st.dh > 0 ? '+' : ''}${st.dh}` : '';
-          if (t) floatText(st.tgt, t, neg ? 'neg' : st.da && !st.dh ? 'atk' : st.dh && !st.da ? 'hp' : 'both');
+          const t = statText(st.da, st.dh, st.ra, st.rh);
+          if (t) floatText(st.tgt, t, neg ? 'neg' : statKind(st.da, st.dh, st.ra, st.rh));
           render(st.snap); await W(110); break;
         }
         case 'perk':
