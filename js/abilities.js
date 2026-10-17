@@ -6,6 +6,8 @@
   'use strict';
 
   // trigger corrections discovered while verifying (dump class collapses friend variants)
+  // abilities with no activation limit even though their trigger usually has one
+  const NO_LIMIT = new Set(['Emu']);
   const TRIGGER_FIX = {
     // "PlayedSpellOn" in the game data = eating food (triggers from the wiki)
     Rabbit: 'FriendlyAteFood', Weevil: 'FriendlyAteFood', Chimpanzee: 'FriendAteCorncob', Jerboa: 'EatsApple',
@@ -728,7 +730,7 @@
         limit = per.every(x => x === per[0]) ? per[0] : per;
       }
       if (/Works on one (friend|enemy)/i.test(fp + def.ab[0]) && !limit) limit = 1;
-      if (!limit && (trig === 'AfterFirstAttack' || trig === 'EmptyFront')) limit = 1;
+      if (!limit && (trig === 'AfterFirstAttack' || (trig === 'EmptyFront' && !NO_LIMIT.has(key)))) limit = 1;
       out[key] = { trigger: trig, levels, limit };
       status[key] = { status: st, why, trigger: trig };
       // End turn abilities, compiled so Pink Robin can activate them in battle

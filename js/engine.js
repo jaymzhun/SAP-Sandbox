@@ -663,7 +663,7 @@
       if (limit && (p.uses[key] || 0) >= limit) return;
       p.uses[key] = (p.uses[key] || 0) + 1;
       if (q.tr === 'AfterFirstAttack') p.flags.firstAttackDone = true;
-      if (q.tr === 'EmptyFront') p.flags.emptyFrontDone = true;
+      if (q.tr === 'EmptyFront' && limit) p.flags.emptyFrontDone = true; // unlimited ones (Emu) can go again
       this.steps++;
       this.rec('ability', { src: p.uid, id: p.id, trig: q.tr });
       try {
