@@ -532,3 +532,8 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .rnd-acts { display: flex; gap: 10px; justify-content: center; margin-top: 4px; }
 .rnd-acts .obtn { font-size: 21px; padding: 8px 16px 11px; }
 .rnd-acts .obtn img { width: 26px; height: 26px; }
+
+/* hovering a pet in battle pauses the fight */
+.bpet.hovered .bp-sprite { filter: drop-shadow(0 0 6px #fff) drop-shadow(0 0 10px #ffe08a); }
+.bscene.held::after { content: 'Paused'; position: absolute; left: 50%; top: 96px; transform: translateX(-50%); z-index: 60; padding: 4px 14px 6px; border-radius: 12px; background: rgba(29,26,23,.72); color: #fff; font: 18px 'Lapsus'; pointer-events: none; }
+.bscene .bpet { pointer-events: auto; cursor: help; }

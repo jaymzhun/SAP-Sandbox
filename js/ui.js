@@ -924,6 +924,10 @@
     onAgain: () => startBattle(),
     onSpeed: v => { S.settings.speed = v; save(); },
     replayLink: () => replayLink(),
+    // hovering a pet in battle: same card as in the editor, plus its current stats
+    petTip: d => tipFor(d.id, d.l || 1, d.p) + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
+    showTip: (node, html) => { tip.innerHTML = html; tip.hidden = false; posTip(node); },
+    hideTip: () => hideTip(),
   });
   let lastLog = null, lastSeed = 0;
   // Replay link: both teams, looks, battle settings and the seed. The engine is deterministic, so opening it

@@ -118,6 +118,17 @@
     // ------------------------------------------------------------ pets
     function petEl(side, d) {
       const e = el('div', `bpet side-${side}`);
+      e._d = d;
+      // hover: show the pet's card and hold the fight until the pointer leaves
+      e.addEventListener('pointerenter', ev => {
+        if (ev.pointerType === 'touch' || !ctx.petTip) return;
+        state.hold = e; e.classList.add('hovered'); root && root.classList.add('held');
+        ctx.showTip(e, ctx.petTip(e._d));
+      });
+      e.addEventListener('pointerleave', () => {
+        if (state.hold === e) state.hold = null; e.classList.remove('hovered'); root && root.classList.remove('held');
+        ctx.hideTip && ctx.hideTip();
+      });
       e.innerHTML = `
         <div class="bp-lvl"><span class="bp-lv-t">Lvl</span><span class="bp-lv-n"></span><div class="bp-xp"></div></div>
         <div class="bp-body">
@@ -169,7 +180,7 @@
           if (opts.pop !== false) { puff(cx(side, i), SPRITE_CY, 3); e.classList.add('pop'); setTimeout(() => e.classList.remove('pop'), 420); }
         } else {
           if (e.dataset.id !== d.id) { puff(cx(side, i), SPRITE_CY, 3); e.classList.add('pop'); setTimeout(() => e.classList.remove('pop'), 420); }
-          update(e, d); place(e, side, d.s != null ? d.s : i);
+          update(e, d); e._d = d; place(e, side, d.s != null ? d.s : i);
         }
       }));
       for (const [u, e] of state.els) if (!seen.has(u) && !e.classList.contains('gone')) { e.remove(); state.els.delete(u); }
@@ -456,7 +467,7 @@
         await intro(log[0].snap, my);
         if (my !== gen) return;
         for (state.i = 1; state.i < log.length; state.i++) {
-          while (!state.playing && my === gen) await wait(80);
+          while ((!state.playing || holding()) && my === gen) await wait(80);
           if (my !== gen) return;
           const st = log[state.i];
           const grp = [st];
@@ -485,7 +496,13 @@
       if (my === gen) result(last.result);
     }
 
-    function stop() { gen++; if (root) { root.remove(); root = null; } }
+    // the hovered pet can faint / be swallowed under the pointer (no pointerleave): stop holding then
+    function holding() {
+      const e = state.hold; if (!e) return false;
+      if (!e.isConnected || e.classList.contains('gone')) { state.hold = null; if (root) root.classList.remove('held'); ctx.hideTip && ctx.hideTip(); return false; }
+      return true;
+    }
+    function stop() { gen++; state.hold = null; ctx.hideTip && ctx.hideTip(); if (root) { root.remove(); root = null; } }
     return { play, stop, skip, get speed() { return state.speed; } };
   }
 
