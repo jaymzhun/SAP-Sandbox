@@ -126,6 +126,11 @@
   const AILMENT_LIST = Object.keys(AIL_INFO);
   const PACKS = ['Turtle', 'Puppy', 'Star', 'Golden', 'Unicorn', 'Danger'];
   const ROLLABLE = Object.keys(D.pets).filter(k => D.pets[k].r);
+  { // tab icon: a random Turtle pack pet each time the page opens
+    const turtle = ROLLABLE.filter(k => (D.pets[k].p || []).includes('Turtle'));
+    const ico = document.querySelector('link[rel="icon"]');
+    if (ico && turtle.length) ico.href = `img/pets/${turtle[Math.floor(Math.random() * turtle.length)]}.webp`;
+  }
 
   const S = {
     teams: [Array(5).fill(null), Array(5).fill(null)],
@@ -236,7 +241,7 @@
         const st = STATUS[p.id];
         if (st && st.status === 'unsupported') { const w = el('div', { class: 'warn ol' }, '!'); e.append(w); }
         attachDrag(e, s, i);
-        attachTip(e, () => tipFor(p.id, lvlOf(p.xp), p.perk, p.ctx));
+        attachTip(e, () => tipFor(p.id, lvlOf(p.xp), p.perk, p.ctx, undefined, { atk: p.atk, hp: p.hp }));
         arena.append(e);
       }
     }
@@ -310,7 +315,21 @@
     }
     return out.length ? `<br><span style="color:#2f6f2a">${out.join(' · ')}</span>` : '';
   }
-  function tipFor(id, lv, perk, ctx, swallowedNow) {
+  // abilities worked out from the pet's own attack / health: show the number they come to right now
+  const MIN1 = new Set(['Badger', 'PygmyHippo', 'OrchidMantis', 'Rooster']);
+  function currentValue(id, lv, atk, hp) {
+    if (atk == null || hp == null) return '';
+    const t = COMPILED.normText((D.pets[id] || {}).ab ? D.pets[id].ab[lv - 1] || '' : '');
+    const f = (v, pc) => { const n = Math.floor(v * pc / 100); return MIN1.has(id) ? Math.max(1, n) : n; };
+    let m;
+    if ((m = t.match(/(\d+)% of health as damage/i))) return f(hp, +m[1]);
+    if ((m = t.match(/(\d+)% (?:of )?attack damage/i))) return f(atk, +m[1]);
+    if ((m = t.match(/(\d+)% (?:of )?attack and health/i)) || (m = t.match(/with (\d+)% attack and health/i))) return `${f(atk, +m[1])}/${f(hp, +m[1])}`;
+    if ((m = t.match(/(\d+)% (?:of )?attack(?! and| from)/i))) return f(atk, +m[1]);
+    if ((m = t.match(/\+(\d+)% health/i))) return f(hp, +m[1]);
+    return '';
+  }
+  function tipFor(id, lv, perk, ctx, swallowedNow, stats) {
     const d = D.pets[id]; const st = STATUS[id];
     const tl = trigLabel(id);
     let h = `<b>${esc(d.n)}</b> · Tier ${d.t}<br>`;
@@ -323,6 +342,8 @@
     else if (st.status === 'passive') h += `<br><span style="color:#2f6f2a">Passive: always active in battle.</span>`;
     if (perk) h += `<br><b>${esc(perkName(perk))}</b>: ${fmtAbility(perkDesc(perk))}`;
     h += ctxLines(id, ctx, swallowedNow);
+    const cv = stats ? currentValue(id, lv, stats.atk, stats.hp) : '';
+    if (cv !== '') h += `<br><span style="color:#b04a00"><b>Current Value:</b> ${cv}</span>`;
     return h;
   }
 
@@ -421,7 +442,7 @@
             eb.addEventListener('click', ev => { ev.stopPropagation(); openCustomBuilder(k, { side, i, replace }); });
             card.append(eb);
           }
-          attachTip(card, () => tipFor(k, 1));
+          attachTip(card, () => tipFor(k, 1, null, null, undefined, { atk: d.a, hp: d.h }));
           grid.append(card);
         }
         body.scrollTop = 0;
@@ -992,7 +1013,7 @@
     onSpeed: v => { S.settings.speed = v; save(); },
     replayLink: () => replayLink(),
     // hovering a pet in battle: same card as in the editor, plus its current stats
-    petTip: d => tipFor(d.id, d.l || 1, d.p, d.c, (d.id === 'WhiteWhale' || d.id === 'SarcasticFringehead') ? (d.sw || null) : undefined) + (d.sw && !['WhiteWhale', 'SarcasticFringehead'].includes(d.id) && D.pets[d.sw] ? `<br><span style="color:#2f6f2a">Swallowed <b>${esc(D.pets[d.sw].n)}</b></span>` : '') + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
+    petTip: d => tipFor(d.id, d.l || 1, d.p, d.c, (d.id === 'WhiteWhale' || d.id === 'SarcasticFringehead') ? (d.sw || null) : undefined, { atk: d.a, hp: d.h }) + (d.sw && !['WhiteWhale', 'SarcasticFringehead'].includes(d.id) && D.pets[d.sw] ? `<br><span style="color:#2f6f2a">Swallowed <b>${esc(D.pets[d.sw].n)}</b></span>` : '') + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
     showTip: (node, html) => { tip.innerHTML = html; tip.hidden = false; posTip(node); },
     hideTip: () => hideTip(),
   });
