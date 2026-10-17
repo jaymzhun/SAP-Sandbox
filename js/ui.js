@@ -64,10 +64,29 @@
   const SETTINGS_DEP = { Fossa: 'rolls', ManaHound: 'rolls', Bunyip: 'rolls', Platybelodon: 'rolls', Hippocampus: 'rolls', Nessie: 'rolls', Ammonite: 'rolls',
     Werewolf: 'turn', Slime: 'battles', EagleOwl: 'battles', DungBeetle: 'foodEaten', BlueJay: 'foodEaten', BlackBear: 'foodEaten',
     GiantPangasius: 'transforms', Meerkat: 'goldSpent', JerseyDevil: 'lvl3Sold' };
+  // per-pet shop/turn values, edited in the pet editor (blank = use Settings)
+  const PET_CTX = {
+    rolls: ['Fossa', 'ManaHound', 'Bunyip', 'Platybelodon', 'Hippocampus', 'Nessie', 'Ammonite', 'Olm', 'Okapi', 'Barnacle', 'Sandworm'],
+    foodEaten: ['BlueJay', 'BlackBear', 'DungBeetle'],
+    summoned: ['NightCrawler'],
+    battles: ['Slime', 'EagleOwl'],
+    turn: ['Werewolf', 'Amphisbaena'],
+    transforms: ['GiantPangasius'],
+    goldSpent: ['Meerkat'],
+    lvl3Sold: ['JerseyDevil'],
+    swallowed: ['WhiteWhale', 'SarcasticFringehead'],
+  };
+  const CTX_LABEL = { rolls: ['Rolls this turn', 0, 20], foodEaten: ['Food it ate this turn', 0, 10], summoned: ['Friends summoned this turn', 0, 20],
+    battles: ['Battles fought', 0, 40], turn: ['Turn number', 1, 40], transforms: ['Transformations this turn', 0, 10], goldSpent: ['Gold spent this turn', 0, 40],
+    lvl3Sold: ['Level 3 pets sold', 0, 10] };
+  const CARRIES_OVER = new Set(['Okapi', 'WhiteWhale', 'SarcasticFringehead']); // shop abilities whose result shows up in battle
+  const ctxKeys = id => Object.keys(PET_CTX).filter(k => PET_CTX[k].includes(id));
   const SETTING_NAMES = { rolls: 'Rolls this turn', turn: 'Turn number', battles: 'Battles fought', foodEaten: 'Food eaten this turn', transforms: 'Transformations this turn', goldSpent: 'Gold spent this turn', lvl3Sold: 'Level 3 pets sold' };
   const SHOP_TRIGGERS = new Set(['Shop', 'None']);
 
-  function noBattleText(id) { if (STATUS[id].endTurn === 'ok') return 'End turn ability: only runs in battle when a Pink Robin activates it.'; return SHOP_TRIGGERS.has(STATUS[id].trigger) ? 'Shop ability: no effect in battle.' : 'Triggers in battle, but only affects gold or the shop.'; }
+  function noBattleText(id) { if (CARRIES_OVER.has(id)) return 'Shop ability: set what it did this turn in the pet editor and it carries into the battle.';
+    return noBattleText0(id); }
+  function noBattleText0(id) { if (STATUS[id].endTurn === 'ok') return 'End turn ability: only runs in battle when a Pink Robin activates it.'; return SHOP_TRIGGERS.has(STATUS[id].trigger) ? 'Shop ability: no effect in battle.' : 'Triggers in battle, but only affects gold or the shop.'; }
   function limitAt(id, lv) { const ab = AB[id]; if (!ab || !ab.limit || !ab.levels[lv - 1]) return 0; return Array.isArray(ab.limit) ? ab.limit[lv - 1] || 0 : ab.limit; }
   function editTrig(id, lv) {
     const ab = AB[id]; if (!ab || !ab.levels[lv - 1]) return null;
@@ -368,6 +387,7 @@
             el('div', { class: 'pst' }, el('img', { src: UI('Fist'), alt: '' }), String(d.a), el('img', { src: UI('Heart_1'), alt: '' }), String(d.h)),
             el('div', { class: 'tier' }, 'T' + d.t));
           if (st === 'unsupported') card.append(el('div', { class: 'tag bad', title: 'Battle ability not simulated' }, 'not simulated'));
+          else if (st === 'shop' && CARRIES_OVER.has(k)) card.append(el('div', { class: 'tag good', title: 'Set its shop result in the pet editor' }, 'set in editor'));
           else if (st === 'shop') card.append(el('div', { class: 'tag', title: noBattleText(k) }, SHOP_TRIGGERS.has(STATUS[k].trigger) ? 'shop' : 'no battle effect'));
           else if (st === 'passive') card.append(el('div', { class: 'tag good', title: 'Passive: always active in battle' }, 'passive'));
           card.addEventListener('click', () => {
@@ -678,9 +698,10 @@
           info.append(row);
         }
         if (st.status === 'unsupported') info.append(el('div', { class: 'support-note' }, "This pet's battle ability isn't simulated yet, so it fights with stats only."));
+        else if (st.status === 'shop' && CARRIES_OVER.has(p.id)) info.append(el('div', { class: 'support-note good' }, 'Shop ability, but what it did this turn carries into the battle: set it under "This turn" below.'));
         else if (st.status === 'shop') info.append(el('div', { class: 'support-note shop' }, SHOP_TRIGGERS.has(st.trigger) ? 'This ability only works in the shop, so it has no effect in battle (same as the game).' : 'This ability triggers in battle, but it only affects gold or the shop, so it changes nothing in the fight.'));
         else if (st.status === 'passive') info.append(el('div', { class: 'support-note good' }, 'Passive ability: always active in battle.'));
-        if (SETTINGS_DEP[p.id]) info.append(el('div', { class: 'support-note shop' }, `Uses the "${SETTING_NAMES[SETTINGS_DEP[p.id]]}" value from Settings.`));
+        if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, 'Set what happened in the shop this turn below (blank uses Settings).'));
         top.append(spr, info);
         body.append(top);
 
@@ -709,6 +730,33 @@
         ctr.append(xpc);
         const mc = stepper('Mana', 'mana', 'Mana'); mc.title = 'Starting mana (what Mana Potions give)'; ctr.append(mc);
         body.append(ctr);
+        // shop / turn values this pet's ability uses
+        const keys = ctxKeys(p.id);
+        if (keys.length) {
+          const box = el('div', { class: 'ctl ctx-box' }, el('label', {}, 'This turn'));
+          const rows = el('div', { class: 'ctx-rows' });
+          for (const key of keys) {
+            if (key === 'swallowed') {
+              const sel = el('select', { class: 'cb-select ctx-pet' });
+              sel.append(el('option', { value: '' }, 'Nothing swallowed'));
+              for (const k of ROLLABLE.slice().sort((a, b) => D.pets[a].n.localeCompare(D.pets[b].n))) sel.append(el('option', { value: k }, `${D.pets[k].n} (T${D.pets[k].t})`));
+              sel.value = (p.ctx && p.ctx.swallowed) || '';
+              sel.addEventListener('change', () => { p.ctx = Object.assign({}, p.ctx, { swallowed: sel.value || undefined }); save(); draw(); });
+              const pic = (p.ctx && p.ctx.swallowed) ? el('img', { class: 'ctx-pic', src: petImg(p.ctx.swallowed), alt: '' }) : null;
+              rows.append(el('div', { class: 'ctx-row' }, el('span', {}, p.id === 'WhiteWhale' ? 'Swallowed shop pet (released on faint)' : 'Swallowed shop pet (a 1/1 copy goes to the opponent on faint)'), pic, sel));
+              continue;
+            }
+            const [label, min, max] = CTX_LABEL[key];
+            const v = p.ctx && p.ctx[key] != null ? p.ctx[key] : '';
+            const inp = el('input', { type: 'number', class: 'cb-num', min, max, value: v, placeholder: String(S.settings[key]) });
+            inp.addEventListener('change', () => {
+              const n = inp.value === '' ? undefined : Math.max(min, Math.min(max, inp.value | 0));
+              p.ctx = Object.assign({}, p.ctx, { [key]: n }); if (n != null) inp.value = n; save();
+            });
+            rows.append(el('div', { class: 'ctx-row' }, el('span', {}, label), inp));
+          }
+          box.append(rows); body.append(box);
+        }
 
         const pc = el('div', { class: 'ctl', style: 'margin-top:14px;align-items:stretch' });
         const cur = el('div', { class: 'perk-cur' });
@@ -912,7 +960,7 @@
   }
 
   // ------------------------------------------------------------------ battle
-  function battleTeams() { return S.teams.map(t => t.map((p, slot) => p && ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0, slot })).filter(Boolean)); }
+  function battleTeams() { return S.teams.map(t => t.map((p, slot) => p && ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0, slot, ctx: p.ctx })).filter(Boolean)); }
   function simulate(seed) {
     const b = new Engine.Battle(D, AB, battleTeams(), Object.assign({}, S.settings, { seed }));
     return b.run();

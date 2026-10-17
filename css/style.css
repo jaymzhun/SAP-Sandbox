@@ -537,3 +537,11 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .bpet.hovered .bp-sprite { filter: drop-shadow(0 0 6px #fff) drop-shadow(0 0 10px #ffe08a); }
 .bscene.held::after { content: 'Paused'; position: absolute; left: 50%; top: 96px; transform: translateX(-50%); z-index: 60; padding: 4px 14px 6px; border-radius: 12px; background: rgba(29,26,23,.72); color: #fff; font: 18px 'Lapsus'; pointer-events: none; }
 .bscene .bpet { pointer-events: auto; cursor: help; }
+
+/* per-pet "this turn" values in the pet editor */
+.ctx-box { margin-top: 12px; align-items: stretch; }
+.ctx-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.ctx-row { display: flex; align-items: center; gap: 10px; font: 16px 'Pangolin'; color: var(--ink); }
+.ctx-row > span { flex: 1; }
+.ctx-pic { width: 42px; height: 42px; object-fit: contain; }
+.ctx-pet { max-width: 260px; }

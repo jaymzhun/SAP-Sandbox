@@ -145,6 +145,9 @@
         for (const p of teams[s]) {
           if (!p || !this.D.pets[p.id]) continue;
           const pet = this.makePet(p.id, s, p);
+          if (p.ctx) pet.ctx = Object.assign({}, p.ctx);
+          const pre = this.A[p.id] && this.A[p.id].preBattle;
+          if (pre) pre(this, pet); // shop effects that carry into the fight (Okapi's rolls, Beluga Whale's swallowed pet)
           pet.slot0 = p.slot != null ? p.slot : this.t[s].length; // slot it was put in (teams can have gaps)
           this.t[s].push(pet);
         }
@@ -152,6 +155,9 @@
       // empty spaces left in the lineup are kept until the battle starts (Emu can use an empty front space)
       this.gaps = this.t.some(t => t.some((p, i) => p.slot0 !== i));
     }
+
+    /** a shop/turn value for this pet: its own (set in the pet editor) or the Settings one */
+    optOf(p, key) { return p && p.ctx && p.ctx[key] != null && p.ctx[key] !== '' ? +p.ctx[key] : this.opts[key]; }
 
     // ---------------- pet helpers
     makePet(id, side, o = {}) {
@@ -820,7 +826,7 @@
     release(p, slot) {
       const s = p.swallowed; p.swallowed = null;
       if (!s) return;
-      this.summon(s.side != null ? s.side : p.side, slot, s.id, { atk: s.atk, hp: s.hp, lvl: s.lvl, perk: s.perk, src: p });
+      this.summon(s.side != null ? s.side : p.side, s.front ? 0 : slot, s.id, { atk: s.atk, hp: s.hp, lvl: s.lvl, perk: s.perk, src: p });
     }
 
     checkRetriever() {
