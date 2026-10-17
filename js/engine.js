@@ -53,7 +53,7 @@
    */
   const PERKS = {
     // ---- before battle (before Start of battle abilities)
-    LovePotion: { t: 'beforeBattle', once: true, rep: true, fn: (B, p) => B.summon(p.side, B.idx(p) + 1, p.id, { atk: 5, hp: 5, lvl: p.lvl, src: p }) },
+    LovePotion: { t: 'beforeBattle', once: true, rep: true, fn: (B, p) => B.summon(p.side, B.idx(p) + 1, p.id, { atk: 5, hp: 5, lvl: p.lvl, src: p, ctx: p.ctx }) },
     Cherries: { t: 'beforeBattle', once: true, rep: true, fn: (B, p) => B.gainTrumpets(p.side, 2, p) },
     Pie: { t: 'beforeBattle', rep: true, fn: (B, p) => B.buff(p, 4, 3, p) },
     Pancakes: { t: 'beforeBattle', rep: true, fn: (B, p) => { for (const f of B.friendsOf(p)) B.buff(f, 2, 2, p); } },
@@ -96,7 +96,7 @@
     Seaweed: { t: 'beforeAttack', once: true, fn: (B, p) => B.transform(p, 'BabySeaUrchin', { src: p }) },
     // ---- faint (holder is gone; summons appear in its place)
     Honey: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'Bee', 1, 1) },
-    Mushroom: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, p.id, 1, 1, { lvl: p.lvl }) },
+    Mushroom: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, p.id, 1, 1, { lvl: p.lvl, ctx: p.ctx }) },
     Banana: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'Monkey', 4, 4) },
     CodRoe: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'Fish', 2, 3) },
     EasterEgg: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'WhiteKillerRabbit', 3, 3) },
@@ -217,7 +217,7 @@
 
     // ---------------- logging
     snap() {
-      const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p), s: this.gaps && p.slot0 != null ? p.slot0 : undefined });
+      const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p), s: this.gaps && p.slot0 != null ? p.slot0 : undefined, c: p.ctx || undefined, sw: p.swallowed ? p.swallowed.id : undefined });
       const vis = p => p.onBoard && !p.swallowedBy;
       return { t: [this.t[0].filter(vis).map(s), this.t[1].filter(vis).map(s)], tr: this.trumpets.slice() };
     }
@@ -453,6 +453,11 @@
         xp: opts.lvl ? [0, 0, 2, 5][opts.lvl] : (opts.xp || 0), perk: opts.perk, mana: opts.mana,
       });
       if (opts.flags) Object.assign(p.flags, opts.flags);
+      // a copy of a pet (One Up / Mushroom, Pteranodon, Falcon, Tapir...) keeps its "this turn" values
+      if (opts.ctx) {
+        p.ctx = Object.assign({}, opts.ctx);
+        if (p.ctx.swallowed && (id === 'WhiteWhale' || id === 'SarcasticFringehead') && this.A[id] && this.A[id].preBattle) this.A[id].preBattle(this, p);
+      }
       const arr = this.t[side];
       // insert relative to on-board pets
       const ob = arr.filter(x => x.onBoard);
@@ -826,7 +831,7 @@
     release(p, slot) {
       const s = p.swallowed; p.swallowed = null;
       if (!s) return;
-      this.summon(s.side != null ? s.side : p.side, s.front ? 0 : slot, s.id, { atk: s.atk, hp: s.hp, lvl: s.lvl, perk: s.perk, src: p });
+      this.summon(s.side != null ? s.side : p.side, s.front ? 0 : slot, s.id, { atk: s.atk, hp: s.hp, lvl: s.lvl, perk: s.perk, src: p, ctx: s.ctx });
     }
 
     checkRetriever() {

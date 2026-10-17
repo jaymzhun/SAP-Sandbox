@@ -236,7 +236,7 @@
         const st = STATUS[p.id];
         if (st && st.status === 'unsupported') { const w = el('div', { class: 'warn ol' }, '!'); e.append(w); }
         attachDrag(e, s, i);
-        attachTip(e, () => tipFor(p.id, lvlOf(p.xp), p.perk));
+        attachTip(e, () => tipFor(p.id, lvlOf(p.xp), p.perk, p.ctx));
         arena.append(e);
       }
     }
@@ -292,7 +292,25 @@
     tip.style.left = Math.max(4, Math.min(1276 - 300, x)) + 'px'; tip.style.top = y + 'px';
   }
   function hideTip() { tip.hidden = true; }
-  function tipFor(id, lv, perk) {
+  // "3 foods eaten this turn", "Swallowed Slug"... for pets that use this-turn values
+  function ctxLines(id, ctx, swallowedNow) {
+    const out = [];
+    for (const key of ctxKeys(id)) {
+      if (key === 'swallowed') {
+        const sw = swallowedNow !== undefined ? swallowedNow : ctx && ctx.swallowed;
+        out.push(sw && D.pets[sw] ? `Swallowed <b>${esc(D.pets[sw].n)}</b>` : 'Nothing swallowed');
+        continue;
+      }
+      const own = ctx && ctx[key] != null && ctx[key] !== '';
+      const n = own ? +ctx[key] : S.settings[key];
+      const txt = { rolls: `${n} roll${n === 1 ? '' : 's'} this turn`, foodEaten: `${n} food${n === 1 ? '' : 's'} eaten this turn`, summoned: `${n} friend${n === 1 ? '' : 's'} summoned this turn`,
+        battles: `${n} battle${n === 1 ? '' : 's'} fought`, turn: `Turn ${n}`, transforms: `${n} transformation${n === 1 ? '' : 's'} this turn`,
+        goldSpent: `${n} gold spent this turn`, lvl3Sold: `${n} level 3 pet${n === 1 ? '' : 's'} sold` }[key];
+      out.push(txt + (own ? '' : ' <i>(Settings)</i>'));
+    }
+    return out.length ? `<br><span style="color:#2f6f2a">${out.join(' · ')}</span>` : '';
+  }
+  function tipFor(id, lv, perk, ctx, swallowedNow) {
     const d = D.pets[id]; const st = STATUS[id];
     const tl = trigLabel(id);
     let h = `<b>${esc(d.n)}</b> · Tier ${d.t}<br>`;
@@ -304,6 +322,7 @@
     else if (st.status === 'shop') h += `<br><span style="color:#7a6a55">${noBattleText(id)}</span>`;
     else if (st.status === 'passive') h += `<br><span style="color:#2f6f2a">Passive: always active in battle.</span>`;
     if (perk) h += `<br><b>${esc(perkName(perk))}</b>: ${fmtAbility(perkDesc(perk))}`;
+    h += ctxLines(id, ctx, swallowedNow);
     return h;
   }
 
@@ -973,7 +992,7 @@
     onSpeed: v => { S.settings.speed = v; save(); },
     replayLink: () => replayLink(),
     // hovering a pet in battle: same card as in the editor, plus its current stats
-    petTip: d => tipFor(d.id, d.l || 1, d.p) + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
+    petTip: d => tipFor(d.id, d.l || 1, d.p, d.c, (d.id === 'WhiteWhale' || d.id === 'SarcasticFringehead') ? (d.sw || null) : undefined) + (d.sw && !['WhiteWhale', 'SarcasticFringehead'].includes(d.id) && D.pets[d.sw] ? `<br><span style="color:#2f6f2a">Swallowed <b>${esc(D.pets[d.sw].n)}</b></span>` : '') + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
     showTip: (node, html) => { tip.innerHTML = html; tip.hidden = false; posTip(node); },
     hideTip: () => hideTip(),
   });
