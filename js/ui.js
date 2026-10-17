@@ -114,7 +114,7 @@
     meta: [{ player: 'Player 1', mascot: 'Tyrannosaurus', bg: 'FieldBattle', trophies: 0, lives: 5 }, { player: 'Player 2', mascot: 'Bee', bg: 'FrontYardBattle', trophies: 0, lives: 5 }],
     bg: 'FieldBattle',
     settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
-    rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8 },
+    rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
     custom: [], // custom pets: { id, name, sprite, tier, atk, hp, trigger, tkey, vals: [[..],[..],[..]], lim: [0,0,0] }
   };
   let pendingReplay = null;
@@ -758,22 +758,71 @@
   }
 
   // ------------------------------------------------------------------ randomize
+  // ------------------------------------------------------------------ team themes (synergy)
+  // core = pets that do the thing, support = pets that pay off on it (Albatross for snipes, Turkey for summons,
+  // Lusca / Caladrius for mana...). Worked out from ability text and triggers.
+  const abText = k => COMPILED.normText((D.pets[k].ab || []).find(Boolean) || '');
+  const trigOf = k => (STATUS[k] && STATUS[k].trigger) || '';
+  const THEMES = {
+    Snipe: { core: k => /deal \d+ damage to (?!itself|the nearest friend|adjacent friends|friends|all pets)/i.test(abText(k)) || /damage to (one|two|three) random enem/i.test(abText(k)),
+      support: k => /ability damage|repeats? their ability/i.test(abText(k)) || (/^Count:FriendFaints/.test(trigOf(k)) && /damage/i.test(abText(k))), perks: ['Chili', 'MeatBone', 'Garlic'] },
+    Summon: { core: k => /\bsummon\b/i.test(abText(k)) && !/for the (enemy|opponent)/i.test(abText(k)),
+      support: k => /^(FriendSummoned|BeeSummoned)$/.test(trigOf(k)), perks: ['Honey', 'Mushroom', 'Popcorn'] },
+    Faint: { core: k => /^(Faint|BeforeFaint)$/.test(trigOf(k)),
+      support: k => /^(FriendFaints|FriendAheadFaints|Count:FriendFaints)/.test(trigOf(k)) || /repeats? their ability/i.test(abText(k)), perks: ['Mushroom', 'Honey'] },
+    Mana: { core: k => /(gain|give|gives).{0,40}\bmana\b/i.test(abText(k)) && !/(spend|replace|per mana|for each mana)/i.test(abText(k)),
+      support: k => (/(spend|replace|per mana|for each mana|mana on)/i.test(abText(k)) && /mana/i.test(abText(k))) || trigOf(k) === 'GainsMana', perks: [] },
+    Hurt: { core: k => /Hurt/.test(trigOf(k)),
+      support: k => /damage to (itself|the nearest friend|adjacent friends|friends|all pets|all friends|.*friends? (ahead|behind))/i.test(abText(k)), perks: ['Melon', 'Garlic', 'Coconut'] },
+    Trumpet: { core: k => /(gain|give).{0,30}trumpet/i.test(abText(k)), support: k => /spend.{0,20}trumpet/i.test(abText(k)), perks: [] },
+    Strawberry: { core: k => /strawberry/i.test(abText(k)), support: k => /strawberry/i.test(abText(k)) && /(friend|it\b)/i.test(abText(k)), perks: ['Strawberry'] },
+    Food: { core: k => /(Ate|Eats)/.test(trigOf(k)), support: k => /\bfeed\b/i.test(abText(k)), perks: [] },
+    'Level-up': { core: k => /LevelUp|GainedXp/.test(trigOf(k)), support: k => /experience/i.test(abText(k)), perks: [] },
+  };
+  const THEME_NAMES = Object.keys(THEMES);
+  const battleReady = k => STATUS[k] && ['ok', 'passive'].includes(STATUS[k].status);
+  const pickOne = arr => arr[Math.floor(Math.random() * arr.length)];
+  function themedPicks(pool, size, themeName) {
+    const ready = pool.filter(battleReady);
+    const options = (themeName && THEMES[themeName] ? [themeName] : THEME_NAMES).map(n => {
+      const th = THEMES[n];
+      return { n, core: ready.filter(th.core), sup: ready.filter(th.support) };
+    }).filter(o => o.core.length >= 2 || (o.n === themeName && o.core.length));
+    if (!options.length) return null;
+    const ch = pickOne(options);
+    const used = new Set(); const take = (arr) => { const left = arr.filter(k => !used.has(k)); const k = pickOne(left.length ? left : arr); used.add(k); return k; };
+    const nSup = size >= 4 ? 2 : size >= 2 ? 1 : 0;
+    const sup = []; for (let i = 0; i < nSup && ch.sup.length; i++) sup.push(take(ch.sup));
+    const core = []; while (core.length + sup.length < size) core.push(take(ch.core.length ? ch.core : ready));
+    // core pets up front, support behind them; adjacency supports (Albatross, Tiger) sit right behind a core pet
+    const adj = sup.filter(k => /adjacent|friend ahead repeats|repeats? their ability/i.test(abText(k)));
+    const rest = sup.filter(k => !adj.includes(k));
+    const order = core.slice();
+    adj.forEach((k, j) => order.splice(Math.min(order.length, 1 + j * 2), 0, k));
+    return { theme: ch.n, ids: order.concat(rest), perks: THEMES[ch.n].perks };
+  }
   function randomTeam(side) {
     const o = S.rnd;
     let pool = ROLLABLE.filter(k => D.pets[k].t <= o.maxTier && (o.pack === 'All' || (D.pets[k].p || []).includes(o.pack)));
     if (!pool.length) pool = ROLLABLE;
+    const themed = o.theme !== 'None' ? themedPicks(pool, o.size, o.theme && o.theme !== 'Random' ? o.theme : null) : null;
+    const ids = themed ? themed.ids : Array.from({ length: o.size }, () => pickOne(pool));
     const t = Array(5).fill(null);
-    for (let i = 0; i < o.size; i++) {
-      const k = pool[Math.floor(Math.random() * pool.length)];
+    ids.forEach((k, i) => {
       const p = newPet(k);
       if (o.levels) p.xp = [0, 0, 0, 1, 2, 2, 3, 5][Math.floor(Math.random() * 8)];
       const lv = lvlOf(p.xp);
       p.atk = Math.min(Engine.capOf(k, 'atk'), p.atk + (lv - 1) + Math.floor(Math.random() * (o.bonus + 1)));
       p.hp = Math.min(Engine.capOf(k, 'hp'), p.hp + (lv - 1) + Math.floor(Math.random() * (o.bonus + 1)));
-      if (o.perks && Math.random() < 0.45) p.perk = BATTLE_PERKS[Math.floor(Math.random() * BATTLE_PERKS.length)];
+      if (o.perks && Math.random() < 0.45) {
+        const fav = themed && themed.perks.filter(x => BATTLE_PERKS.includes(x));
+        p.perk = fav && fav.length && Math.random() < 0.65 ? pickOne(fav) : pickOne(BATTLE_PERKS);
+      }
       t[i] = p;
-    }
+    });
     S.teams[side] = t;
+    S.themes = S.themes || [null, null]; S.themes[side] = themed ? themed.theme : null;
+    return themed ? themed.theme : null;
   }
   function openRandomizer(side) {
     openModal('form', p => {
@@ -784,6 +833,7 @@
       const sel = (opts, key, conv = x => x) => { const s = el('select'); for (const v of opts) s.append(el('option', { value: v }, String(v))); s.value = o[key]; s.addEventListener('change', () => { o[key] = conv(s.value); save(); }); return s; };
       const tog = key => { const t = el('button', { class: 'toggle' + (o[key] ? ' on' : '') }); t.addEventListener('click', () => { o[key] = !o[key]; t.classList.toggle('on', o[key]); save(); }); return t; };
       body.append(
+        row('Team theme', 'Pets that work together (snipe + Albatross, summon + Turkey, mana + Lusca…)', sel(['Random', 'None'].concat(THEME_NAMES), 'theme')),
         row('Pack', 'Pets are drawn from this pack', sel(['All'].concat(PACKS.filter(x => x !== 'Puppy')), 'pack')),
         row('Highest tier', 'Pets up to this shop tier', sel([1, 2, 3, 4, 5, 6], 'maxTier', Number)),
         row('Team size', null, sel([1, 2, 3, 4, 5], 'size', Number)),
@@ -792,9 +842,10 @@
         row('Random perks', null, tog('perks')));
       p.append(body);
       const go = el('button', { class: 'obtn' }, el('img', { src: UI('Dice'), alt: '' }), el('span', {}, 'Roll!'));
-      go.addEventListener('click', () => { randomTeam(side); renderEdit(); });
+      const say = th => th ? `${th} team` : 'Random team';
+      go.addEventListener('click', () => { const th = randomTeam(side); renderEdit(); toast(`${S.names[side]}: ${say(th)}`); });
       const both = el('button', { class: 'obtn ghost' }, el('span', {}, 'Roll both teams'));
-      both.addEventListener('click', () => { randomTeam(0); randomTeam(1); renderEdit(); });
+      both.addEventListener('click', () => { const a = randomTeam(0), b = randomTeam(1); renderEdit(); toast(`${say(a)} vs ${say(b)}`); });
       p.append(el('div', { style: 'display:flex;gap:12px;justify-content:center' }, both, go));
     });
   }
