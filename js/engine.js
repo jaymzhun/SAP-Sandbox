@@ -404,7 +404,7 @@
       tgt.hurtCount++;
       if (src) src.dealtDamage = true;
       if (tgt.hp <= 0) tgt.killer = src;
-      this.rec('damage', { tgt: tgt.uid, src: src && src.uid, n: dealt, dk: kind });
+      this.rec('damage', { tgt: tgt.uid, src: src && src.uid, n: dealt, dk: kind, mana: opts.mana || undefined });
       this.emit('Hurt', { pet: tgt, src, n: dealt, kind });
       const hp = this.perkId(tgt);
       if (hp && PERKS[hp] && PERKS[hp].t === 'hurt') this.queue.push({ pet: tgt, ev: {}, perkFx: hp });
@@ -731,7 +731,7 @@
         case 'Curse': { const f = B.pick(null, B.friendsOf(p), 1, 'friend')[0]; if (f) B.givePerk(f, 'Curse', p); break; }
         case 'ManaBurst': {
           const e = B.pick(p, B.enemiesOf(p), 1, 'enemy')[0];
-          if (e) B.damage(p, e, ev.n, 'ability', { raw: true });
+          if (e) B.damage(p, e, ev.n, 'ability', { raw: true, mana: true });
           break;
         }
       }

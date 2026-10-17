@@ -220,7 +220,7 @@
     async function projectile(fromU, toU, kind, img) {
       const a = posOf(fromU), b = posOf(toU);
       if (!a || !b || fromU === toU) return;
-      const p = fxEl('b-proj ' + (img ? 'img' : kind || ''), a[0], a[1] - 30, img ? `<img src="${img}" alt="">` : '');
+      const p = fxEl('b-proj ' + (img ? 'img ' : '') + (kind || ''), a[0], a[1] - 30, img ? `<img src="${img}" alt="">` : '');
       const dx = b[0] - a[0], dy = b[1] - a[1];
       const arc = Math.min(130, 50 + Math.abs(dx) * .2);
       await p.animate([{ transform: 'translate(-50%,-50%) scale(.6) rotate(0deg)' },
@@ -228,6 +228,7 @@
         { transform: `translate(-50%,-50%) translate(${dx}px,${dy}px) scale(.9) rotate(360deg)` }],
         { duration: 250 / state.speed, easing: 'ease-in-out' }).finished.catch(() => { });
       p.remove();
+      if (kind === 'rock' && root) puff(b[0], b[1] - 20, 2, 18);
     }
     async function rocketIn(e, side, delay) {
       const body = e;
@@ -342,6 +343,7 @@
       const tgts = [...new Set(grp.map(st => st.tgt))];
       await Promise.all(tgts.filter(t => t !== grp[0].src).map(t => {
         const pk = kind === 'perk' ? grp.find(st => st.tgt === t).perk : null;
+        if (kind === 'hit') return projectile(grp[0].src, t, 'rock', FX(grp.find(st => st.tgt === t).mana ? 'ManaRock' : 'Rock'));
         return projectile(grp[0].src, t, kind === 'buff' ? 'heal' : '', pk ? foodImg(pk) : undefined);
       }));
       if (my !== gen || !root) throw STALE;
@@ -385,12 +387,12 @@
           break;
         }
         case 'damage': {
-          if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '');
+          if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX(st.mana ? 'ManaRock' : 'Rock'));
           shake(st.tgt); bigNumber(st.tgt, st.n);
           render(st.snap); await W(st.dk === 'attack' ? 120 : 130); break;
         }
         case 'remove': {
-          if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '');
+          if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX('Rock'));
           shake(st.tgt); if (st.dh) bigNumber(st.tgt, -st.dh);
           render(st.snap); await W(130); break;
         }

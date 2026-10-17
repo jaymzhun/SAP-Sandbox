@@ -524,3 +524,6 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 
 /* last-updated stamp in Settings */
 .build-stamp { margin-top: 10px; text-align: right; font: 13px 'Pangolin', sans-serif; color: #8d8170; }
+
+/* thrown rock for snipes (game's Rock sprite) */
+.b-proj.rock { width: 46px; height: 43px; }
