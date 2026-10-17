@@ -640,7 +640,9 @@
       for (const q of list) key(q);
       const pri = q => (this.hasPerk(q.pet, 'Churros') ? 1 : this.hasPerk(q.pet, 'Macaron') ? -1 : 0);
       const isPerk = q => (q.perkFx || q.bap ? 0 : 1);
-      return list.sort((x, y) => (pri(y) - pri(x)) || (y.pet.atk - x.pet.atk) || (key(x) - key(y)) || (isPerk(x) - isPerk(y)));
+      // a fainted pet's own faint perks (Mushroom, Honey...) go before friends react to the faint (Pteranodon...)
+      const ownFaint = q => (q.perkFx && !q.pet.onBoard ? 1 : 0);
+      return list.sort((x, y) => (ownFaint(y) - ownFaint(x)) || (pri(y) - pri(x)) || (y.pet.atk - x.pet.atk) || (key(x) - key(y)) || (isPerk(x) - isPerk(y)));
     }
 
     /**

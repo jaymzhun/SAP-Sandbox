@@ -473,7 +473,7 @@
     S.Osprey = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Groundhog', a, h); };
     S.Hirola = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'EthiopianWolf', a, h); };
     S.PatagonianMara = (t) => { const [tr] = nums(t); return c => { c.B.gainTrumpets(c.self.side, tr, c.self); c.B.summonRetriever(c.self.side); }; };
-    S.Pteranodon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Pteranodon') return; c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: it.lvl, src: c.self, ctx: it.ctx }); }; };
+    S.Pteranodon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Pteranodon') return false; if (c.B.t[c.self.side].filter(x => x.onBoard).length >= Engine.MAX_TEAM) return false; /* no room: don't use a trigger */ c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: it.lvl, src: c.self, ctx: it.ctx }); }; };
     S.Fly = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'FlyToken') return; c.B.summon(c.self.side, c.ev.slot, 'FlyToken', { atk: a, hp: h, src: c.self }); }; };
     S.ShimaEnaga = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || !(it.perk && it.perk.id === 'Strawberry')) return; const k = H.randomPet(c.B, d => true); if (k) c.B.summon(c.self.side, c.ev.slot, k, { atk: a, hp: h, src: c.self }); }; };
     S.Rat = (t) => { const [a, h] = nums(t); return c => c.B.summon(1 - c.self.side, 0, 'RatToken', { atk: a, hp: h, src: c.self, silent: true }); };
@@ -561,7 +561,7 @@
     S.FairyArmadillo = (t) => { const [h] = nums(t); return c => { if (!c.B.alive(c.self)) return; c.B.transform(c.self, 'FairyArmadilloBall', { src: c.self }); c.B.buff(c.self, 0, h, c.self); }; };
     S.Lizard = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'LizardToken', a, h, { at: c.B.idx(c.self) + 1 }); };
     S.EgyptianVulture = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const tg = f.slice(i + 1).find(p => /Faint/.test((c.B.A[p.id] || {}).trigger || '')); if (!tg) return; const ab = c.B.A[tg.id]; if (!ab.levels[tg.lvl - 1]) return; c.B.rec('ability', { src: tg.uid, id: tg.id, trig: 'Activated' }); ab.levels[tg.lvl - 1]({ B: c.B, self: tg, ev: { slot: c.B.idx(tg) + 1 }, lvl: tg.lvl }); };
-    S.Falcon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Falcon') return; c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: 1, src: c.self, ctx: it.ctx }); }; };
+    S.Falcon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Falcon') return false; if (c.B.t[c.self.side].filter(x => x.onBoard).length >= Engine.MAX_TEAM) return false; /* no room: don't use a trigger */ c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: 1, src: c.self, ctx: it.ctx }); }; };
     S.Rhino = (t) => { const [d] = nums(t); return c => { const e = H.firstE(c); if (e) c.B.damage(c.self, e, c.B.tier(e) === 1 ? d * 2 : d, 'ability'); }; };
     S.Alpaca = (t) => { const [x] = nums(t); return c => { const it = c.ev.pet; if (it && it.id !== 'Alpaca') c.B.gainXp(it, x * 3, c.self); }; };
     S.Amalgam = (t) => { const [a, m] = nums(t); return c => { const it = c.ev.pet; if (!it) return; c.B.buff(it, a, 0, c.self); c.B.gainMana(it, m, c.self); c.B.givePerk(it, 'Scared', c.self); }; };
