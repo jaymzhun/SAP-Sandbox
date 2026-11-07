@@ -10,6 +10,12 @@ Game build analysed (installed via Steam, unchanged since 2026-10-13):
 
 No wikis, datamines or community dumps were used.
 
+> **Game update, 2026-11-07 (Steam build 26131463).** The game updated after Phase 1 (`GameAssembly.dll` sha256 `4f270446…`,
+> metadata `bf6e27ad…`). I re-ran the whole extraction on it:
+> - Every enum, pet, stat, tier, pack, ability, ability text and trigger limit is **identical**.
+> - All 5,158 re-decompiled battle and ability functions are identical, apart from compiler-generated labels and identical-code-folding names.
+> - So these documents still apply. Addresses quoted in them are from the October build; the new build shifts them.
+
 ## How it was extracted
 - **Code.** REA 6.8.0 with Ghidra 12.1.4, used instead of Cpp2IL/Il2CppDumper.
   - REA's built-in IL2CPP metadata reader decoded 20,796 types and 138,796 methods, and linked 125,196 method bodies to addresses.
