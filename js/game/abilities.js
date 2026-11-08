@@ -290,6 +290,27 @@
         if (!out.length && last) out.push(last.Id);
         return out;
       }
+      case 'TargetsScan': {
+        if (!owner) return null;
+        const out = [];
+        if (!t.MinionFinder) return out;
+        t.MinionFinder.ForceUnordered = true; // the game sets this on the shared finder
+        let list = findMinions(t.MinionFinder, B, owner, ta.Aim, ta.Random);
+        if (!list.length) return out;
+        if (board.ReverseMinionAccess) list = list.slice().reverse();
+        const move = owner.Owner === 1 ? 1 : 3; // MinionExtensions.GetMoveDirection
+        const dir = t.Direction ? (move === 1 ? 3 : move === 3 ? 1 : move === 0 ? 2 : 0) : move; // DirectionUtility.Relative
+        if (!t.Amount) return out;
+        const amount = paramValue(t.Amount, paramArgs(ta));
+        for (let i = 0; i < amount; i++) {
+          const idx = dir === 3 ? list.length - i - 1 : i;
+          let m;
+          if (!t.Wrap) { m = idx >= 0 && idx < list.length ? list[idx] : null; if (!m) return out; }
+          else { m = list[((idx % list.length) + list.length) % list.length]; if (!m) break; }
+          out.push(m.Id);
+        }
+        return out;
+      }
       default: return unported(tn);
     }
   }
@@ -416,9 +437,14 @@
     if (!minion.Abilities) return out;
     for (const model of minion.Abilities) {
       const ab = getAbility(model.Enum, model.Level);
-      if (ab && ab.PowerTrigger) unported('Ability.PowerTriggered');
+      // Ability.PowerTriggered -> Try<AddMinionPower>(1)
+      if (ab && ab.PowerTrigger && isTriggered(ab.PowerTrigger, { B, TriggerEvent: trig, Force: false, Random: rand, OwnerId: minion.Id, TriggerPhase: 1 }).Status === 0 && ab.PowerAbility != null)
+        out.push(wrap('Try', ev('AddMinionPower', { Owner: 0, TargetId: minion.Id, Amount: 1, Ability: ab.PowerAbility, ResultCurrent: null })));
       if (minion.Perk === 55 && model.Enum !== 686 && model.Enum !== 806) continue; // Deaf
-      if (ab && ab.Charges != null && ab.Charges !== 0 && ab.ChargeTrigger) unported('Ability.ChargeTriggered');
+      // Ability.ChargeTriggered -> Try<AddMinionCharge>(trigger value or 1)
+      if (ab && ab.Charges != null && ab.Charges !== 0 && ab.ChargeTrigger && !(ab.ChargesMax != null && ab.ChargesMax <= (model.Charges || 0)) &&
+        isTriggered(ab.ChargeTrigger, { B, TriggerEvent: trig, Force: false, Random: rand, OwnerId: minion.Id, TriggerPhase: 1 }).Status === 0)
+        out.push(wrap('Try', ev('AddMinionCharge', { Owner: 0, TargetId: minion.Id, Ability: model.Enum, Amount: trig.Value !== undefined ? trig.Value : 1 })));
       const r = abilityTriggered(ab, model, trig, false, B, rand, minion.Id);
       if (r.Status === 1 || r.Status === 3) continue;
       const at = ev('AbilityTriggered', { Owner: minion.Owner, Ability: model.Enum, Level: model.Level, MinionId: minion.Id, Aim: null, TriggerEvent: trig, UpdateLevel: true, Type: 0,
@@ -517,7 +543,7 @@
       const effects = short(T(pair.Effect)) === 'EffectComposite' ? null : [pair.Effect];
       if (effects) { const r = effectGlobal(pair.Effect, ga); if (r && r.length) outer.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: pair.Effect } })); }
       else { const inner = []; for (const sub of pair.Effect.Effects || []) { const r = effectGlobal(sub, ga); if (r && r.length) inner.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: sub } })); } if (inner.length) outer.push(wrapList(inner)); }
-      if (!pair.Global && (!targets || !targets.length)) { if ((ab.Interuptor || 0) === 0) return [wrapList(outer)]; continue; }
+      if (!pair.Global && (!targets || !targets.length)) { if ((ab.Interuptor || 0) === 0) return outer; continue; } // returned unwrapped (may be empty)
       const perTarget = [];
       for (const tid of targets || []) {
         const sa = { B, Level: ab.Level, Owner: owner.Owner, TargetId: tid, SourceId: owner.Id, TriggerEvent: trig, Random: rand, EffectMultiplier: effectMultiplier, Reversed: reversed };
@@ -526,7 +552,7 @@
       }
       if (perTarget.length) outer.push(ev('CastEffectsParallel', { CastEffects: perTarget }));
       if (ab.PersistTargets) unported('PersistTargets');
-      if ((ab.Interuptor || 0) === 1) return [wrapList(outer)];
+      if ((ab.Interuptor || 0) === 1) return outer; // returned unwrapped
     }
     return [wrapList(outer)];
   }
@@ -534,14 +560,15 @@
   // ---------------------------------------------------------------- Effects (OnGlobal / OnSingle)
   const singleParamArgs = (sa) => ({ B: sa.B, TargetId: sa.TargetId, SourceId: sa.SourceId, TriggerSourceId: sourceOf(sa.TriggerEvent) || null, TriggerTargetId: targetOf(sa.TriggerEvent) || null,
     AimId: null, Random: sa.Random, TriggerEvent: sa.TriggerEvent, Owner: sa.Owner });
+  /** Effect classes that override EffectBase.OnGlobal (from the metadata; the base returns null). */
+  const GLOBAL_EFFECTS = new Set(['EffectAddSharedPower','EffectAddShopMinion','EffectAddShopSpell','EffectBalance','EffectBuffShopMinions','EffectBuffShopPermanent','EffectChangeVictoryMax','EffectChooseMinion','EffectChooseSpell','EffectComposite','EffectCondition','EffectDiscountMinion','EffectDiscountSpell','EffectExchangeStats','EffectFreezeShop','EffectFumble','EffectGainGold','EffectGainLives','EffectGainRolls','EffectGainTrumpets','EffectRandom','EffectRepeat','EffectReplaceMinionShop','EffectReplaceSpellShop','EffectRollShop','EffectSetGold','EffectSetPrice','EffectShuffle','EffectSort','EffectSpendGold','EffectStealMinion','EffectSummonGlobal','EffectSummonRetriever','EffectSwallowShop']);
   function effectGlobal(eff, ga) {
     const t = short(T(eff));
+    if (!GLOBAL_EFFECTS.has(t)) return null;
     switch (t) {
-      case 'EffectGiveBuff': case 'EffectDamage': case 'EffectSetStats': case 'EffectGivePerk': case 'EffectDestroyMinion': case 'EffectLosePerk': return null; // OnGlobal not overridden
-      default: if (!SINGLE_ONLY.has(t)) return unported(t + '.OnGlobal'); return null;
+      default: return unported(t + '.OnGlobal');
     }
   }
-  const SINGLE_ONLY = new Set(['EffectGiveBuff', 'EffectDamage', 'EffectSetStats']);
   function effectSingle(eff, sa) {
     const t = short(T(eff)); const pa = singleParamArgs(sa);
     switch (t) {
@@ -575,6 +602,29 @@
 
   // ---------------------------------------------------------------- mutators fed by effects
   const mutators = {
+    /** AddMinionChargeMutator: whole charges emit Done<ChargedMinion>, partial progress emits ChargedMinionPartially */
+    AddMinionChargeMutator(B, e) {
+      const c = e.Event; const m = B.board.findMinion(c.TargetId); if (!m) return;
+      const model = m.Abilities.find((a) => a.Enum === c.Ability); if (!model) return;
+      if (model.Charges == null) model.Charges = 0;
+      const ab = getAbility(model.Enum, model.Level);
+      if (ab.ChargesMax != null && ab.ChargesMax <= model.Charges) return;
+      if (!canMinionAbilityTrigger(B, model, ab)) return;
+      const before = ab.Charges != null ? tdiv(model.Charges, ab.Charges) : null;
+      model.Charges = model.Charges + c.Amount;
+      const after = ab.Charges != null ? tdiv(model.Charges, ab.Charges) : null;
+      const diff = before != null && after != null ? after - before : null;
+      if (!(diff > 0)) { if (ab.Charges != null) B.add(ev('ChargedMinionPartially', { Owner: m.Owner, MinionId: m.Id, Ability: model.Enum, Max: ab.Charges, Current: model.Charges, Hidden: false })); return; }
+      for (let i = 0; i < diff; i++) B.add(wrap('Done', ev('ChargedMinion', { Owner: m.Owner, MinionId: m.Id, Ability: model.Enum, Hidden: false })));
+    },
+    /** AddMinionPowerMutator */
+    AddMinionPowerMutator(B, e) {
+      const p = e.Event; const m = B.board.findMinion(p.TargetId); if (!m) return;
+      const ab = getAbility(p.Ability, 1); if (ab && ab.PowerMax != null) unported('AddPowerToAbility with PowerMax');
+      m.Power[p.Ability] = (m.Power[p.Ability] || 0) + p.Amount;
+      p.ResultCurrent = m.Power[p.Ability];
+      B.add(wrap('Done', p));
+    },
     /** AbilityDamageSystem: MinionAbilityDamage -> DamageMinion (DamageType 1, owner = target's owner) */
     AbilityDamageSystem(B, e) {
       const d = e.Event; const board = B.board;
@@ -619,6 +669,8 @@
   }
 
   const triggers = {
+    /** TriggerChargedMinionSystem: Done<ChargedMinion> -> Charged */
+    TriggerChargedMinionSystem(B, e) { const c = e.Event; B.add(ev('Charged', { SourceId: c.MinionId, Ability: c.Ability })); },
     /** TriggerGainedHealthSystem: Done<BuffMinion> with health gained -> HealthGained */
     TriggerGainedHealthSystem(B, e) { const b = e.Event; if (b.ResultHealthGained > 0) B.add(ev('HealthGained', { SourceId: b.TargetId, TargetId: b.Source, Value: b.ResultHealthGained })); },
     /** TriggerPetActivatedSystem */
