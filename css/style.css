@@ -24,9 +24,9 @@ img { -webkit-user-drag: none; user-select: none; }
 
 /* outlined game text: stroke painted behind the fill, scaled to the font size */
 .ol, .plaque, .obtn span, .stat span, .lvl, .float, .ribbon span, .plank-label, .ibtn span, .panel h2, .tier-tab, .pcard .pname {
-  -webkit-text-stroke: 0.2em var(--ink);
+  -webkit-text-stroke: 0.17em var(--ink);
   paint-order: stroke fill;
-  text-shadow: 0 0.12em 0 var(--ink);
+  text-shadow: 0 0.11em 0 var(--ink);
   letter-spacing: 0.02em;
 }
 .pcard .pname, .ibtn span, .pet .lvl { -webkit-text-stroke-width: 0.17em; text-shadow: 0 0.08em 0 var(--ink); }
@@ -39,7 +39,7 @@ img { -webkit-user-drag: none; user-select: none; }
 
 /* ---------- top bar */
 #topbar { position: absolute; left: 0; right: 0; top: 10px; display: flex; justify-content: center; align-items: flex-start; pointer-events: none; }
-.plaque.title { pointer-events: auto; background: url('../img/ui/PlankEven1.webp') center / 100% 100%; padding: 14px 46px 18px; font-size: 40px; line-height: 1; transform: rotate(-1.5deg); }
+.plaque.title { pointer-events: auto; border-style: solid; border-width: 16px 20px; border-image: url('../img/ui/PlankEven1.webp') 46 fill / 16px 20px stretch; padding: 0 26px 2px; font-size: 40px; line-height: 1; transform: rotate(-1.5deg); }
 .top-actions { position: absolute; right: 16px; top: 4px; display: flex; gap: 8px; pointer-events: auto; }
 .ibtn { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 70px; padding: 6px 0 4px; border-radius: 14px; background: rgba(0,0,0,.28); }
 .ibtn img { width: 34px; height: 34px; object-fit: contain; filter: drop-shadow(0 2px 0 rgba(0,0,0,.6)); }
@@ -50,7 +50,7 @@ img { -webkit-user-drag: none; user-select: none; }
 .team-head { position: absolute; top: 112px; display: flex; align-items: center; gap: 10px; }
 .team-head.left { left: 60px; }
 .team-head.right { right: 60px; }
-.plank-label { background: url('../img/ui/PlankEvenLight.webp') center / 100% 100%; padding: 8px 26px 11px; font-size: 26px; min-width: 150px; text-align: center; }
+.plank-label { border-style: solid; border-width: 10px 14px; border-image: url('../img/ui/PlankEvenLight.webp') 46 fill / 10px 14px stretch; padding: 0 12px 1px; font-size: 26px; min-width: 150px; text-align: center; }
 .tname { outline: none; display: inline-block; min-width: 40px; }
 .tname:focus { color: var(--gold); }
 .team-tools { display: flex; gap: 6px; }
@@ -180,7 +180,7 @@ body.battle .tname { pointer-events: none; }
 .panel h2 { margin: 0; color: #fff; font-weight: normal; font-size: 32px; }
 .panel .close { position: absolute; right: -14px; top: -14px; width: 50px; height: 50px; background: url('../img/ui/ButtonShadeRed.webp') center / 100% 100%; border-radius: 14px; display: grid; place-items: center; }
 .panel .close img { width: 26px; height: 26px; }
-.panel .head { display: flex; align-items: center; gap: 14px; margin: -18px -20px 12px; padding: 12px 20px; background: url('../img/ui/PlankEven2.webp') center / 100% 100%; border-radius: 26px 26px 0 0; }
+.panel .head { display: flex; align-items: center; gap: 14px; margin: -18px -20px 12px; padding: 0 2px; border-style: solid; border-width: 14px 18px; border-image: url('../img/ui/PlankEven2.webp') 46 fill / 14px 18px stretch; border-radius: 26px 26px 0 0; }
 .panel .body { overflow-y: auto; min-height: 0; }
 .panel .body::-webkit-scrollbar { width: 10px; } .panel .body::-webkit-scrollbar-thumb { background: var(--wood); border-radius: 5px; }
 
@@ -521,3 +521,27 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .cb-spr { background: #fff; border-radius: 10px; box-shadow: 0 0 0 2px var(--ink); padding: 3px; cursor: pointer; display: grid; place-items: center; }
 .cb-spr img { width: 52px; height: 52px; object-fit: contain; }
 .cb-spr:hover, .cb-spr.on { background: #ffe9a8; }
+
+/* last-updated stamp in Settings */
+.build-stamp { margin-top: 10px; text-align: right; font: 13px 'Pangolin', sans-serif; color: #8d8170; }
+
+/* thrown rock for snipes (game's Rock sprite) */
+.b-proj.rock { width: 46px; height: 43px; }
+
+/* randomizer buttons: one row */
+.rnd-acts { display: flex; gap: 10px; justify-content: center; margin-top: 4px; }
+.rnd-acts .obtn { font-size: 21px; padding: 8px 16px 11px; }
+.rnd-acts .obtn img { width: 26px; height: 26px; }
+
+/* hovering a pet in battle pauses the fight */
+.bpet.hovered .bp-sprite { filter: drop-shadow(0 0 6px #fff) drop-shadow(0 0 10px #ffe08a); }
+.bscene.held::after { content: 'Paused'; position: absolute; left: 50%; top: 96px; transform: translateX(-50%); z-index: 60; padding: 4px 14px 6px; border-radius: 12px; background: rgba(29,26,23,.72); color: #fff; font: 18px 'Lapsus'; pointer-events: none; }
+.bscene .bpet { pointer-events: auto; cursor: help; }
+
+/* per-pet "this turn" values in the pet editor */
+.ctx-box { margin-top: 12px; align-items: stretch; }
+.ctx-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.ctx-row { display: flex; align-items: center; gap: 10px; font: 16px 'Pangolin'; color: var(--ink); }
+.ctx-row > span { flex: 1; }
+.ctx-pic { width: 42px; height: 42px; object-fit: contain; }
+.ctx-pet { max-width: 260px; }

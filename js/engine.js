@@ -53,7 +53,7 @@
    */
   const PERKS = {
     // ---- before battle (before Start of battle abilities)
-    LovePotion: { t: 'beforeBattle', once: true, rep: true, fn: (B, p) => B.summon(p.side, B.idx(p) + 1, p.id, { atk: 5, hp: 5, lvl: p.lvl, src: p }) },
+    LovePotion: { t: 'beforeBattle', once: true, rep: true, fn: (B, p) => B.summon(p.side, B.idx(p) + 1, p.id, { atk: 5, hp: 5, lvl: p.lvl, src: p, ctx: p.ctx }) },
     Cherries: { t: 'beforeBattle', once: true, rep: true, fn: (B, p) => B.gainTrumpets(p.side, 2, p) },
     Pie: { t: 'beforeBattle', rep: true, fn: (B, p) => B.buff(p, 4, 3, p) },
     Pancakes: { t: 'beforeBattle', rep: true, fn: (B, p) => { for (const f of B.friendsOf(p)) B.buff(f, 2, 2, p); } },
@@ -96,7 +96,7 @@
     Seaweed: { t: 'beforeAttack', once: true, fn: (B, p) => B.transform(p, 'BabySeaUrchin', { src: p }) },
     // ---- faint (holder is gone; summons appear in its place)
     Honey: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'Bee', 1, 1) },
-    Mushroom: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, p.id, 1, 1, { lvl: p.lvl }) },
+    Mushroom: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, p.id, 1, 1, { lvl: p.lvl, ctx: p.ctx }) },
     Banana: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'Monkey', 4, 4) },
     CodRoe: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'Fish', 2, 3) },
     EasterEgg: { t: 'faint', rep: true, fn: (B, p, c) => summonHere(B, p, c.ev, 'WhiteKillerRabbit', 3, 3) },
@@ -144,10 +144,20 @@
       for (let s = 0; s < 2; s++) {
         for (const p of teams[s]) {
           if (!p || !this.D.pets[p.id]) continue;
-          this.t[s].push(this.makePet(p.id, s, p));
+          const pet = this.makePet(p.id, s, p);
+          if (p.ctx) pet.ctx = Object.assign({}, p.ctx);
+          const pre = this.A[p.id] && this.A[p.id].preBattle;
+          if (pre) pre(this, pet); // shop effects that carry into the fight (Okapi's rolls, Beluga Whale's swallowed pet)
+          pet.slot0 = p.slot != null ? p.slot : this.t[s].length; // slot it was put in (teams can have gaps)
+          this.t[s].push(pet);
         }
       }
+      // empty spaces left in the lineup are kept until the battle starts (Emu can use an empty front space)
+      this.gaps = this.t.some(t => t.some((p, i) => p.slot0 !== i));
     }
+
+    /** a shop/turn value for this pet: its own (set in the pet editor) or the Settings one */
+    optOf(p, key) { return p && p.ctx && p.ctx[key] != null && p.ctx[key] !== '' ? +p.ctx[key] : this.opts[key]; }
 
     // ---------------- pet helpers
     makePet(id, side, o = {}) {
@@ -167,7 +177,12 @@
     name(p) { return (this.D.pets[p.id] || {}).n || p.id; }
     tier(p) { return (this.D.pets[p.id] || {}).t || 1; }
     alive(p) { return p && p.onBoard && p.hp > 0; }
-    team(s) { return this.t[s].filter(p => this.alive(p)); }
+    team(s) { const sk = this.skip; return this.t[s].filter(p => this.alive(p) && !(sk && p !== sk.keep && sk.pred(p))); }
+    /** run fn while pets that already have perk `id` are skipped by targeting (perk givers pick the next pet instead) */
+    withPerkSkip(id, self, fn) {
+      const prev = this.skip; this.skip = { pred: p => !!(p.perk && p.perk.id === id), keep: self };
+      try { return fn(); } finally { this.skip = prev; }
+    }
     enemiesOf(p) { return this.team(1 - p.side); }
     friendsOf(p) { return this.team(p.side).filter(x => x !== p); }
     idx(p) { return this.t[p.side].indexOf(p); }
@@ -202,8 +217,9 @@
 
     // ---------------- logging
     snap() {
-      const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p) });
-      return { t: [this.t[0].filter(p => p.onBoard).map(s), this.t[1].filter(p => p.onBoard).map(s)], tr: this.trumpets.slice() };
+      const s = p => ({ u: p.uid, id: p.id, a: p.atk, h: p.hp, l: p.lvl, x: p.xp, p: p.perk ? p.perk.id : null, m: p.mana, tr: this.triggerInfo(p), s: this.gaps && p.slot0 != null ? p.slot0 : undefined, c: p.ctx || undefined, sw: p.swallowed ? p.swallowed.id : undefined });
+      const vis = p => p.onBoard && !p.swallowedBy;
+      return { t: [this.t[0].filter(vis).map(s), this.t[1].filter(vis).map(s)], tr: this.trumpets.slice() };
     }
     rec(kind, data = {}) {
       data.kind = kind; data.snap = this.snap();
@@ -220,7 +236,8 @@
       const add = (v, d, cap) => (d >= 0 ? Math.max(Math.min(v, cap), Math.min(cap, v + d)) : v + d);
       p.atk = Math.max(opts.minAtk || 0, add(p.atk, da, capOf(p.id, 'atk')));
       p.hp = add(p.hp, dh, capOf(p.id, 'hp'));
-      if (p.atk !== a0 || p.hp !== h0) this.rec('buff', { tgt: p.uid, src: src && src.uid, da: p.atk - a0, dh: p.hp - h0 });
+      // logged even when capped (a 50/50 pet shows +0/+0); ra / rh = which stats it tried to raise
+      if (p.atk !== a0 || p.hp !== h0 || da > 0 || dh > 0) this.rec('buff', { tgt: p.uid, src: src && src.uid, da: p.atk - a0, dh: p.hp - h0, ra: da !== 0, rh: dh !== 0 });
     }
     setStats(p, a, h, src) {
       const a0 = p.atk, h0 = p.hp;
@@ -397,7 +414,7 @@
       tgt.hurtCount++;
       if (src) src.dealtDamage = true;
       if (tgt.hp <= 0) tgt.killer = src;
-      this.rec('damage', { tgt: tgt.uid, src: src && src.uid, n: dealt, dk: kind });
+      this.rec('damage', { tgt: tgt.uid, src: src && src.uid, n: dealt, dk: kind, mana: opts.mana || undefined });
       this.emit('Hurt', { pet: tgt, src, n: dealt, kind });
       const hp = this.perkId(tgt);
       if (hp && PERKS[hp] && PERKS[hp].t === 'hurt') this.queue.push({ pet: tgt, ev: {}, perkFx: hp });
@@ -436,6 +453,11 @@
         xp: opts.lvl ? [0, 0, 2, 5][opts.lvl] : (opts.xp || 0), perk: opts.perk, mana: opts.mana,
       });
       if (opts.flags) Object.assign(p.flags, opts.flags);
+      // a copy of a pet (One Up / Mushroom, Pteranodon, Falcon, Tapir...) keeps its "this turn" values
+      if (opts.ctx) {
+        p.ctx = Object.assign({}, opts.ctx);
+        if (p.ctx.swallowed && (id === 'WhiteWhale' || id === 'SarcasticFringehead') && this.A[id] && this.A[id].preBattle) this.A[id].preBattle(this, p);
+      }
       const arr = this.t[side];
       // insert relative to on-board pets
       const ob = arr.filter(x => x.onBoard);
@@ -453,6 +475,7 @@
     }
     compact() { for (let s = 0; s < 2; s++) this.t[s] = this.t[s].filter(p => p.onBoard); }
     move(p, newIndex, src) {
+      this.gaps = false; // anything moving closes the starting gaps
       const arr = this.t[p.side];
       const i = arr.indexOf(p); if (i < 0) return;
       arr.splice(i, 1);
@@ -585,6 +608,13 @@
         case 'FriendlyLevelUp': ok(type === 'LevelUp' && e && e.side === p.side); break;
         case 'FriendGainedXp': ok(type === 'GainedXp' && friend); break;
         case 'EnemyFaints': ok(type === 'Faint' && enemy); break;
+        // eating food (PlayedSpellOn in the game data)
+        case 'EatsFood': ok(type === 'AteFood' && e === p); break;
+        case 'EatsApple': ok(type === 'AteFood' && e === p && /^Apple/.test(ev.food)); break;
+        case 'FriendAteFood': ok(type === 'AteFood' && friend); break;
+        case 'FriendlyAteFood': ok(type === 'AteFood' && e && e.side === p.side); break;
+        case 'PetAteFood': ok(type === 'AteFood'); break;
+        case 'FriendAteCorncob': ok(type === 'AteFood' && friend && ev.food === 'Corn'); break;
         default:
           if (trig && trig.startsWith('Count:')) {
             const [, what, nStr] = trig.split(':'); const need = +nStr;
@@ -610,7 +640,9 @@
       for (const q of list) key(q);
       const pri = q => (this.hasPerk(q.pet, 'Churros') ? 1 : this.hasPerk(q.pet, 'Macaron') ? -1 : 0);
       const isPerk = q => (q.perkFx || q.bap ? 0 : 1);
-      return list.sort((x, y) => (pri(y) - pri(x)) || (y.pet.atk - x.pet.atk) || (key(x) - key(y)) || (isPerk(x) - isPerk(y)));
+      // a fainted pet's own faint perks (Mushroom, Honey...) go before friends react to the faint (Pteranodon...)
+      const ownFaint = q => (q.perkFx && !q.pet.onBoard ? 1 : 0);
+      return list.sort((x, y) => (ownFaint(y) - ownFaint(x)) || (pri(y) - pri(x)) || (y.pet.atk - x.pet.atk) || (key(x) - key(y)) || (isPerk(x) - isPerk(y)));
     }
 
     /**
@@ -649,11 +681,16 @@
       if (limit && (p.uses[key] || 0) >= limit) return;
       p.uses[key] = (p.uses[key] || 0) + 1;
       if (q.tr === 'AfterFirstAttack') p.flags.firstAttackDone = true;
-      if (q.tr === 'EmptyFront') p.flags.emptyFrontDone = true;
+      if (q.tr === 'EmptyFront' && limit) p.flags.emptyFrontDone = true; // unlimited ones (Emu) can go again
       this.steps++;
       this.rec('ability', { src: p.uid, id: p.id, trig: q.tr });
       try {
-        fn({ B: this, self: p, ev: q.ev, lvl: p.lvl });
+        const at = this.log.length;
+        if (fn({ B: this, self: p, ev: q.ev, lvl: p.lvl }) === false) {
+          p.uses[key]--; this.steps--;
+          if (this.log.length === at) this.log.pop(); // drop the "activates" line: nothing happened
+          return;
+        }
         // Tiger behind: repeat the ability as if level = Tiger's level
         const t = this.t[p.side]; const i = t.indexOf(p);
         const tg = i >= 0 ? t[i + 1] : (q.ev && q.ev.slot != null ? t[q.ev.slot] : null);
@@ -712,7 +749,7 @@
         case 'Curse': { const f = B.pick(null, B.friendsOf(p), 1, 'friend')[0]; if (f) B.givePerk(f, 'Curse', p); break; }
         case 'ManaBurst': {
           const e = B.pick(p, B.enemiesOf(p), 1, 'enemy')[0];
-          if (e) B.damage(p, e, ev.n, 'ability', { raw: true });
+          if (e) B.damage(p, e, ev.n, 'ability', { raw: true, mana: true });
           break;
         }
       }
@@ -770,10 +807,33 @@
       }
     }
 
+    /**
+     * A pet eats food in battle (Farmer pets' Corncobs, Pony's Better Apples...). Applies the food and fires the
+     * food triggers: Eats food, Eats apple, Friend / Friendly / Pet ate food, Friend ate Corncob.
+     * mult = "with double/triple effect".
+     */
+    feed(p, food, src, mult = 1) {
+      if (!this.alive(p)) return false;
+      const name = { Corn: 'Corncob', Apple: 'Apple', Apple2: 'Better Apple', Apple3: 'Best Apple', Pear: 'Pear' }[food] || food;
+      this.rec('note', { tgt: p.uid, text: 'Ate ' + name });
+      const stats = { Apple: 1, Apple2: 2, Apple3: 3, Pear: 2 }[food];
+      if (food === 'Corn') { for (let i = 0; i < mult; i++) { if (p.atk <= p.hp) this.buff(p, 1, 0, src); else this.buff(p, 0, 1, src); } }
+      else if (stats) this.buff(p, stats * mult, stats * mult, src);
+      this.emit('AteFood', { pet: p, food, src });
+      return true;
+    }
+
+    /** swallowing knocks the pet out: it faints (faint abilities fire) and the swallower gets the knock out */
+    swallow(src, tgt, stored) {
+      src.swallowed = stored;
+      this.rec('swallow', { src: src.uid, tgt: tgt.uid });
+      tgt.swallowedBy = src; tgt.killer = src; tgt.hp = 0;
+    }
+
     release(p, slot) {
       const s = p.swallowed; p.swallowed = null;
       if (!s) return;
-      this.summon(s.side != null ? s.side : p.side, slot, s.id, { atk: s.atk, hp: s.hp, lvl: s.lvl, perk: s.perk, src: p });
+      this.summon(s.side != null ? s.side : p.side, s.front ? 0 : slot, s.id, { atk: s.atk, hp: s.hp, lvl: s.lvl, perk: s.perk, src: p, ctx: s.ctx });
     }
 
     checkRetriever() {
@@ -803,7 +863,10 @@
         this.emit('BeforeAttack', { pet: p, target: t });
         if (this.perkId(p)) this.queue.push({ pet: p, ev: { target: t }, bap: true });
       }
-      const pre = this.byAttackOrder(this.queue.splice(0));
+      // the attacking pets' own before-attack perks / ailments go first (Rambutan's mana is there for Caladrius),
+      // then everyone's Before attack / Before friend attacks abilities in attack order
+      const all = this.queue.splice(0);
+      const pre = this.byAttackOrder(all.filter(q => q.bap)).concat(this.byAttackOrder(all.filter(q => !q.bap)));
       for (const q of pre) this.execute(q);
       this.queue = saved.concat(this.queue);
     }
@@ -876,6 +939,12 @@
 
     run() {
       this.rec('start');
+      if (this.gaps) {
+        // front space left empty: "Empty front space" abilities (Emu...) go off first, then everyone moves up
+        for (let s = 0; s < 2; s++) if (this.t[s].length && Math.min(...this.t[s].map(p => p.slot0)) > 0) this.emit('EmptyFront', { side: s });
+        this.flush();
+        if (this.gaps) { this.gaps = false; this.rec('move', { closeGaps: true }); }
+      }
       // perks that fire before battle, in attack order
       this.phase = 'before';
       for (const p of this.team(0).concat(this.team(1)).sort((x, y) => y.atk - x.atk)) this.firePerk(p, 'beforeBattle');

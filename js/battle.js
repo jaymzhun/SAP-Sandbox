@@ -118,6 +118,17 @@
     // ------------------------------------------------------------ pets
     function petEl(side, d) {
       const e = el('div', `bpet side-${side}`);
+      e._d = d;
+      // hover: show the pet's card and hold the fight until the pointer leaves
+      e.addEventListener('pointerenter', ev => {
+        if (ev.pointerType === 'touch' || !ctx.petTip) return;
+        state.hold = e; e.classList.add('hovered'); root && root.classList.add('held');
+        ctx.showTip(e, ctx.petTip(e._d));
+      });
+      e.addEventListener('pointerleave', () => {
+        if (state.hold === e) state.hold = null; e.classList.remove('hovered'); root && root.classList.remove('held');
+        ctx.hideTip && ctx.hideTip();
+      });
       e.innerHTML = `
         <div class="bp-lvl"><span class="bp-lv-t">Lvl</span><span class="bp-lv-n"></span><div class="bp-xp"></div></div>
         <div class="bp-body">
@@ -164,12 +175,12 @@
         seen.add(d.u); state.names.set(d.u, { id: d.id, side });
         let e = state.els.get(d.u);
         if (!e) {
-          e = petEl(side, d); place(e, side, i);
+          e = petEl(side, d); place(e, side, d.s != null ? d.s : i);
           $r('.b-arena').append(e); state.els.set(d.u, e);
           if (opts.pop !== false) { puff(cx(side, i), SPRITE_CY, 3); e.classList.add('pop'); setTimeout(() => e.classList.remove('pop'), 420); }
         } else {
           if (e.dataset.id !== d.id) { puff(cx(side, i), SPRITE_CY, 3); e.classList.add('pop'); setTimeout(() => e.classList.remove('pop'), 420); }
-          update(e, d); place(e, side, i);
+          update(e, d); e._d = d; place(e, side, d.s != null ? d.s : i);
         }
       }));
       for (const [u, e] of state.els) if (!seen.has(u) && !e.classList.contains('gone')) { e.remove(); state.els.delete(u); }
@@ -210,7 +221,7 @@
     function hop(u, h = 26) {
       const e = state.els.get(u); if (!e) return Promise.resolve();
       return e.querySelector('.bp-body').animate([{ transform: 'translateY(0)' }, { transform: `translateY(-${h}px) scale(1.06)` }, { transform: 'translateY(0)' }],
-        { duration: 300 / state.speed, easing: 'ease-out' }).finished.catch(() => { });
+        { duration: 200 / state.speed, easing: 'ease-out' }).finished.catch(() => { });
     }
     function shake(u) {
       const e = state.els.get(u); if (!e) return;
@@ -220,14 +231,15 @@
     async function projectile(fromU, toU, kind, img) {
       const a = posOf(fromU), b = posOf(toU);
       if (!a || !b || fromU === toU) return;
-      const p = fxEl('b-proj ' + (img ? 'img' : kind || ''), a[0], a[1] - 30, img ? `<img src="${img}" alt="">` : '');
+      const p = fxEl('b-proj ' + (img ? 'img ' : '') + (kind || ''), a[0], a[1] - 30, img ? `<img src="${img}" alt="">` : '');
       const dx = b[0] - a[0], dy = b[1] - a[1];
-      const arc = Math.min(170, 70 + Math.abs(dx) * .25);
+      const arc = Math.min(130, 50 + Math.abs(dx) * .2);
       await p.animate([{ transform: 'translate(-50%,-50%) scale(.6) rotate(0deg)' },
         { transform: `translate(-50%,-50%) translate(${dx / 2}px,${dy / 2 - arc}px) scale(1.1) rotate(180deg)`, offset: .5 },
         { transform: `translate(-50%,-50%) translate(${dx}px,${dy}px) scale(.9) rotate(360deg)` }],
-        { duration: 380 / state.speed, easing: 'ease-in-out' }).finished.catch(() => { });
+        { duration: 250 / state.speed, easing: 'ease-in-out' }).finished.catch(() => { });
       p.remove();
+      if (kind === 'rock' && root) puff(b[0], b[1] - 20, 2, 18);
     }
     async function rocketIn(e, side, delay) {
       const body = e;
@@ -273,8 +285,9 @@
         case 'jump': return `${N(st.src)} jump-attacks ${N(st.tgt)}`;
         case 'damage': return `${N(st.tgt)} takes ${st.n} damage` + (st.src && st.src !== st.tgt ? ` from ${N(st.src)}` : '');
         case 'remove': return `${N(st.tgt)} loses ${-st.dh} health`;
+        case 'move': return st.closeGaps ? 'Pets move up into the empty spaces' : `${N(st.tgt)} moves`;
         case 'block': return `${N(st.tgt)} blocks the damage`;
-        case 'buff': { const t = (st.da ? `${st.da > 0 ? '+' : ''}${st.da} attack` : '') + (st.da && st.dh ? ', ' : '') + (st.dh ? `${st.dh > 0 ? '+' : ''}${st.dh} health` : ''); return t ? `${N(st.tgt)} ${t}` : null; }
+        case 'buff': { const a = st.da || st.ra, h = st.dh || st.rh; const t = (a ? `${st.da < 0 ? '' : '+'}${st.da || 0} attack` : '') + (a && h ? ', ' : '') + (h ? `${st.dh < 0 ? '' : '+'}${st.dh || 0} health` : ''); return t ? `${N(st.tgt)} ${t}${(st.ra && !st.da) || (st.rh && !st.dh) ? ' (at max)' : ''}` : null; }
         case 'perk': return st.perk ? `${N(st.tgt)} gains <b>${esc(perkName(st.perk))}</b>` : `${N(st.tgt)} loses <b>${esc(perkName(st.lost))}</b>`;
         case 'perkfx': return `${N(st.src)}'s <b>${esc(perkName(st.perk))}</b> activates`;
         case 'faint': return `${N(st.tgt)} faints`;
@@ -285,7 +298,7 @@
         case 'xp': return `${N(st.tgt)} gains ${st.n} experience${st.lvlup ? ' and levels up' : ''}`;
         case 'mana': return `${N(st.tgt)} gains ${st.n} mana`;
         case 'trumpet': return `${esc(state.meta.teams[st.side].name)} ${st.n > 0 ? 'gains' : 'spends'} ${Math.abs(st.n)} trumpet${Math.abs(st.n) === 1 ? '' : 's'}`;
-        case 'note': return esc(st.text);
+        case 'note': return st.tgt && sideOf(st.tgt) != null ? `${N(st.tgt)}: ${esc(st.text)}` : esc(st.text);
         case 'end': return `<b>${st.result === 'draw' ? 'Draw' : esc(state.meta.teams[st.result === 'win' ? 0 : 1].name) + ' wins'}</b>`;
       }
       return null;
@@ -312,8 +325,8 @@
         const team = snap.t[side];
         const jobs = team.map((d, i) => {
           state.names.set(d.u, { id: d.id, side });
-          const e = petEl(side, d); place(e, side, i); $r('.b-arena').append(e); state.els.set(d.u, e);
-          return rocketIn(e, side, (team.length - 1 - i) * 90);
+          const e = petEl(side, d); place(e, side, d.s != null ? d.s : i); $r('.b-arena').append(e); state.els.set(d.u, e);
+          return rocketIn(e, side, (team.length - 1 - (d.s != null ? d.s : i)) * 90);
         });
         await Promise.all(jobs);
         if (my !== gen) return;
@@ -326,13 +339,46 @@
       await W(300);
     }
 
+    // "+2/+2", "+3", "+0/+0" (capped pets still show what they were given)
+    const sgn = n => (n < 0 ? '' : '+') + n;
+    function statText(da, dh, ra, rh) {
+      const a = da || ra, h = dh || rh;
+      return a && h ? `${sgn(da || 0)}/${sgn(dh || 0)}` : a ? sgn(da || 0) : h ? sgn(dh || 0) : '';
+    }
+    const statKind = (da, dh, ra, rh) => { const a = da || ra, h = dh || rh; return a && !h ? 'atk' : h && !a ? 'hp' : 'both'; };
+    // hits and stat gains that one pet hands out at once play together (Hedgehog, Flamingo, Ant...)
+    const groupKey = st => !st.src ? '' : st.kind === 'damage' && st.dk !== 'attack' ? 'hit' : st.kind === 'remove' ? 'hit' : st.kind === 'buff' ? 'buff' : st.kind === 'perk' ? 'perk' : '';
+    async function multiStep(grp, my) {
+      const sp = state.speed, W = ms => wait(ms / sp).then(() => { if (my !== gen || !root) throw STALE; });
+      for (const st of grp) logLine(describe(st));
+      const kind = groupKey(grp[0]);
+      const tgts = [...new Set(grp.map(st => st.tgt))];
+      await Promise.all(tgts.filter(t => t !== grp[0].src).map(t => {
+        const pk = kind === 'perk' ? grp.find(st => st.tgt === t).perk : null;
+        if (kind === 'hit') return projectile(grp[0].src, t, 'rock', FX(grp.find(st => st.tgt === t).mana ? 'ManaRock' : 'Rock'));
+        return projectile(grp[0].src, t, kind === 'buff' ? 'heal' : '', pk ? foodImg(pk) : undefined);
+      }));
+      if (my !== gen || !root) throw STALE;
+      for (const t of tgts) {
+        const mine = grp.filter(st => st.tgt === t);
+        if (kind === 'hit') { shake(t); const n = mine.reduce((a, st) => a + (st.kind === 'damage' ? st.n : -(st.dh || 0)), 0); if (n) bigNumber(t, n); }
+        else if (kind === 'buff') {
+          const da = mine.reduce((a, st) => a + (st.da || 0), 0), dh = mine.reduce((a, st) => a + (st.dh || 0), 0);
+          const ra = mine.some(st => st.ra), rh = mine.some(st => st.rh);
+          const txt = statText(da, dh, ra, rh);
+          if (txt) floatText(t, txt, da < 0 || dh < 0 ? 'neg' : statKind(da, dh, ra, rh));
+        }
+      }
+      render(grp[grp.length - 1].snap);
+      await W(kind === 'buff' ? 110 : 140);
+    }
     async function step(st, my) {
       const sp = state.speed, W = ms => wait(ms / sp).then(() => { if (my !== gen || !root) throw STALE; });
       if (st.kind === 'summon' || st.kind === 'transform') st.snap.t.forEach((t, s) => t.forEach(d => state.names.set(d.u, { id: d.id, side: s })));
       logLine(describe(st));
       switch (st.kind) {
         case 'start': break;
-        case 'ability': await hop(st.src); render(st.snap); break;
+        case 'ability': hop(st.src); await W(110); render(st.snap); break;
         case 'attack': {
           const a = state.els.get(st.a), b = state.els.get(st.b);
           if (a && b) {
@@ -353,26 +399,26 @@
           break;
         }
         case 'damage': {
-          if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '');
+          if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX(st.mana ? 'ManaRock' : 'Rock'));
           shake(st.tgt); bigNumber(st.tgt, st.n);
-          render(st.snap); await W(st.dk === 'attack' ? 120 : 280); break;
+          render(st.snap); await W(st.dk === 'attack' ? 120 : 130); break;
         }
         case 'remove': {
-          if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '');
+          if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX('Rock'));
           shake(st.tgt); if (st.dh) bigNumber(st.tgt, -st.dh);
-          render(st.snap); await W(240); break;
+          render(st.snap); await W(130); break;
         }
         case 'block': floatText(st.tgt, 'Blocked!', 'block'); render(st.snap); await W(220); break;
         case 'buff': {
           if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'heal');
           const neg = st.da < 0 || st.dh < 0;
-          const t = st.da && st.dh ? `${st.da > 0 ? '+' : ''}${st.da}/${st.dh > 0 ? '+' : ''}${st.dh}` : st.da ? `${st.da > 0 ? '+' : ''}${st.da}` : st.dh ? `${st.dh > 0 ? '+' : ''}${st.dh}` : '';
-          if (t) floatText(st.tgt, t, neg ? 'neg' : st.da && !st.dh ? 'atk' : st.dh && !st.da ? 'hp' : 'both');
-          render(st.snap); await W(240); break;
+          const t = statText(st.da, st.dh, st.ra, st.rh);
+          if (t) floatText(st.tgt, t, neg ? 'neg' : statKind(st.da, st.dh, st.ra, st.rh));
+          render(st.snap); await W(110); break;
         }
         case 'perk':
           if (st.perk && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '', foodImg(st.perk));
-          render(st.snap); await W(220); break;
+          render(st.snap); await W(140); break;
         case 'perkfx': { const e = state.els.get(st.src); if (e) flash(e.querySelector('.bp-perk')); await hop(st.src, 14); render(st.snap); break; }
         case 'faint': await W(160); faintOut(st.tgt); await W(260); render(st.snap); break;
         case 'summon': render(st.snap); await W(320); break;
@@ -385,7 +431,7 @@
         }
         case 'transform': render(st.snap); await W(340); break;
         case 'xp': floatText(st.tgt, st.lvlup ? 'Level up!' : `+${st.n} xp`, 'xp'); render(st.snap); await W(280); break;
-        case 'mana': floatText(st.tgt, `+${st.n}`, 'mana'); render(st.snap); await W(180); break;
+        case 'mana': floatText(st.tgt, `+${st.n}`, 'mana'); render(st.snap); await W(110); break;
         case 'trumpet': render(st.snap); await W(150); break;
         case 'note': if (st.tgt) floatText(st.tgt, st.text, 'note'); await W(200); break;
         case 'end': render(st.snap); await W(700); if (my === gen) await result(st.result); break;
@@ -421,9 +467,12 @@
         await intro(log[0].snap, my);
         if (my !== gen) return;
         for (state.i = 1; state.i < log.length; state.i++) {
-          while (!state.playing && my === gen) await wait(80);
+          while ((!state.playing || holding()) && my === gen) await wait(80);
           if (my !== gen) return;
-          await step(log[state.i], my);
+          const st = log[state.i];
+          const grp = [st];
+          if (groupKey(st)) while (state.i + 1 < log.length && groupKey(log[state.i + 1]) === groupKey(st) && log[state.i + 1].src === st.src) grp.push(log[++state.i]);
+          if (grp.length > 1) await multiStep(grp, my); else await step(st, my);
           if (my !== gen) return;
         }
       } catch (e) { if (e !== STALE && my === gen) throw e; }
@@ -447,7 +496,13 @@
       if (my === gen) result(last.result);
     }
 
-    function stop() { gen++; if (root) { root.remove(); root = null; } }
+    // the hovered pet can faint / be swallowed under the pointer (no pointerleave): stop holding then
+    function holding() {
+      const e = state.hold; if (!e) return false;
+      if (!e.isConnected || e.classList.contains('gone')) { state.hold = null; if (root) root.classList.remove('held'); ctx.hideTip && ctx.hideTip(); return false; }
+      return true;
+    }
+    function stop() { gen++; state.hold = null; ctx.hideTip && ctx.hideTip(); if (root) { root.remove(); root = null; } }
     return { play, stop, skip, get speed() { return state.speed; } };
   }
 

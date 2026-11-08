@@ -1,1 +1,0 @@
-just run index.html and it should open in browser

@@ -6,7 +6,12 @@
   'use strict';
 
   // trigger corrections discovered while verifying (dump class collapses friend variants)
+  // abilities with no activation limit even though their trigger usually has one
+  const NO_LIMIT = new Set(['Emu']);
   const TRIGGER_FIX = {
+    // "PlayedSpellOn" in the game data = eating food (triggers from the wiki)
+    Rabbit: 'FriendlyAteFood', Weevil: 'FriendlyAteFood', Chimpanzee: 'FriendAteCorncob', Jerboa: 'EatsApple',
+    Seal: 'EatsFood', QuailChick: 'EatsFood', SarcasticFringehead: 'EatsFood', WhiteWhale: 'EatsFood',
     Shark: 'FriendFaints', Spinosaurus: 'FriendFaints', Lamprey: 'FriendFaints', ShimaEnaga: 'FriendFaints',
     Kitsune: 'FriendFaints', MuskOx: 'FriendAheadFaints', Ox: 'FriendAheadFaints', Tatzelwurm: 'FriendAheadFaints',
     Fly: 'FriendFaints', Pteranodon: 'FriendFaints', Mosasaurus: 'Shop', FlyingSquirrel: 'Shop',
@@ -31,7 +36,7 @@
   // activation limits checked on the wiki for each pet (number = same for all levels, array = per level)
   Object.assign(FAINT_LIMITS, {
     Pengobble: 2, AraripeManakin: 2, Bat: [1, 2, 3], Jackalope: 3, SakerFalcon: 3, AxehandleHound: 1, Hare: [1, 2, 3],
-    Falcon: 3, Hippo: 3, RuspolisTuraco: [1, 2, 3], SaigaAntelope: 3, WhiteBootedRacketTail: [1, 2, 3], Boitata: [2, 4, 6],
+    Seagull: [1, 2, 3], Rabbit: 3, Weevil: 3, Jerboa: 1, Falcon: 3, Hippo: 3, RuspolisTuraco: [1, 2, 3], SaigaAntelope: 3, WhiteBootedRacketTail: [1, 2, 3], Boitata: [2, 4, 6],
     LovelandFrogman: 1, Racoon: [1, 2, 3], HoodedSeal: 2, Pteranodon: [1, 2, 3], Reindeer: [1, 2, 3], Wildebeest: [1, 2, 3],
     AfterFirstAttackOnce: 1,
   });
@@ -90,6 +95,12 @@
 
     // -------------------------------------------------------------- targets
     // returns selector fn (ctx) => pets[]  or null if unparsed
+    /** give perk/ailment pk to the targets, skipping pets that already have it; false if nobody got it */
+    function giveTo(c, pk, tg, after) {
+      let n = 0;
+      c.B.withPerkSkip(pk, c.self, () => { for (const t of tg(c)) if (c.B.givePerk(t, pk, c.self)) { n++; if (after) after(t); } });
+      return n ? undefined : false;
+    }
     function target(str) {
       let s = str.trim().replace(/^the /i, '').replace(/ in battle$/, '');
       let m;
@@ -193,7 +204,7 @@
       let dbl = 1;
       if ((m = s.match(/^(.*?)(?: twice| thrice)? (?:for|with) (double|triple) effect$/i))) { s = m[1]; dbl = m[2].toLowerCase() === 'triple' ? 3 : 2; }
       if (dbl > 1) {
-        if ((m = s.match(/^Make (.+?) (Weak|Spooked|Cold|Inked|Crisp|Icky)$/i)) && (tg = target(m[1]))) { const ail = AIL[m[2].toLowerCase()]; return c => { for (const t of tg(c)) if (c.B.givePerk(t, ail, c.self)) t.perk.mult = dbl; }; }
+        if ((m = s.match(/^Make (.+?) (Weak|Spooked|Cold|Inked|Crisp|Icky)$/i)) && (tg = target(m[1]))) { const ail = AIL[m[2].toLowerCase()]; return c => giveTo(c, ail, tg, t => { t.perk.mult = dbl; }); }
         if ((m = s.match(/^Gain the (.+?) perk$/i)) && perkKey(m[1])) { const pk = perkKey(m[1]); return c => { if (c.B.givePerk(c.self, pk, c.self)) c.self.perk.mult = dbl; }; }
       }
       // compound "X and Y" handled by caller; here single clause
@@ -250,19 +261,19 @@
       if ((m = s.match(/^Gain \+(\d+) trumpets?$/i))) { const v = +m[1]; return c => c.B.gainTrumpets(c.self.side, v, c.self); }
       // ---- perks / ailments
       if ((m = s.match(/^Give (?:the )?(.+?) perk to (.+)$/i)) && perkKey(m[1]) && (tg = target(m[2]))) {
-        const pk = perkKey(m[1]); return c => { for (const t of tg(c)) c.B.givePerk(t, pk, c.self); };
+        const pk = perkKey(m[1]); return c => giveTo(c, pk, tg);
       }
       if ((m = s.match(/^Give (.+?) to (.+)$/i)) && perkKey(m[1]) && (tg = target(m[2]))) {
-        const pk = perkKey(m[1]); return c => { for (const t of tg(c)) c.B.givePerk(t, pk, c.self); };
+        const pk = perkKey(m[1]); return c => giveTo(c, pk, tg);
       }
       if ((m = s.match(/^Give (.+?) (?:the )?(.+?)(?: perk)?(?: until next turn)?$/i)) && perkKey(m[2]) && (tg = target(m[1]))) {
-        const pk = perkKey(m[2]); return c => { for (const t of tg(c)) c.B.givePerk(t, pk, c.self); };
+        const pk = perkKey(m[2]); return c => giveTo(c, pk, tg);
       }
       if ((m = s.match(/^Gain (?:the )?(.+?)(?: perk)?(?: until next turn)?$/i)) && perkKey(m[1])) {
         const pk = perkKey(m[1]); return c => c.B.givePerk(c.self, pk, c.self);
       }
       if ((m = s.match(/^Make (.+?) (?:(\d+)x )?(Weak|Spooked|Toasty|Cold|Inked|Crisp|Dazed|Sleepy|Tasty|Silly|Webbed|Confused|Cursed|Bloated|Icky|Cowardly)$/i)) && (tg = target(m[1]))) {
-        const ail = AIL[m[3].toLowerCase()]; return c => { for (const t of tg(c)) c.B.givePerk(t, ail, c.self); };
+        const ail = AIL[m[3].toLowerCase()]; return c => giveTo(c, ail, tg);
       }
       // ---- summon
       if ((m = s.match(/^Summon (one|two|three) (\d+)\/(\d+) (?:level (\d) )?(.+?)( up front| in the back| in its place| behind this)?( for the (?:enemy|opponent))?$/i))) {
@@ -314,7 +325,7 @@
         parts.push(a);
       }
       if (!parts.length) return { fn: null, status: shop ? 'shop' : 'none' };
-      return { fn: c => { for (const p of parts) p(c); }, status: 'ok' };
+      return { fn: c => { let did = false; for (const p of parts) if (p(c) !== false) did = true; return did ? undefined : false; }, status: 'ok' };
     }
 
     // -------------------------------------------------------------- specials
@@ -336,21 +347,16 @@
     S.Whale = (t, L) => c => {
       const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const tgt = f[i - 1];
       if (!tgt) return;
-      c.self.swallowed = { id: tgt.id, lvl: L, side: c.self.side };
-      c.B.rec('swallow', { src: c.self.uid, tgt: tgt.uid });
-      tgt.onBoard = false; c.B.compact();
-      c.B.emit('FriendFaints', { pet: tgt });
+      c.B.swallow(c.self, tgt, { id: tgt.id, lvl: L, side: c.self.side, ctx: tgt.ctx });
     };
     S.GoblinShark = (t) => { const [lim] = nums(t); return c => {
       const tg = H.E(c).find(e => e.hp <= lim); if (!tg) return;
-      c.self.swallowed = { id: tg.id, lvl: tg.lvl, side: tg.side, atk: tg.atk, hp: 1 };
-      c.B.rec('swallow', { src: c.self.uid, tgt: tg.uid }); tg.onBoard = false; c.B.compact();
+      c.B.swallow(c.self, tg, { id: tg.id, lvl: tg.lvl, side: tg.side, atk: tg.atk, hp: 1 });
     }; };
     S.Pelican = (t) => c => {
       const f = c.B.team(c.self.side); const i = f.indexOf(c.self);
       const tg = f.slice(0, i).reverse().find(p => c.B.hasPerk(p, 'Strawberry')); if (!tg) return;
-      c.self.swallowed = { id: 'Salmon', lvl: tg.lvl, side: c.self.side };
-      c.B.rec('swallow', { src: c.self.uid, tgt: tg.uid }); tg.onBoard = false; c.B.compact();
+      c.B.swallow(c.self, tg, { id: 'Salmon', lvl: tg.lvl, side: c.self.side });
     };
     S.AfricanWildDog = (t) => { const [d] = nums(t); return c => { const e = H.E(c)[1] || H.E(c)[0]; if (e) c.B.jumpAttack(c.self, e, d); }; };
     S.Takhi = (t) => { const [a, h] = nums(t); return c => { const p = H.sumAt(c, 'AfricanWildDog', a, h, { lvl: 1 }); if (p) { const e = c.B.enemiesOf(p)[1] || c.B.enemiesOf(p)[0]; if (e) c.B.jumpAttack(p, e, a); } }; };
@@ -387,7 +393,7 @@
     S.Macaque = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Orangutan', a, h, { at: c.B.idx(c.self) + 1, perk: c.self.perk && c.self.perk.id }); };
     S.OrchidMantis = (t) => { const [pc] = nums(t); return c => H.sumAt(c, 'OrchidMantis', Math.max(1, Math.floor(c.self.atk * pc / 100)), Math.max(1, Math.floor(c.self.hp * pc / 100)), { at: c.B.idx(c.self) + 1, flags: { noAbility: true } }); };
     S.Robin = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Nest', a, h, { at: c.B.idx(c.self) + 1, perk: 'Egg' }); };
-    S.Tapir = (t) => { const [a, h] = nums(t); return c => { const b = H.F(c).filter(p => p.id !== 'Tapir').slice(-1)[0]; if (b) H.sumAt(c, b.id, a, h, { at: 99, lvl: 1 }); }; };
+    S.Tapir = (t) => { const [a, h] = nums(t); return c => { const b = H.F(c).filter(p => p.id !== 'Tapir').slice(-1)[0]; if (b) H.sumAt(c, b.id, a, h, { at: 99, lvl: 1, ctx: b.ctx }); }; };
     S.Tadpole = (t) => { const [x] = nums(t); return c => { c.B.transform(c.self, 'Frog', { lvl: 1, src: c.self }); c.B.gainXp(c.self, x, c.self); }; };
     S.TaitaShrew = () => c => c.B.transform(c.self, 'Weasel', { lvl: 1, src: c.self });
     S.Tsuchinoko = (t) => { const [x] = nums(t); return c => { H.jumpToFront(c); c.B.emit('Jumped', { pet: c.self }); c.B.gainXp(c.self, x, c.self); }; };
@@ -425,7 +431,7 @@
     S.Sleipnir = (t) => { const [m, per] = nums(t); return c => { const f = H.F(c)[0]; if (f) c.B.gainMana(f, m * Math.floor(c.self.atk / (per || 2)), c.self); }; };
     S.SalmonofWisdom = (t) => { const [x] = nums(t); return c => { for (const p of H.F(c).slice(0, 2).concat(H.E(c).slice(0, 2))) c.B.gainXp(p, x, c.self); }; };
     S.Stegosaurus = (t) => { const [a, h] = nums(t); return c => { const f = c.B.pick(c.self, H.F(c).filter(p => !p.perk), 1, 'friend')[0]; if (f) c.B.buff(f, a, h, c.self); }; };
-    S.TerrorBird = (t) => c => { const f = H.F(c).find(p => c.B.hasPerk(p, 'Strawberry')); if (f) c.B.givePerk(f, 'Peanut', c.self); };
+    S.TerrorBird = (t) => c => { const f = H.F(c).find(p => c.B.hasPerk(p, 'Strawberry')); if (!f) return false; c.B.givePerk(f, 'Peanut', c.self); };
     S.Therizinosaurus = (t) => c => { const f = H.F(c).find(p => c.B.hasPerk(p, 'Strawberry')); if (f) c.B.givePerk(f, 'Coconut', c.self); };
     S.TreeKangaroo = (t, L) => c => {
       const e = H.E(c).filter(x => !x.perk).slice(-1)[0]; if (!e) return;
@@ -434,13 +440,13 @@
       for (let i = 0; i < L; i++) { c.B.rec('ability', { src: e.uid, id: e.id, trig: 'Activated' }); ab.levels[e.lvl - 1]({ B: c.B, self: e, ev: {}, lvl: e.lvl }); }
     };
     S.VampireParrot = (t) => { const [a, h] = nums(t); return c => { const s = new Set(H.F(c).filter(p => p.perk && c.B.isAilment(p.perk.id)).map(p => p.perk.id)); c.B.buff(c.self, a * s.size, h * s.size, c.self); }; };
-    S.Werewolf = (t) => { const [pc, mana] = nums(t); return c => { if (c.B.opts.turn % 2 === 0) c.B.buff(c.self, Math.floor(c.self.atk * pc / 100), Math.floor(c.self.hp * pc / 100), c.self); else c.B.gainMana(c.self, mana, c.self); }; };
-    S.WhiteBelliedHeron = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); if (i > 0) c.B.givePerk(f[i - 1], 'MeatBone', c.self); };
-    S.FarmerPig = (t) => c => { for (const f of adjacent(c, 1, false)) H.corn(c.B, f, 2, c.self); };
-    S.FarmerMouse = (t) => c => { const f = target('nearest friend behind')(c)[0]; if (f) H.corn(c.B, f, 1, c.self); };
-    S.FarmerCrow = (t) => { const [k] = nums(t); return c => { const f = target('nearest friend behind')(c)[0]; if (f) H.corn(c.B, f, 3 * (k || 3), c.self); }; };
+    S.Werewolf = (t) => { const [pc, mana] = nums(t); return c => { if (c.B.optOf(c.self, 'turn') % 2 === 0) c.B.buff(c.self, Math.floor(c.self.atk * pc / 100), Math.floor(c.self.hp * pc / 100), c.self); else c.B.gainMana(c.self, mana, c.self); }; };
+    S.WhiteBelliedHeron = () => c => giveTo(c, 'MeatBone', cc => { const f = cc.B.team(cc.self.side); const i = f.indexOf(cc.self); return i > 0 ? [f[i - 1]] : []; });
+    S.FarmerPig = (t) => c => { for (const f of adjacent(c, 1, false)) c.B.feed(f, 'Corn', c.self, 2); };
+    S.FarmerMouse = (t) => c => { const f = target('nearest friend behind')(c)[0]; if (f) c.B.feed(f, 'Corn', c.self); };
+    S.FarmerCrow = (t) => { const [k] = nums(t); return c => { const f = target('nearest friend behind')(c)[0]; if (f) for (let i = 0; i < 3; i++) c.B.feed(f, 'Corn', c.self, k || 3); }; };
     S.FarmerCat = () => 'shop';
-    S.Pony = () => c => { const f = target('nearest friend behind')(c)[0]; if (f) c.B.buff(f, 2, 2, c.self); };
+    S.Pony = (t, L) => c => { const f = target('nearest friend behind')(c)[0]; if (f) for (let i = 0; i < L; i++) c.B.feed(f, 'Apple2', c.self); };
     S.RedLippedBatfish = () => c => { const e = opp(c); if (!e) return; const k = H.randomPet(c.B, d => d.t === Math.max(1, c.B.tier(e) - 1) && /Faint/.test(d.tr)); if (k) c.B.transform(e, k, { base: true, lvl: 1, src: c.self }); };
     S.RolowayMonkey = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const ahead = f.slice(0, i).reverse().slice(0, 2); ahead.forEach((p, j) => { const k = H.randomPet(c.B, d => d.t === 2 + j && /Faint/.test(d.tr)); if (k) c.B.transform(p, k, { base: true, lvl: 1, src: c.self }); }); };
     S.SilkySifaka = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); for (const p of f.slice(i + 1, i + 3)) { const k = H.randomPet(c.B, d => d.t === 6 && /Faint/.test(d.tr)); if (k) c.B.transform(p, k, { base: true, lvl: 1, src: c.self }); } };
@@ -462,18 +468,18 @@
     S.BelugaSturgeon = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Dolphin', a, h, { at: 99, perk: 'RiceBall' }); };
     S.Deer = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Bus', a, h, { perk: 'Chili' }); };
     S.Hydra = (t) => { const [a, h, per] = nums(t); return c => { const k = Math.floor(c.self.atk / (per || 10)); for (let i = 0; i < k; i++) H.sumAt(c, 'HydraHead', a, h); }; };
-    S.Nessie = (t) => { const [a, h] = nums(t); return c => { const first = !c.B.boat || !c.B.boat[c.self.side]; (c.B.boat = c.B.boat || [false, false])[c.self.side] = true; const b = first ? 1 + c.B.opts.rolls : 0; H.sumAt(c, 'Bus', a + b, h + b); }; };
-    S.NightCrawler = (t) => { const [a] = nums(t); return c => H.sumAt(c, 'DayCrawler', a, 1); };
+    S.Nessie = (t) => { const [a, h] = nums(t); return c => { const first = !c.B.boat || !c.B.boat[c.self.side]; (c.B.boat = c.B.boat || [false, false])[c.self.side] = true; const b = first ? 1 + c.B.optOf(c.self, 'rolls') : 0; H.sumAt(c, 'Bus', a + b, h + b); }; };
+    S.NightCrawler = (t) => { const [a, per] = nums(t); return c => H.sumAt(c, 'DayCrawler', a, 1 + (per || 1) * (c.B.optOf(c.self, 'summoned') || 0)); };
     S.Osprey = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Groundhog', a, h); };
     S.Hirola = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'EthiopianWolf', a, h); };
     S.PatagonianMara = (t) => { const [tr] = nums(t); return c => { c.B.gainTrumpets(c.self.side, tr, c.self); c.B.summonRetriever(c.self.side); }; };
-    S.Pteranodon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Pteranodon') return; c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: it.lvl, src: c.self }); }; };
+    S.Pteranodon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Pteranodon') return false; if (c.B.t[c.self.side].filter(x => x.onBoard).length >= Engine.MAX_TEAM) return false; /* no room: don't use a trigger */ c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: it.lvl, src: c.self, ctx: it.ctx }); }; };
     S.Fly = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'FlyToken') return; c.B.summon(c.self.side, c.ev.slot, 'FlyToken', { atk: a, hp: h, src: c.self }); }; };
     S.ShimaEnaga = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || !(it.perk && it.perk.id === 'Strawberry')) return; const k = H.randomPet(c.B, d => true); if (k) c.B.summon(c.self.side, c.ev.slot, k, { atk: a, hp: h, src: c.self }); }; };
     S.Rat = (t) => { const [a, h] = nums(t); return c => c.B.summon(1 - c.self.side, 0, 'RatToken', { atk: a, hp: h, src: c.self, silent: true }); };
     S.Rooster = (t) => { const [hp, pc] = nums(t); return c => H.sumAt(c, 'Chick', Math.max(1, Math.floor(c.self.atk * (pc || 50) / 100)), hp); };
     S.SabertoothTiger = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'Mammoth', c.B.D.pets.Mammoth.a + a * c.self.hurtCount, c.B.D.pets.Mammoth.h + h * c.self.hurtCount); };
-    S.Slime = (t) => { const [a, h] = nums(t); return c => { const k = Math.floor(c.B.opts.battles / 2); for (let i = 0; i < k; i++) H.sumAt(c, 'SmallerSlime', a, h); }; };
+    S.Slime = (t) => { const [a, h] = nums(t); return c => { const k = Math.floor(c.B.optOf(c.self, 'battles') / 2); for (let i = 0; i < k; i++) H.sumAt(c, 'SmallerSlime', a, h); }; };
     S.Slug = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'SlugToken', a, h); };
     S.SlugToken = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'SlugToken2', a, h); };
     S.Tardigrade = (t) => { const [a, h] = nums(t); return c => { const p = H.sumAt(c, 'Tardigrade', a, h, { lvl: 1 }); if (p) c.B.givePerk(p, 'Deaf', c.self); }; };
@@ -494,9 +500,9 @@
     S.Tucuxi = (t) => { const [a, h] = nums(t); return c => { const b = H.F(c).slice(-1)[0]; if (b) { c.B.move(b, 0, c.self); c.B.buff(b, a, h, c.self); } }; };
     S.YellowBoxFish = (t) => { const [v] = nums(t); return c => { const all = c.B.team(0).concat(c.B.team(1)); const tg = all.sort((a, b) => b.hp - a.hp)[0]; if (tg) c.B.setStats(tg, v, v, c.self); }; };
     S.TogianBabirusa = (t) => { const [h] = nums(t); return c => { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) c.B.buff(e, 0, h, c.self); }; };
-    S.Phoenix = (t) => { const [a, h] = nums(t).slice(-2); return c => { for (const p of c.B.pick(c.self, c.B.team(0).concat(c.B.team(1)), 3, 'any')) c.B.givePerk(p, 'Burn', c.self); H.sumAt(c, 'BabyPhoenix', a, h); }; };
+    S.Phoenix = (t) => { const [a, h] = nums(t).slice(-2); return c => { giveTo(c, 'Burn', cc => cc.B.pick(cc.self, cc.B.team(0).concat(cc.B.team(1)), 3, 'any')); H.sumAt(c, 'BabyPhoenix', a, h); }; };
     S.SatanicLeafTailedGecko = () => c => { const ails = ['Weak', 'Scared', 'Toasty', 'Frozen', 'Ink', 'Burn', 'Deaf', 'Drowsy', 'Tasty', 'Silly', 'Web', 'Bloated', 'Acid']; for (const p of c.B.pick(c.self, c.B.team(0).concat(c.B.team(1)), 3, 'any')) c.B.givePerk(p, ails[c.B.rand(ails.length)], c.self); };
-    S.Walrus = () => c => { const f = c.B.pick(c.self, H.F(c), 1, 'friend')[0]; if (f) c.B.givePerk(f, 'PeanutButter', c.self); };
+    S.Walrus = () => c => giveTo(c, 'PeanutButter', cc => cc.B.pick(cc.self, H.F(cc), 1, 'friend'));
     S.Microbe = () => c => { for (const p of adjacent(c, 3, true)) c.B.givePerk(p, 'Weak', c.self); };
     S.Xenomorph = () => c => { for (const p of adjacent(c, 1, true)) c.B.givePerk(p, 'Acid', c.self); };
     S.PeacockSpider = () => c => { for (const p of adjacent(c, 1, true).filter(x => !x.perk)) c.B.givePerk(p, 'Scared', c.self); };
@@ -515,12 +521,12 @@
     S.Calygreyhound = (t) => { const [per] = nums(t); return c => { const m = c.self.mana; c.self.mana = 0; for (const e of H.E(c).sort((a, b) => b.hp - a.hp).slice(0, 2)) c.B.removeHealth(e, m * (per || 1), c.self); }; };
     S.Lusca = (t) => { const [per] = nums(t); return c => { const m = c.self.mana; c.self.mana = 0; const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) { c.B.removeAttack(e, m * per, c.self); c.B.removeHealth(e, m * per, c.self); } }; };
     S.Kitsune = (t) => { const [plus] = nums(t); return c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const tg = f[i - 1]; if (!tg) return; let m = plus; for (const p of f) if (p !== tg) { m += p.mana; p.mana = 0; } c.B.gainMana(tg, m, c.self); }; };
-    S.Caladrius = (t) => { const [m, a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.mana < m) return; it.mana -= m; c.B.buff(it, a, h, c.self); }; };
+    S.Caladrius = (t) => { const [m, a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.mana < m) return false; it.mana -= m; c.B.buff(it, a, h, c.self); }; };
     S.RuspolisTuraco = (t) => { const [m] = nums(t); return c => { const it = c.ev.pet; if (!it || !c.B.hasPerk(it, 'Strawberry')) return; c.B.losePerk(it, c.self); c.B.gainMana(it, m, c.self); }; };
     S.WhiteBootedRacketTail = (t) => { const [a] = nums(t); return c => { const it = c.ev.pet; if (!it) return; c.B.givePerk(it, 'Strawberry', c.self); c.B.buff(it, a, 0, c.self); }; };
     S.Jackalope = (t) => { const [a] = nums(t); return c => { const it = c.ev.pet; if (it) c.B.buff(it, it.flags.jumped ? a * 2 : a, 0, c.self); }; };
     S.LovelandFrogman = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (it && !it.flags.frogman) { it.flags.frogman = true; c.B.buff(it, a, h, c.self); } }; };
-    S.MarineIguana = () => c => { const it = c.ev.pet; if (it) c.B.givePerk(it, 'Melon', c.self); };
+    S.MarineIguana = () => c => { const it = c.ev.pet; if (!it || c.B.hasPerk(it, 'Melon')) return false; c.B.givePerk(it, 'Melon', c.self); };
     S.AxehandleHound = (t) => { const [d] = nums(t); return c => { const ids = H.E(c).map(p => p.id); if (new Set(ids).size < ids.length) for (const e of H.E(c)) c.B.damage(c.self, e, d, 'ability'); }; };
     S.Boitata = () => c => { const t = c.ev && c.ev.target; const e = t && c.B.alive(t) ? t : H.firstE(c); if (e) c.B.givePerk(e, 'Burn', c.self); };
     S.Dunkleosteus = (t) => c => { if (!c.self.perk || !c.B.isAilment(c.self.perk.id)) return; const a = c.B.losePerk(c.self, c.self); for (const e of H.E(c).slice(0, 2)) c.B.givePerk(e, a, c.self); };
@@ -528,7 +534,7 @@
     S.Mandarinfish = (t) => { const [a, h] = nums(t); return c => { if (c.self.perk && c.B.isAilment(c.self.perk.id)) { c.B.losePerk(c.self, c.self); c.B.buff(c.self, a, h, c.self); } }; };
     S.Racoon = () => c => { const t = c.ev && c.ev.target; const e = t && c.B.alive(t) ? t : H.firstE(c); if (e && e.perk && !c.B.isAilment(e.perk.id)) { const pk = c.B.losePerk(e, c.self); c.B.givePerk(c.self, pk, c.self); } };
     S.SakerFalcon = (t) => { const [a, h] = nums(t); return c => { if (H.E(c).length > c.B.team(c.self.side).length) c.B.buff(c.self, a, h, c.self); }; };
-    S.Toucan = (t) => { const [tier] = nums(t); return c => { const pk = c.self.perk && c.self.perk.id; if (!pk || c.B.isAilment(pk)) return; const f = target('nearest friend behind')(c)[0]; if (f) c.B.givePerk(f, pk, c.self); }; };
+    S.Toucan = (t) => { const [tier] = nums(t); return c => { const pk = c.self.perk && c.self.perk.id; if (!pk || c.B.isAilment(pk)) return false; return giveTo(c, pk, cc => target('nearest friend behind')(cc).slice(0, 1)); }; };
     S.Wildebeest = (t) => { const [k] = nums(t); return c => { if (c.B.spendTrumpets(c.self.side, k) >= k) c.B.givePerk(c.self, 'Coconut', c.self); }; };
     S.Wombat = () => c => { const e = H.E(c).find(x => /Faint/.test((c.B.A[x.id] || {}).trigger || '')); if (e) c.B.transform(c.self, e.id, { lvl: 1, src: c.self }); };
     S.AntLion = (t) => { const [d] = nums(t); return c => { H.jumpToFront(c); c.B.emit('Jumped', { pet: c.self }); for (const e of H.E(c).slice(0, 2)) c.B.damage(c.self, e, d, 'ability'); }; };
@@ -555,7 +561,7 @@
     S.FairyArmadillo = (t) => { const [h] = nums(t); return c => { if (!c.B.alive(c.self)) return; c.B.transform(c.self, 'FairyArmadilloBall', { src: c.self }); c.B.buff(c.self, 0, h, c.self); }; };
     S.Lizard = (t) => { const [a, h] = nums(t); return c => H.sumAt(c, 'LizardToken', a, h, { at: c.B.idx(c.self) + 1 }); };
     S.EgyptianVulture = () => c => { const f = c.B.team(c.self.side); const i = f.indexOf(c.self); const tg = f.slice(i + 1).find(p => /Faint/.test((c.B.A[p.id] || {}).trigger || '')); if (!tg) return; const ab = c.B.A[tg.id]; if (!ab.levels[tg.lvl - 1]) return; c.B.rec('ability', { src: tg.uid, id: tg.id, trig: 'Activated' }); ab.levels[tg.lvl - 1]({ B: c.B, self: tg, ev: { slot: c.B.idx(tg) + 1 }, lvl: tg.lvl }); };
-    S.Falcon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Falcon') return; c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: 1, src: c.self }); }; };
+    S.Falcon = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it || it.id === 'Falcon') return false; if (c.B.t[c.self.side].filter(x => x.onBoard).length >= Engine.MAX_TEAM) return false; /* no room: don't use a trigger */ c.B.summon(c.self.side, c.B.idx(c.self) + 1, it.id, { atk: a, hp: h, lvl: 1, src: c.self, ctx: it.ctx }); }; };
     S.Rhino = (t) => { const [d] = nums(t); return c => { const e = H.firstE(c); if (e) c.B.damage(c.self, e, c.B.tier(e) === 1 ? d * 2 : d, 'ability'); }; };
     S.Alpaca = (t) => { const [x] = nums(t); return c => { const it = c.ev.pet; if (it && it.id !== 'Alpaca') c.B.gainXp(it, x * 3, c.self); }; };
     S.Amalgam = (t) => { const [a, m] = nums(t); return c => { const it = c.ev.pet; if (!it) return; c.B.buff(it, a, 0, c.self); c.B.gainMana(it, m, c.self); c.B.givePerk(it, 'Scared', c.self); }; };
@@ -563,7 +569,10 @@
     S.GermanShepard = (t) => { const [pc] = nums(t); return c => { const it = c.ev.pet; if (it) c.B.buff(it, Math.floor(c.self.atk * pc / 100), 0, c.self); }; };
     S.QueenBee = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (!it) return; c.B.buff(it, a, h, c.self); }; };
     S.Salmon = (t) => { const [d, per] = nums(t); return c => { const k = Math.max(1, Math.floor(c.self.hp / (per || 25))); for (let i = 0; i < k; i++) { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) c.B.damage(c.self, e, d, 'ability'); } }; };
-    S.Seagull = () => c => { const it = c.ev.pet; if (it && c.self.perk && !c.B.isAilment(c.self.perk.id)) c.B.givePerk(it, c.self.perk.id, c.self); };
+    S.SarcasticFringehead = () => 'shop'; // swallows a shop pet: nothing to do in battle
+    S.QuailChick = () => c => c.B.transform(c.self, 'Quail', { src: c.self });
+    S.Quail = (t) => { const [a, h] = nums(t); return c => { const f = H.F(c)[0]; if (f) c.B.buff(f, 2 * a, 2 * h, c.self); }; };
+    S.Seagull = () => c => { const it = c.ev.pet, pk = c.self.perk && c.self.perk.id; if (!it || !pk || c.B.isAilment(pk) || c.B.hasPerk(it, pk)) return false; return c.B.givePerk(it, pk, c.self) ? undefined : false; };
     S.Pheasant = () => c => { const it = c.ev.pet; if (it) c.B.givePerk(it, 'Strawberry', c.self); };
     S.Axolotl = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (it) c.B.buff(it, a, h, c.self); }; };
     S.Unicorn = (t) => { const [a, h] = nums(t); return c => { const it = c.ev.pet; if (it) { c.B.losePerk(it, c.self); c.B.buff(it, a, h, c.self); } }; };
@@ -591,26 +600,26 @@
     S.Ox = (t) => { const [a] = nums(t); return c => { c.B.givePerk(c.self, 'Melon', c.self); c.B.buff(c.self, a, 0, c.self); }; };
     S.EthiopianWolf = (t) => { const [a] = nums(t); return c => { const e = H.firstE(c); if (e) c.B.removeAttack(e, a, c.self); }; };
     S.HoopoeBird = (t) => { const [d] = nums(t); return c => { const e = H.E(c); for (const x of e.length > 1 ? [e[0], e[e.length - 1]] : e) c.B.damage(c.self, x, d, 'ability'); }; };
-    S.Olm = (t) => c => { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) c.B.givePerk(e, 'Scared', c.self); };
+    S.Olm = (t, L) => c => { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e && c.B.givePerk(e, 'Scared', c.self)) e.perk.mult = 1 + L * (c.B.optOf(c.self, 'rolls') || 0); };
     S.VolcanoSnail = () => c => { const e = c.B.pick(c.self, H.E(c).filter(x => !x.perk), 1, 'enemy')[0]; if (e) c.B.givePerk(e, 'Toasty', c.self); };
     S.ElephantSeal = (t) => { const [a, h] = nums(t); return c => { for (const f of c.B.pick(c.self, H.F(c), 3, 'friend')) c.B.buff(f, a, h, c.self); }; };
     S.Dimetrodon = (t) => { const [a, h, ba, bh] = nums(t); return c => { const k = H.randomPet(c.B, d => d.t === c.B.tier(c.self)); const p = c.B.team(c.self.side).length < 5 && k ? H.sumAt(c, k, a, h, { at: c.B.idx(c.self) + 1 }) : null; if (!p) for (const f of H.F(c)) c.B.buff(f, ba, bh, c.self); }; };
     S.HumpheadWrasse = (t) => { const [pc] = nums(t); return c => { const e = H.E(c).sort((a, b) => b.atk - a.atk)[0]; if (e) c.B.removeAttack(e, Math.floor(e.atk * pc / 100), c.self); }; };
-    S.ManaHound = (t) => { const [m, max] = nums(t); return c => { const f = target('nearest friend ahead')(c)[0]; const r = Math.min(c.B.opts.rolls, max || 3); if (f && r) c.B.gainMana(f, m * r, c.self); }; };
-    S.Fossa = (t) => { const [h] = nums(t); return c => { for (const e of H.E(c).slice(0, 2)) c.B.removeHealth(e, h * c.B.opts.rolls, c.self); }; };
-    S.Bunyip = (t) => { const [h, max] = nums(t); return c => c.B.buff(c.self, 0, h * Math.min(c.B.opts.rolls, max), c.self); };
-    S.Platybelodon = (t) => { const [k, max] = nums(t); return c => c.B.gainTrumpets(c.self.side, k * Math.min(c.B.opts.rolls, max || 8), c.self); };
-    S.Hippocampus = (t) => { const [m] = nums(t); return c => c.B.gainMana(c.self, m * c.B.opts.rolls, c.self); };
+    S.ManaHound = (t) => { const [m, max] = nums(t); return c => { const f = target('nearest friend ahead')(c)[0]; const r = Math.min(c.B.optOf(c.self, 'rolls'), max || 3); if (f && r) c.B.gainMana(f, m * r, c.self); }; };
+    S.Fossa = (t) => { const [h] = nums(t); return c => { for (const e of H.E(c).slice(0, 2)) c.B.removeHealth(e, h * c.B.optOf(c.self, 'rolls'), c.self); }; };
+    S.Bunyip = (t) => { const [h, max] = nums(t); return c => c.B.buff(c.self, 0, h * Math.min(c.B.optOf(c.self, 'rolls'), max), c.self); };
+    S.Platybelodon = (t) => { const [k, max] = nums(t); return c => c.B.gainTrumpets(c.self.side, k * Math.min(c.B.optOf(c.self, 'rolls'), max || 8), c.self); };
+    S.Hippocampus = (t) => { const [m] = nums(t); return c => c.B.gainMana(c.self, m * c.B.optOf(c.self, 'rolls'), c.self); };
 
     S.Blobfish = (t, L) => { const [x] = nums(t); return c => { for (const f of target((L >= 2 ? 'two' : 'one') + ' nearest friends behind')(c)) c.B.gainXp(f, x, c.self); }; };
     S.BrazillianTreehopper = () => c => { const e = H.E(c).sort((a, b) => b.hp - a.hp)[0]; if (!e) return; const tot = e.atk + e.hp; const a = 1 + c.B.rand(Math.max(1, tot - 1)); c.B.setStats(e, a, Math.max(1, tot - a), c.self); };
     const usefulPerks = (B, tier) => Object.keys(B.D.foods).filter(k => B.D.foods[k].r && (tier == null || B.D.foods[k].t === tier) && Engine.USEFUL_PERKS.has(k) && !['Pepper', 'LovePotion'].includes(k));
     S.Mink = () => c => { const pool = usefulPerks(c.B, Math.max(1, c.B.tier(c.self) - 1)); if (pool.length) c.B.givePerk(c.self, pool[c.B.rand(pool.length)], c.self); };
     S.GoodDog = () => c => { const pool = usefulPerks(c.B); for (const f of H.F(c)) c.B.givePerk(f, pool[c.B.rand(pool.length)], c.self); };
-    S.BlueFootedBooby = (t) => { const [k] = nums(t); return c => { if (c.B.spendTrumpets(c.self.side, k) < k) return; const f = target('nearest friend behind')(c)[0]; if (f) c.B.givePerk(f, 'WaterMelon', c.self); }; };
+    S.BlueFootedBooby = (t) => { const [k] = nums(t); return c => { const f = c.B.withPerkSkip('WaterMelon', c.self, () => target('nearest friend behind')(c)[0]); if (!f || c.B.trumpets[c.self.side] < k) return false; c.B.spendTrumpets(c.self.side, k); c.B.givePerk(f, 'WaterMelon', c.self); }; };
     S.Markhor = (t) => { const [k, a, h] = nums(t); return c => { if (c.B.spendTrumpets(c.self.side, k) < k) return; const fs = H.F(c); if (!fs.length) return; for (let i = 0; i < a; i++) c.B.buff(fs[i % fs.length], 1, 0, c.self); for (let i = 0; i < h; i++) c.B.buff(fs[i % fs.length], 0, 1, c.self); }; };
-    S.Ammonite = () => c => { const f = target('nearest friend behind')(c)[0]; if (f) { c.B.transform(f, 'MimicOctopus', { lvl: 1, src: c.self }); c.B.gainXp(f, Math.floor(c.B.opts.rolls / 2), c.self); } };
-    S.EagleOwl = (t) => { const [a, h] = nums(t); return c => { const k = c.B.opts.battles; for (const f of c.B.pick(c.self, H.F(c), 3, 'friend')) c.B.buff(f, a * k, h * k, c.self); }; };
+    S.Ammonite = () => c => { const f = target('nearest friend behind')(c)[0]; if (f) { c.B.transform(f, 'MimicOctopus', { lvl: 1, src: c.self }); c.B.gainXp(f, Math.floor(c.B.optOf(c.self, 'rolls') / 2), c.self); } };
+    S.EagleOwl = (t) => { const [a, h] = nums(t); return c => { const k = c.B.optOf(c.self, 'battles'); for (const f of c.B.pick(c.self, H.F(c), 3, 'friend')) c.B.buff(f, a * k, h * k, c.self); }; };
     S.BrahmaChicken = (t) => { const [a, h] = nums(t); return c => { for (const f of c.B.shuffle(H.F(c).filter(p => p.dealtDamage)).slice(0, 3)) c.B.buff(f, a, h, c.self); }; };
     S.Cuckoo = (t) => { const [a, h] = nums(t); return c => { const used = c.B.cuckoo = c.B.cuckoo || [0, 0]; if (used[c.self.side] >= 2) return; used[c.self.side]++; c.B.summon(1 - c.self.side, 0, 'CuckooBaby', { atk: a, hp: h, src: c.self }); }; };
     S.DesertRainFrog = (t) => { const [k] = nums(t); return c => { if (c.B.spendTrumpets(c.self.side, k) < k) return; const pk = H.randomPet(c.B, d => d.t === Math.min(6, c.B.tier(c.self) + 1) && /Faint/.test(d.tr)); if (pk) c.B.transform(c.self, pk, { base: true, lvl: 1, src: c.self }); }; };
@@ -622,12 +631,12 @@
     S.AyeAye = (t) => { const [a, h] = nums(t); return c => { for (let i = 0; i < 2; i++) H.sumAt(c, 'Lemur', c.B.D.pets.Lemur.a, c.B.D.pets.Lemur.h, { at: c.B.idx(c.self) + 1 }); for (const f of c.B.team(c.self.side)) c.B.buff(f, a, h, c.self); }; };
     S.GreenSeaTurtle = (t) => { const [b] = nums(t); return c => { for (const f of c.B.team(c.self.side)) if (c.B.givePerk(f, 'Melon', c.self)) f.perk.mult = b / 20; }; };
     // abilities that count shop actions: use the values from Settings
-    S.DungBeetle = (t) => { const [d, , max] = nums(t); return c => { const k = Math.min(c.B.opts.foodEaten, max || 3); const e = H.E(c).sort((a, b) => a.hp - b.hp)[0]; if (e && k) c.B.damage(c.self, e, d * k, 'ability'); }; };
-    S.BlueJay = (t) => { const [a, h] = nums(t); return c => { const k = c.B.opts.foodEaten; if (k) for (const f of c.B.pick(c.self, H.F(c), 3, 'friend')) c.B.buff(f, a * k, h * k, c.self); }; };
-    S.BlackBear = (t) => { const [h] = nums(t); return c => { const k = c.B.opts.foodEaten; const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e && k) c.B.removeHealth(e, h * k, c.self); }; };
-    S.GiantPangasius = (t) => { const [d] = nums(t); return c => { for (let i = 0; i < c.B.opts.transforms; i++) { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) c.B.damage(c.self, e, d, 'ability'); } }; };
-    S.Meerkat = (t) => { const [a, per] = nums(t); return c => { const k = Math.floor(c.B.opts.goldSpent / (per || 4)); if (k) for (const f of adjacent(c, 1, false)) c.B.buff(f, a * k, 0, c.self); }; };
-    S.JerseyDevil = (t) => { const [a, h, max] = nums(t); return c => { const it = c.ev.pet; const k = Math.min(c.B.opts.lvl3Sold, max || 5); if (it && k) c.B.buff(it, a * k, h * k, c.self); }; };
+    S.DungBeetle = (t) => { const [d, , max] = nums(t); return c => { const k = Math.min(c.B.optOf(c.self, 'foodEaten'), max || 3); const e = H.E(c).sort((a, b) => a.hp - b.hp)[0]; if (e && k) c.B.damage(c.self, e, d * k, 'ability'); }; };
+    S.BlueJay = (t) => { const [a, h] = nums(t); return c => { const k = c.B.optOf(c.self, 'foodEaten'); if (k) for (const f of c.B.pick(c.self, H.F(c), 3, 'friend')) c.B.buff(f, a * k, h * k, c.self); }; };
+    S.BlackBear = (t) => { const [h] = nums(t); return c => { const k = c.B.optOf(c.self, 'foodEaten'); const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e && k) c.B.removeHealth(e, h * k, c.self); }; };
+    S.GiantPangasius = (t) => { const [d] = nums(t); return c => { for (let i = 0; i < c.B.optOf(c.self, 'transforms'); i++) { const e = c.B.pick(c.self, H.E(c), 1, 'enemy')[0]; if (e) c.B.damage(c.self, e, d, 'ability'); } }; };
+    S.Meerkat = (t) => { const [a, per] = nums(t); return c => { const k = Math.floor(c.B.optOf(c.self, 'goldSpent') / (per || 4)); if (k) for (const f of adjacent(c, 1, false)) c.B.buff(f, a * k, 0, c.self); }; };
+    S.JerseyDevil = (t) => { const [a, h, max] = nums(t); return c => { const it = c.ev.pet; const k = Math.min(c.B.optOf(c.self, 'lvl3Sold'), max || 5); if (it && k) c.B.buff(it, a * k, h * k, c.self); }; };
     // depend on shop history (food eaten / transformations this turn): nothing to count in a sandbox battle
     for (const k of ['Locust', 'Dugong', 'Tanystropheus', 'Jackal']) S[k] = () => 'shop';
 
@@ -645,19 +654,19 @@
     ET.Siamese = (t) => { const [a] = nums(t); return c => { for (const f of adjacent(c, 1, false)) c.B.buff(f, a, 0, c.self); }; };
     ET.Baku = (t) => { const [h] = nums(t); return c => { for (const f of c.B.shuffle(H.F(c).filter(f => ail(c.B, f))).slice(0, 2)) { c.B.losePerk(f, c.self, 'used'); c.B.buff(f, 0, h, c.self); } }; };
     ET.Leafling = (t) => { const [a] = nums(t); return c => { const f = ahead(c, 1)[0]; if (f) { c.B.buff(f, a, 0, c.self); c.B.givePerk(f, 'Scared', c.self); } }; };
-    ET.Amphisbaena = (t) => { const [a, h] = nums(t); return c => { const f = ahead(c, 1)[0]; if (f) c.B.buff(f, c.B.opts.turn % 2 ? a : 0, c.B.opts.turn % 2 ? 0 : h, c.self); }; };
-    ET.FarmerChicken = (t, L) => c => { for (const f of ahead(c, L)) H.corn(c.B, f, 1, c.self); };
-    ET.FarmerDog = (t, L) => c => { for (const f of H.F(c)) H.corn(c.B, f, L, c.self); };
+    ET.Amphisbaena = (t) => { const [a, h] = nums(t); return c => { const f = ahead(c, 1)[0]; if (f) c.B.buff(f, c.B.optOf(c.self, 'turn') % 2 ? a : 0, c.B.optOf(c.self, 'turn') % 2 ? 0 : h, c.self); }; };
+    ET.FarmerChicken = (t, L) => c => { for (const f of ahead(c, L)) c.B.feed(f, 'Corn', c.self); };
+    ET.FarmerDog = (t, L) => c => { for (const f of H.F(c)) for (let i = 0; i < L; i++) c.B.feed(f, 'Corn', c.self); };
     ET.Saola = (t) => { const [a, h] = nums(t); return c => { const f = H.F(c).sort((x, y) => y.atk - x.atk)[0]; if (f) { c.B.removeAttack(f, a, c.self); c.B.buff(f, 0, h, c.self); } }; };
     ET.Yak = (t) => { const [d, a] = nums(t); return c => { c.B.damage(c.self, c.self, d, 'ability'); if (c.B.alive(c.self)) c.B.buff(c.self, a, 0, c.self); }; };
     ET.Baboon = (t) => { const [a, h] = nums(t); return c => { const f = c.B.pick(c.self, H.F(c).filter(f => c.B.tier(f) >= shopTier(c.B)), 1, 'friend')[0]; if (f) c.B.buff(f, a, h, c.self); }; };
-    ET.Barnacle = (t) => { const [x] = nums(t); return c => { if (!c.B.opts.rolls) c.B.gainXp(c.self, x, c.self); }; };
+    ET.Barnacle = (t) => { const [x] = nums(t); return c => { if (!c.B.optOf(c.self, 'rolls')) c.B.gainXp(c.self, x, c.self); }; };
     ET.Leech = (t) => { const [d] = nums(t); return c => { const f = ahead(c, 1)[0]; if (!f) return; const h0 = f.hp; c.B.damage(c.self, f, d, 'ability'); const dealt = Math.max(0, h0 - Math.max(0, f.hp)); if (dealt) c.B.buff(c.self, 0, dealt, c.self); }; };
     ET.Wendigo = () => c => { const f = ahead(c, 1)[0]; if (f) c.B.removeHealth(f, f.hp, c.self); };
     ET.Angelshark = (t) => { const [k] = nums(t); return c => { for (const f of H.F(c)) c.B.buff(f, f.atk > f.hp ? k : 0, f.atk > f.hp ? 0 : k, c.self); }; };
     ET.Manatee = (t) => { const [d, a, h] = nums(t); return c => { c.B.damage(c.self, c.self, d, 'ability'); const f = ahead(c, 1)[0]; if (f) c.B.buff(f, a, h, c.self); }; };
     ET.Rootler = (t) => { const [a, h] = nums(t); return c => { for (const f of c.B.pick(c.self, H.F(c).filter(f => f.hp < c.self.hp), 2, 'friend')) c.B.buff(f, a, h, c.self); }; };
-    ET.Sandworm = (t) => { const [a, h, per, max] = nums(t); return c => { const k = Math.floor(Math.min(c.B.opts.rolls, max || 8) / (per || 4)); if (k) for (const f of adjacent(c, 1, false)) c.B.buff(f, a * k, h * k, c.self); }; };
+    ET.Sandworm = (t) => { const [a, h, per, max] = nums(t); return c => { const k = Math.floor(Math.min(c.B.optOf(c.self, 'rolls'), max || 8) / (per || 4)); if (k) for (const f of adjacent(c, 1, false)) c.B.buff(f, a * k, h * k, c.self); }; };
     ET.Sealion = (t) => { const [a, h] = nums(t); return c => { for (const f of behindAll(c)) c.B.buff(f, a, 0, c.self); for (const f of aheadAll(c)) c.B.buff(f, 0, h, c.self); }; };
     ET.ThorGoat1 = (t) => { const [h] = nums(t); return c => { const f = c.B.pick(c.self, H.F(c).filter(f => f.id === 'ThorGoat2'), 1, 'friend')[0]; if (f) c.B.buff(f, 0, h, c.self); }; };
     ET.ThorGoat2 = (t) => { const [a] = nums(t); return c => { const f = c.B.pick(c.self, H.F(c).filter(f => f.id === 'ThorGoat1'), 1, 'friend')[0]; if (f) c.B.buff(f, a, 0, c.self); }; };
@@ -721,7 +730,7 @@
         limit = per.every(x => x === per[0]) ? per[0] : per;
       }
       if (/Works on one (friend|enemy)/i.test(fp + def.ab[0]) && !limit) limit = 1;
-      if (!limit && (trig === 'AfterFirstAttack' || trig === 'EmptyFront')) limit = 1;
+      if (!limit && (trig === 'AfterFirstAttack' || (trig === 'EmptyFront' && !NO_LIMIT.has(key)))) limit = 1;
       out[key] = { trigger: trig, levels, limit };
       status[key] = { status: st, why, trigger: trig };
       // End turn abilities, compiled so Pink Robin can activate them in battle
@@ -756,6 +765,11 @@
       const limit = lim.some(Boolean) ? lim : 0;
       return { ability: { trigger: def.trigger, levels, limit }, status: { status: levels.some(Boolean) ? 'ok' : 'unsupported', why: '', trigger: def.trigger }, errors };
     }
+    // Okapi: "Roll: gain +L/+L until next turn" -> its rolls this turn are already on it in battle
+    if (out.Okapi) out.Okapi.preBattle = (B, p) => { const k = B.optOf(p, 'rolls') || 0; if (k) { p.atk = Math.min(50, p.atk + p.lvl * k); p.hp = Math.min(50, p.hp + p.lvl * k); } };
+    // Beluga Whale / Sarcastic Fringehead: the shop pet they swallowed comes out when they faint
+    if (out.WhiteWhale) out.WhiteWhale.preBattle = (B, p) => { const id = p.ctx && p.ctx.swallowed; const d = id && B.D.pets[id]; if (d) p.swallowed = { id, lvl: p.lvl, side: p.side, atk: Math.min(50, d.a * p.lvl), hp: Math.min(50, d.h * p.lvl) }; };
+    if (out.SarcasticFringehead) out.SarcasticFringehead.preBattle = (B, p) => { const id = p.ctx && p.ctx.swallowed; if (id && B.D.pets[id]) p.swallowed = { id, lvl: p.lvl, side: 1 - p.side, atk: 1, hp: 1, front: true }; };
     return { abilities: out, status, normText, compileCustom };
   }
 

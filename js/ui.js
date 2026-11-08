@@ -26,7 +26,7 @@
   const wait = ms => new Promise(r => setTimeout(r, ms));
 
   // ------------------------------------------------------------------ labels
-  const TRIG_LABEL = { EndTurn: 'End turn (Pink Robin)', SOB: 'Start of battle', BeforeBattle: 'Before battle', BeforeAttack: 'Before attack', BeforeFriendAttacks: 'Before friend attacks',
+  const TRIG_LABEL = { EatsFood: 'Eats food', EatsApple: 'Eats apple', FriendAteFood: 'Friend ate food', FriendlyAteFood: 'Friendly ate food', PetAteFood: 'Pet ate food', FriendAteCorncob: 'Friend ate Corncob', EndTurn: 'End turn (Pink Robin)', SOB: 'Start of battle', BeforeBattle: 'Before battle', BeforeAttack: 'Before attack', BeforeFriendAttacks: 'Before friend attacks',
     Hurt: 'Hurt', FriendAheadHurt: 'Friend ahead hurt', FriendHurt: 'Friend hurt', EnemyHurt: 'Enemy hurt', EnemyHurtOrPushed: 'Enemy hurt or pushed',
     AnyoneBehindHurt: 'Anyone behind hurt', AnyoneHurt: 'Anyone hurt', FourFriendsHurt: 'Four friends hurt', BeforeFaint: 'Faint', Faint: 'Faint',
     FriendFaints: 'Friend faints', FriendAheadFaints: 'Friend ahead faints', KnockOut: 'Knock out', Summoned: 'Summoned', FriendSummoned: 'Friend summoned',
@@ -64,10 +64,29 @@
   const SETTINGS_DEP = { Fossa: 'rolls', ManaHound: 'rolls', Bunyip: 'rolls', Platybelodon: 'rolls', Hippocampus: 'rolls', Nessie: 'rolls', Ammonite: 'rolls',
     Werewolf: 'turn', Slime: 'battles', EagleOwl: 'battles', DungBeetle: 'foodEaten', BlueJay: 'foodEaten', BlackBear: 'foodEaten',
     GiantPangasius: 'transforms', Meerkat: 'goldSpent', JerseyDevil: 'lvl3Sold' };
+  // per-pet shop/turn values, edited in the pet editor (blank = use Settings)
+  const PET_CTX = {
+    rolls: ['Fossa', 'ManaHound', 'Bunyip', 'Platybelodon', 'Hippocampus', 'Nessie', 'Ammonite', 'Olm', 'Okapi', 'Barnacle', 'Sandworm'],
+    foodEaten: ['BlueJay', 'BlackBear', 'DungBeetle'],
+    summoned: ['NightCrawler'],
+    battles: ['Slime', 'EagleOwl'],
+    turn: ['Werewolf', 'Amphisbaena'],
+    transforms: ['GiantPangasius'],
+    goldSpent: ['Meerkat'],
+    lvl3Sold: ['JerseyDevil'],
+    swallowed: ['WhiteWhale', 'SarcasticFringehead'],
+  };
+  const CTX_LABEL = { rolls: ['Rolls this turn', 0, 20], foodEaten: ['Food it ate this turn', 0, 10], summoned: ['Friends summoned this turn', 0, 20],
+    battles: ['Battles fought', 0, 40], turn: ['Turn number', 1, 40], transforms: ['Transformations this turn', 0, 10], goldSpent: ['Gold spent this turn', 0, 40],
+    lvl3Sold: ['Level 3 pets sold', 0, 10] };
+  const CARRIES_OVER = new Set(['Okapi', 'WhiteWhale', 'SarcasticFringehead']); // shop abilities whose result shows up in battle
+  const ctxKeys = id => Object.keys(PET_CTX).filter(k => PET_CTX[k].includes(id));
   const SETTING_NAMES = { rolls: 'Rolls this turn', turn: 'Turn number', battles: 'Battles fought', foodEaten: 'Food eaten this turn', transforms: 'Transformations this turn', goldSpent: 'Gold spent this turn', lvl3Sold: 'Level 3 pets sold' };
   const SHOP_TRIGGERS = new Set(['Shop', 'None']);
 
-  function noBattleText(id) { if (STATUS[id].endTurn === 'ok') return 'End turn ability: only runs in battle when a Pink Robin activates it.'; return SHOP_TRIGGERS.has(STATUS[id].trigger) ? 'Shop ability: no effect in battle.' : 'Triggers in battle, but only affects gold or the shop.'; }
+  function noBattleText(id) { if (CARRIES_OVER.has(id)) return 'Shop ability: set what it did this turn in the pet editor and it carries into the battle.';
+    return noBattleText0(id); }
+  function noBattleText0(id) { if (STATUS[id].endTurn === 'ok') return 'End turn ability: only runs in battle when a Pink Robin activates it.'; return SHOP_TRIGGERS.has(STATUS[id].trigger) ? 'Shop ability: no effect in battle.' : 'Triggers in battle, but only affects gold or the shop.'; }
   function limitAt(id, lv) { const ab = AB[id]; if (!ab || !ab.limit || !ab.levels[lv - 1]) return 0; return Array.isArray(ab.limit) ? ab.limit[lv - 1] || 0 : ab.limit; }
   function editTrig(id, lv) {
     const ab = AB[id]; if (!ab || !ab.levels[lv - 1]) return null;
@@ -107,6 +126,11 @@
   const AILMENT_LIST = Object.keys(AIL_INFO);
   const PACKS = ['Turtle', 'Puppy', 'Star', 'Golden', 'Unicorn', 'Danger'];
   const ROLLABLE = Object.keys(D.pets).filter(k => D.pets[k].r);
+  { // tab icon: a random Turtle pack pet each time the page opens
+    const turtle = ROLLABLE.filter(k => (D.pets[k].p || []).includes('Turtle'));
+    const ico = document.querySelector('link[rel="icon"]');
+    if (ico && turtle.length) ico.href = `img/pets/${turtle[Math.floor(Math.random() * turtle.length)]}.webp`;
+  }
 
   const S = {
     teams: [Array(5).fill(null), Array(5).fill(null)],
@@ -114,7 +138,7 @@
     meta: [{ player: 'Player 1', mascot: 'Tyrannosaurus', bg: 'FieldBattle', trophies: 0, lives: 5 }, { player: 'Player 2', mascot: 'Bee', bg: 'FrontYardBattle', trophies: 0, lives: 5 }],
     bg: 'FieldBattle',
     settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
-    rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8 },
+    rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
     custom: [], // custom pets: { id, name, sprite, tier, atk, hp, trigger, tkey, vals: [[..],[..],[..]], lim: [0,0,0] }
   };
   let pendingReplay = null;
@@ -217,7 +241,7 @@
         const st = STATUS[p.id];
         if (st && st.status === 'unsupported') { const w = el('div', { class: 'warn ol' }, '!'); e.append(w); }
         attachDrag(e, s, i);
-        attachTip(e, () => tipFor(p.id, lvlOf(p.xp), p.perk));
+        attachTip(e, () => tipFor(p.id, lvlOf(p.xp), p.perk, p.ctx, undefined, { atk: p.atk, hp: p.hp }));
         arena.append(e);
       }
     }
@@ -273,7 +297,39 @@
     tip.style.left = Math.max(4, Math.min(1276 - 300, x)) + 'px'; tip.style.top = y + 'px';
   }
   function hideTip() { tip.hidden = true; }
-  function tipFor(id, lv, perk) {
+  // "3 foods eaten this turn", "Swallowed Slug"... for pets that use this-turn values
+  function ctxLines(id, ctx, swallowedNow) {
+    const out = [];
+    for (const key of ctxKeys(id)) {
+      if (key === 'swallowed') {
+        const sw = swallowedNow !== undefined ? swallowedNow : ctx && ctx.swallowed;
+        out.push(sw && D.pets[sw] ? `Swallowed <b>${esc(D.pets[sw].n)}</b>` : 'Nothing swallowed');
+        continue;
+      }
+      const own = ctx && ctx[key] != null && ctx[key] !== '';
+      const n = own ? +ctx[key] : S.settings[key];
+      const txt = { rolls: `${n} roll${n === 1 ? '' : 's'} this turn`, foodEaten: `${n} food${n === 1 ? '' : 's'} eaten this turn`, summoned: `${n} friend${n === 1 ? '' : 's'} summoned this turn`,
+        battles: `${n} battle${n === 1 ? '' : 's'} fought`, turn: `Turn ${n}`, transforms: `${n} transformation${n === 1 ? '' : 's'} this turn`,
+        goldSpent: `${n} gold spent this turn`, lvl3Sold: `${n} level 3 pet${n === 1 ? '' : 's'} sold` }[key];
+      out.push(txt + (own ? '' : ' <i>(Settings)</i>'));
+    }
+    return out.length ? `<br><span style="color:#2f6f2a">${out.join(' · ')}</span>` : '';
+  }
+  // abilities worked out from the pet's own attack / health: show the number they come to right now
+  const MIN1 = new Set(['Badger', 'PygmyHippo', 'OrchidMantis', 'Rooster']);
+  function currentValue(id, lv, atk, hp) {
+    if (atk == null || hp == null) return '';
+    const t = COMPILED.normText((D.pets[id] || {}).ab ? D.pets[id].ab[lv - 1] || '' : '');
+    const f = (v, pc) => { const n = Math.floor(v * pc / 100); return MIN1.has(id) ? Math.max(1, n) : n; };
+    let m;
+    if ((m = t.match(/(\d+)% of health as damage/i))) return f(hp, +m[1]);
+    if ((m = t.match(/(\d+)% (?:of )?attack damage/i))) return f(atk, +m[1]);
+    if ((m = t.match(/(\d+)% (?:of )?attack and health/i)) || (m = t.match(/with (\d+)% attack and health/i))) return `${f(atk, +m[1])}/${f(hp, +m[1])}`;
+    if ((m = t.match(/(\d+)% (?:of )?attack(?! and| from)/i))) return f(atk, +m[1]);
+    if ((m = t.match(/\+(\d+)% health/i))) return f(hp, +m[1]);
+    return '';
+  }
+  function tipFor(id, lv, perk, ctx, swallowedNow, stats) {
     const d = D.pets[id]; const st = STATUS[id];
     const tl = trigLabel(id);
     let h = `<b>${esc(d.n)}</b> · Tier ${d.t}<br>`;
@@ -285,6 +341,9 @@
     else if (st.status === 'shop') h += `<br><span style="color:#7a6a55">${noBattleText(id)}</span>`;
     else if (st.status === 'passive') h += `<br><span style="color:#2f6f2a">Passive: always active in battle.</span>`;
     if (perk) h += `<br><b>${esc(perkName(perk))}</b>: ${fmtAbility(perkDesc(perk))}`;
+    h += ctxLines(id, ctx, swallowedNow);
+    const cv = stats ? currentValue(id, lv, stats.atk, stats.hp) : '';
+    if (cv !== '') h += `<br><span style="color:#b04a00"><b>Current Value:</b> ${cv}</span>`;
     return h;
   }
 
@@ -311,14 +370,14 @@
       const filters = el('div', { class: 'filters' });
       const tabs = ['All', 1, 2, 3, 4, 5, 6, 'Tokens', 'Custom'];
       for (const t of tabs) {
-        const b = el('button', { class: 'tier-tab' }, t === 'All' || t === 'Tokens' ? t : 'Tier ' + t);
+        const b = el('button', { class: 'tier-tab' }, typeof t === 'number' ? 'Tier ' + t : t);
         b.addEventListener('click', () => { pickerState.tier = t; draw(); });
         b.dataset.t = t; filters.append(b);
       }
       const newBtn = el('button', { class: 'tier-tab new-custom', title: 'Build your own pet' }, '+ Custom pet');
       newBtn.addEventListener('click', () => openCustomBuilder(null, { side, i, replace }));
       filters.append(newBtn);
-      const search = el('input', { class: 'search', placeholder: 'Search pets or abilities…', value: pickerState.q });
+      const search = el('input', { class: 'search', placeholder: 'Search pets, abilities or triggers…', value: pickerState.q });
       search.addEventListener('input', () => { pickerState.q = search.value; draw(); });
       filters.append(search);
       const packs = el('div', { class: 'filters' });
@@ -335,7 +394,11 @@
         const q = pickerState.q.trim().toLowerCase();
         let list = Object.keys(D.pets).filter(k => {
           const d = D.pets[k];
-          if (q) return d.n.toLowerCase().includes(q) || (d.ab[0] || '').toLowerCase().includes(q);
+          if (q) { // name, ability text or trigger ("faint", "start of battle", "hurt"...); every word must match
+            const trig = (trigLabel(k) || '').toLowerCase();
+            const hay = (d.n + ' ' + COMPILED.normText(d.ab[0] || '') + ' ' + trig).toLowerCase();
+            return trig.includes(q) || hay.includes(q) || q.split(/\s+/).every(w => hay.includes(w));
+          }
           if (pickerState.tier === 'Custom') return !!d.custom;
           if (d.custom) return false;
           if (pickerState.tier === 'Tokens') return !d.r;
@@ -364,6 +427,7 @@
             el('div', { class: 'pst' }, el('img', { src: UI('Fist'), alt: '' }), String(d.a), el('img', { src: UI('Heart_1'), alt: '' }), String(d.h)),
             el('div', { class: 'tier' }, 'T' + d.t));
           if (st === 'unsupported') card.append(el('div', { class: 'tag bad', title: 'Battle ability not simulated' }, 'not simulated'));
+          else if (st === 'shop' && CARRIES_OVER.has(k)) card.append(el('div', { class: 'tag good', title: 'Set its shop result in the pet editor' }, 'set in editor'));
           else if (st === 'shop') card.append(el('div', { class: 'tag', title: noBattleText(k) }, SHOP_TRIGGERS.has(STATUS[k].trigger) ? 'shop' : 'no battle effect'));
           else if (st === 'passive') card.append(el('div', { class: 'tag good', title: 'Passive: always active in battle' }, 'passive'));
           card.addEventListener('click', () => {
@@ -378,7 +442,7 @@
             eb.addEventListener('click', ev => { ev.stopPropagation(); openCustomBuilder(k, { side, i, replace }); });
             card.append(eb);
           }
-          attachTip(card, () => tipFor(k, 1));
+          attachTip(card, () => tipFor(k, 1, null, null, undefined, { atk: d.a, hp: d.h }));
           grid.append(card);
         }
         body.scrollTop = 0;
@@ -674,9 +738,10 @@
           info.append(row);
         }
         if (st.status === 'unsupported') info.append(el('div', { class: 'support-note' }, "This pet's battle ability isn't simulated yet, so it fights with stats only."));
+        else if (st.status === 'shop' && CARRIES_OVER.has(p.id)) info.append(el('div', { class: 'support-note good' }, 'Shop ability, but what it did this turn carries into the battle: set it under "This turn" below.'));
         else if (st.status === 'shop') info.append(el('div', { class: 'support-note shop' }, SHOP_TRIGGERS.has(st.trigger) ? 'This ability only works in the shop, so it has no effect in battle (same as the game).' : 'This ability triggers in battle, but it only affects gold or the shop, so it changes nothing in the fight.'));
         else if (st.status === 'passive') info.append(el('div', { class: 'support-note good' }, 'Passive ability: always active in battle.'));
-        if (SETTINGS_DEP[p.id]) info.append(el('div', { class: 'support-note shop' }, `Uses the "${SETTING_NAMES[SETTINGS_DEP[p.id]]}" value from Settings.`));
+        if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, 'Set what happened in the shop this turn below (blank uses Settings).'));
         top.append(spr, info);
         body.append(top);
 
@@ -705,6 +770,33 @@
         ctr.append(xpc);
         const mc = stepper('Mana', 'mana', 'Mana'); mc.title = 'Starting mana (what Mana Potions give)'; ctr.append(mc);
         body.append(ctr);
+        // shop / turn values this pet's ability uses
+        const keys = ctxKeys(p.id);
+        if (keys.length) {
+          const box = el('div', { class: 'ctl ctx-box' }, el('label', {}, 'This turn'));
+          const rows = el('div', { class: 'ctx-rows' });
+          for (const key of keys) {
+            if (key === 'swallowed') {
+              const sel = el('select', { class: 'cb-select ctx-pet' });
+              sel.append(el('option', { value: '' }, 'Nothing swallowed'));
+              for (const k of ROLLABLE.slice().sort((a, b) => D.pets[a].n.localeCompare(D.pets[b].n))) sel.append(el('option', { value: k }, `${D.pets[k].n} (T${D.pets[k].t})`));
+              sel.value = (p.ctx && p.ctx.swallowed) || '';
+              sel.addEventListener('change', () => { p.ctx = Object.assign({}, p.ctx, { swallowed: sel.value || undefined }); save(); draw(); });
+              const pic = (p.ctx && p.ctx.swallowed) ? el('img', { class: 'ctx-pic', src: petImg(p.ctx.swallowed), alt: '' }) : null;
+              rows.append(el('div', { class: 'ctx-row' }, el('span', {}, p.id === 'WhiteWhale' ? 'Swallowed shop pet (released on faint)' : 'Swallowed shop pet (a 1/1 copy goes to the opponent on faint)'), pic, sel));
+              continue;
+            }
+            const [label, min, max] = CTX_LABEL[key];
+            const v = p.ctx && p.ctx[key] != null ? p.ctx[key] : '';
+            const inp = el('input', { type: 'number', class: 'cb-num', min, max, value: v, placeholder: String(S.settings[key]) });
+            inp.addEventListener('change', () => {
+              const n = inp.value === '' ? undefined : Math.max(min, Math.min(max, inp.value | 0));
+              p.ctx = Object.assign({}, p.ctx, { [key]: n }); if (n != null) inp.value = n; save();
+            });
+            rows.append(el('div', { class: 'ctx-row' }, el('span', {}, label), inp));
+          }
+          box.append(rows); body.append(box);
+        }
 
         const pc = el('div', { class: 'ctl', style: 'margin-top:14px;align-items:stretch' });
         const cur = el('div', { class: 'perk-cur' });
@@ -754,22 +846,80 @@
   }
 
   // ------------------------------------------------------------------ randomize
+  // ------------------------------------------------------------------ team themes (synergy)
+  // core = pets that do the thing, support = pets that pay off on it (Albatross for snipes, Turkey for summons,
+  // Lusca / Caladrius for mana...). Worked out from ability text and triggers.
+  const abText = k => COMPILED.normText((D.pets[k].ab || []).find(Boolean) || '');
+  const trigOf = k => (STATUS[k] && STATUS[k].trigger) || '';
+  const THEMES = {
+    Snipe: { core: k => /deal \d+ damage to (?!itself|the nearest friend|adjacent friends|friends|all pets)/i.test(abText(k)) || /damage to (one|two|three) random enem/i.test(abText(k)),
+      support: k => /ability damage|repeats? their ability/i.test(abText(k)) || (/^Count:FriendFaints/.test(trigOf(k)) && /damage/i.test(abText(k))), perks: ['Chili', 'MeatBone', 'Garlic'] },
+    Summon: { core: k => /\bsummon\b/i.test(abText(k)) && !/for the (enemy|opponent)/i.test(abText(k)),
+      support: k => /^(FriendSummoned|BeeSummoned)$/.test(trigOf(k)), perks: ['Honey', 'Mushroom', 'Popcorn'] },
+    Faint: { core: k => /^(Faint|BeforeFaint)$/.test(trigOf(k)),
+      support: k => /^(FriendFaints|FriendAheadFaints|Count:FriendFaints)/.test(trigOf(k)) || /repeats? their ability/i.test(abText(k)), perks: ['Mushroom', 'Honey'] },
+    Mana: { core: k => /(gain|give|gives).{0,40}\bmana\b/i.test(abText(k)) && !/(spend|replace|per mana|for each mana)/i.test(abText(k)),
+      support: k => (/(spend|replace|per mana|for each mana|mana on)/i.test(abText(k)) && /mana/i.test(abText(k))) || trigOf(k) === 'GainsMana', perks: [] },
+    Hurt: { core: k => /Hurt/.test(trigOf(k)),
+      support: k => /damage to (itself|the nearest friend|adjacent friends|friends|all pets|all friends|.*friends? (ahead|behind))/i.test(abText(k)), perks: ['Melon', 'Garlic', 'Coconut'] },
+    Trumpet: { core: k => /(gain|give).{0,30}trumpet/i.test(abText(k)), support: k => /spend.{0,20}trumpet/i.test(abText(k)), perks: [] },
+    Strawberry: { core: k => /strawberry/i.test(abText(k)), support: k => /strawberry/i.test(abText(k)) && /(friend|it\b)/i.test(abText(k)), perks: ['Strawberry'] },
+    Food: { core: k => /(Ate|Eats)/.test(trigOf(k)), support: k => /\bfeed\b/i.test(abText(k)), perks: [] },
+    'Level-up': { core: k => /LevelUp|GainedXp/.test(trigOf(k)), support: k => /experience/i.test(abText(k)), perks: [] },
+  };
+  const THEME_NAMES = Object.keys(THEMES);
+  const ORDER = window.SAPOrder.create(D, STATUS, COMPILED.normText);
+  const battleReady = k => STATUS[k] && ['ok', 'passive'].includes(STATUS[k].status);
+  const pickOne = arr => arr[Math.floor(Math.random() * arr.length)];
+  function themedPicks(pool, size, themeName) {
+    const ready = pool.filter(battleReady);
+    const options = (themeName && THEMES[themeName] ? [themeName] : THEME_NAMES).map(n => {
+      const th = THEMES[n];
+      return { n, core: ready.filter(th.core), sup: ready.filter(th.support) };
+    }).filter(o => o.core.length >= 2 || (o.n === themeName && o.core.length));
+    if (!options.length) return null;
+    const ch = pickOne(options);
+    const used = new Set(); const take = (arr) => { const left = arr.filter(k => !used.has(k)); const k = pickOne(left.length ? left : arr); used.add(k); return k; };
+    const nSup = size >= 4 ? 2 : size >= 2 ? 1 : 0;
+    const sup = []; for (let i = 0; i < nSup && ch.sup.length; i++) sup.push(take(ch.sup));
+    const core = []; while (core.length + sup.length < size) core.push(take(ch.core.length ? ch.core : ready));
+    // core pets up front, support behind them; adjacency supports (Albatross, Tiger) sit right behind a core pet
+    const adj = sup.filter(k => /adjacent|friend ahead repeats|repeats? their ability/i.test(abText(k)));
+    const rest = sup.filter(k => !adj.includes(k));
+    const order = core.slice();
+    adj.forEach((k, j) => order.splice(Math.min(order.length, 1 + j * 2), 0, k));
+    return { theme: ch.n, ids: order.concat(rest), perks: THEMES[ch.n].perks };
+  }
   function randomTeam(side) {
     const o = S.rnd;
     let pool = ROLLABLE.filter(k => D.pets[k].t <= o.maxTier && (o.pack === 'All' || (D.pets[k].p || []).includes(o.pack)));
     if (!pool.length) pool = ROLLABLE;
+    const themed = o.theme !== 'None' ? themedPicks(pool, o.size, o.theme && o.theme !== 'Random' ? o.theme : null) : null;
+    // lineup that sets up the triggers (Shark / Vulture in back, Woodpecker behind hurt pets, Albatross between snipers...)
+    const ids = ORDER.bestOrder(themed ? themed.ids : Array.from({ length: o.size }, () => pickOne(pool)));
     const t = Array(5).fill(null);
-    for (let i = 0; i < o.size; i++) {
-      const k = pool[Math.floor(Math.random() * pool.length)];
+    ids.forEach((k, i) => {
       const p = newPet(k);
       if (o.levels) p.xp = [0, 0, 0, 1, 2, 2, 3, 5][Math.floor(Math.random() * 8)];
       const lv = lvlOf(p.xp);
       p.atk = Math.min(Engine.capOf(k, 'atk'), p.atk + (lv - 1) + Math.floor(Math.random() * (o.bonus + 1)));
       p.hp = Math.min(Engine.capOf(k, 'hp'), p.hp + (lv - 1) + Math.floor(Math.random() * (o.bonus + 1)));
-      if (o.perks && Math.random() < 0.45) p.perk = BATTLE_PERKS[Math.floor(Math.random() * BATTLE_PERKS.length)];
+      if (o.perks && Math.random() < 0.45) {
+        const fav = themed && themed.perks.filter(x => BATTLE_PERKS.includes(x));
+        p.perk = fav && fav.length && Math.random() < 0.65 ? pickOne(fav) : pickOne(BATTLE_PERKS);
+      }
       t[i] = p;
-    }
+    });
     S.teams[side] = t;
+    S.themes = S.themes || [null, null]; S.themes[side] = themed ? themed.theme : null;
+    return themed ? themed.theme : null;
+  }
+  function orderTeam(side) {
+    const pets = S.teams[side].filter(Boolean);
+    // order pets (not ids, so duplicates and custom pets keep their own stats)
+    const byIdx = ORDER.bestOrder(pets.map(p => p.id));
+    const left = pets.slice(); const out = byIdx.map(id => left.splice(left.findIndex(p => p.id === id), 1)[0]);
+    S.teams[side] = out.concat(Array(5 - out.length).fill(null)); save();
   }
   function openRandomizer(side) {
     openModal('form', p => {
@@ -780,6 +930,7 @@
       const sel = (opts, key, conv = x => x) => { const s = el('select'); for (const v of opts) s.append(el('option', { value: v }, String(v))); s.value = o[key]; s.addEventListener('change', () => { o[key] = conv(s.value); save(); }); return s; };
       const tog = key => { const t = el('button', { class: 'toggle' + (o[key] ? ' on' : '') }); t.addEventListener('click', () => { o[key] = !o[key]; t.classList.toggle('on', o[key]); save(); }); return t; };
       body.append(
+        row('Team theme', 'Pets that work together (snipe + Albatross, summon + Turkey, mana + Lusca…)', sel(['Random', 'None'].concat(THEME_NAMES), 'theme')),
         row('Pack', 'Pets are drawn from this pack', sel(['All'].concat(PACKS.filter(x => x !== 'Puppy')), 'pack')),
         row('Highest tier', 'Pets up to this shop tier', sel([1, 2, 3, 4, 5, 6], 'maxTier', Number)),
         row('Team size', null, sel([1, 2, 3, 4, 5], 'size', Number)),
@@ -788,10 +939,14 @@
         row('Random perks', null, tog('perks')));
       p.append(body);
       const go = el('button', { class: 'obtn' }, el('img', { src: UI('Dice'), alt: '' }), el('span', {}, 'Roll!'));
-      go.addEventListener('click', () => { randomTeam(side); renderEdit(); });
+      const say = th => th ? `${th} team` : 'Random team';
+      go.addEventListener('click', () => { const th = randomTeam(side); renderEdit(); toast(`${S.names[side]}: ${say(th)}`); });
       const both = el('button', { class: 'obtn ghost' }, el('span', {}, 'Roll both teams'));
-      both.addEventListener('click', () => { randomTeam(0); randomTeam(1); renderEdit(); });
-      p.append(el('div', { style: 'display:flex;gap:12px;justify-content:center' }, both, go));
+      both.addEventListener('click', () => { const a = randomTeam(0), b = randomTeam(1); renderEdit(); toast(`${say(a)} vs ${say(b)}`); });
+      const ord = el('button', { class: 'obtn ghost' }, el('span', {}, 'Best order'));
+      ord.title = 'Rearrange this team so its triggers line up (keeps the same pets)';
+      ord.addEventListener('click', () => { orderTeam(side); renderEdit(); toast('Team re-ordered'); });
+      p.append(el('div', { class: 'rnd-acts' }, ord, both, go));
     });
   }
 
@@ -815,6 +970,12 @@
         row('Fixed random seed', 'Same random targets every fight', tog('fixedSeed')),
         row('Seed', null, num('seed', 0, 999999)));
       p.append(body);
+      const built = window.SAP_BUILD && new Date(window.SAP_BUILD);
+      if (built && !isNaN(built)) {
+        const h = built.getHours(), hh = h % 12 || 12, mm = String(built.getMinutes()).padStart(2, '0');
+        const yy = String(built.getFullYear()).slice(-2);
+        p.append(el('div', { class: 'build-stamp', title: built.toString() }, `Last updated ${hh}:${mm}${h < 12 ? 'AM' : 'PM'} ${built.getMonth() + 1}/${built.getDate()}/${yy}`));
+      }
     });
   }
   function setBg() { $('#bg').style.backgroundImage = `url('img/bg/${S.bg}.webp')`; document.body.classList.toggle('bg-white', S.bg === 'WhiteBattle'); }
@@ -839,7 +1000,7 @@
   }
 
   // ------------------------------------------------------------------ battle
-  function battleTeams() { return S.teams.map(t => t.filter(Boolean).map(p => ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0 }))); }
+  function battleTeams() { return S.teams.map(t => t.map((p, slot) => p && ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0, slot, ctx: p.ctx })).filter(Boolean)); }
   function simulate(seed) {
     const b = new Engine.Battle(D, AB, battleTeams(), Object.assign({}, S.settings, { seed }));
     return b.run();
@@ -851,6 +1012,10 @@
     onAgain: () => startBattle(),
     onSpeed: v => { S.settings.speed = v; save(); },
     replayLink: () => replayLink(),
+    // hovering a pet in battle: same card as in the editor, plus its current stats
+    petTip: d => tipFor(d.id, d.l || 1, d.p, d.c, (d.id === 'WhiteWhale' || d.id === 'SarcasticFringehead') ? (d.sw || null) : undefined, { atk: d.a, hp: d.h }) + (d.sw && !['WhiteWhale', 'SarcasticFringehead'].includes(d.id) && D.pets[d.sw] ? `<br><span style="color:#2f6f2a">Swallowed <b>${esc(D.pets[d.sw].n)}</b></span>` : '') + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
+    showTip: (node, html) => { tip.innerHTML = html; tip.hidden = false; posTip(node); },
+    hideTip: () => hideTip(),
   });
   let lastLog = null, lastSeed = 0;
   // Replay link: both teams, looks, battle settings and the seed. The engine is deterministic, so opening it
