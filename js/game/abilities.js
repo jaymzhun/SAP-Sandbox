@@ -176,6 +176,16 @@
         const d = src.Owner === 1 ? pa.B.board.SharedPowers : src.Owner === 2 ? pa.B.board.OpponentSharedPowers : null;
         return (d && d[p.Ability]) || 0;
       }
+      case 'ParameterEmptySpaces': {
+        // ParameterEmptySpaces.GetMinionValue: empty grid cells; with Owner set, cells 0-4 when Owner is the Origin pet's owner, else 5-9
+        const m = paramMinion(p, pa); if (!m) return 1;
+        const cells = pa.B.board.cells; let n = 0;
+        for (let i = 0; i < cells.length; i++) {
+          if (p.Owner != null && (p.Owner === m.Owner ? i >= 5 : i < 5)) continue;
+          if (!cells[i]) n++;
+        }
+        return n;
+      }
       case 'ParameterMinionAttack': { const m = paramMinion(p, pa); return m ? m.Attack.Total : 1; }
       case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
       case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
@@ -198,7 +208,12 @@
     if (f.Team != null && owner) { if (cand.Owner === owner.Owner ? f.Team === 1 : f.Team === 0) return false; }
     if (f.Perk != null && cand.Perk !== f.Perk) return false;
     if (f.WithoutPerk != null && cand.Perk != null && cand.Perk === f.WithoutPerk) { if (f.WithoutPerkAndDurability == null) return false; if (f.WithoutPerkAndDurability === cand.PerkDurability) return false; }
-    if (f.WithoutPerkPara) unported('MinionFinder.WithoutPerkPara');
+    // WithoutPerkPara (+0x138): a ParameterMinionPerk read with target = candidate, source = owner; same rule as WithoutPerk
+    if (f.WithoutPerkPara) {
+      const pp = f.WithoutPerkPara; if (short(T(pp)) !== 'ParameterMinionPerk' || (pp.Origin ?? 0) > 1) unported('MinionFinder.WithoutPerkPara ' + short(T(pp)) + ' origin ' + pp.Origin);
+      const id = (pp.Origin ?? 0) === 0 ? (owner ? owner.Id : null) : cand.Id; const pm = id ? B.board.findMinion(id) : null; const perk = pm ? pm.Perk ?? null : null;
+      if (perk != null && cand.Perk === perk) { if (f.WithoutPerkAndDurability == null) return false; if (f.WithoutPerkAndDurability === cand.PerkDurability) return false; }
+    }
     const pa = { B, TargetId: cand.Id, SourceId: owner ? owner.Id : null };
     if (f.AttackEven != null) { const r = cand.Attack.Total % 2; if ((r === 0 && f.AttackEven === false) || (r !== 0 && f.AttackEven === true)) return false; }
     if (f.AttackMax != null && cand.Attack.IsMax !== f.AttackMax) return false;
@@ -225,7 +240,11 @@
     if (f.LevelMax != null && (cand.Level > 2) !== f.LevelMax) return false;
     if (f.Countdown != null) unported('MinionFinder.Countdown');
     if (f.Tier) { const v = paramValue(f.Tier, pa); const tier = (D.minions[cand.Enum] || {}).tier; if (!opCheck(f.TierOperator, tier, v)) return false; }
-    if (f.ActiveAbility != null || f.SameAbility != null || f.SellValue != null) unported('MinionFinder.ActiveAbility/SameAbility/SellValue');
+    // ActiveAbility (+0x6a): has an ability not DisabledTemp; SameAbility (+0x199, needs an owner): shares an ability enum with the owner;
+    // SellValue (+0x248, operator +0x250): MinionExtensions.GetGoldValue
+    if (f.ActiveAbility != null && cand.Abilities.some((a) => !a.DisabledTemp) !== f.ActiveAbility) return false;
+    if (f.SameAbility != null && owner && (cand.Abilities.find((a) => owner.Abilities.some((b) => b.Enum === a.Enum)) != null) !== f.SameAbility) return false;
+    if (f.SellValue != null && !opCheck(f.SellValueOperator || 0, getGoldValue(B, cand), f.SellValue)) return false;
     if (f.Minion != null && cand.Enum !== f.Minion) return false;
     if (f.ExcludeDifficulty && (D.minions[cand.Enum] || {}).relicType === 1) return false; // MinionTemplate.RelicType (+0x100) == 1
     if (f.Types && f.Types.length) { const tt = (D.minions[cand.Enum] || {}).type ?? 0; if (!f.Types.includes(tt)) return false; }
@@ -443,7 +462,9 @@
       for (const o of f.Orders || []) {
         if (o === 2 || o === 3) { if (!owner) continue; keys.push([(m) => Math.abs(owner.Point.x - m.Point.x), o === 2]); continue; }
         if (o === 18) { keys.push([(m) => (hasDeathEffect(m) ? 1 : 0), true]); continue; } // OrderMinions 18: OrderByDescending(HasDeathEffect) (FUN_180f855f0, the same sort as the perk 28/36 keys)
-        if (o === 16 || o === 17) unported('MinionFinder order ' + o);
+        // OrderMinions 16/17 (<>c.<OrderMinions>b__133_13 / _14): the tier of the food behind the pet's perk, -1 without a perk or a perk without a food;
+        // 16 OrderByDescending (FUN_180f855f0), 17 OrderBy (FUN_180f85870)
+        if (o === 16 || o === 17) { keys.push([(m) => { if (m.Perk == null) return -1; const pk = PERKS()[m.Perk]; if (!pk) unported('perk ' + m.Perk + ' (not in the data)'); if (pk.spell == null) return -1; const sp = (D.spells || {})[pk.spell]; if (!sp) unported('spell ' + pk.spell + ' (not in the data)'); return sp.Tier; }, o === 16]); continue; }
         const k = ORDER_KEYS[o]; if (!k) unported('MinionFinder order ' + o); keys.push(k);
       }
       if (f.Limit != null && owner) {
@@ -490,7 +511,8 @@
       out = all.map((m) => m.Id);
     }
     if (t.RemoveRelics) out = out.filter((id) => { const m = board.findMinion(id); const ty = m ? (D.minions[m.Enum] || {}).type : 0; return !(ty !== 0 && ty !== 2); });
-    if (owner && owner.CurrentTargetsThisTurn && owner.CurrentTargetsThisTurn.length) unported('TargetsBase persisted targets');
+    // TargetsBase.GetTargets: when the owner has persisted targets this turn (MinionModel +0x140), RemoveAll of those (<>c__DisplayClass3_0.b__0)
+    if (owner && owner.CurrentTargetsThisTurn && owner.CurrentTargetsThisTurn.length) { const cur = owner.CurrentTargetsThisTurn; out = out.filter((id) => !cur.some((x) => idEq(x, id))); }
     return out;
   }
   function getTargetsRaw(t, ta) {
@@ -772,7 +794,8 @@
       case 'TriggerPerkLost': if (tr.LostPerk != null && e.Perk !== tr.LostPerk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; if (tr.ExcludeReplaced && e.ReplacedBy != null) { if (tr.ExcludeReplacedPositive == null) return false; if (perkPositive(e.ReplacedBy) === tr.ExcludeReplacedPositive) return false; } return true;
       case 'TriggerBuffGained': if (tr.Health && !(e.HealthValue > 0)) return false; if (tr.Attack && !(e.AttackValue > 0)) return false; return true;
       case 'TriggerPushed': return (e.Type || 0) === (tr.Type || 0); // TriggerPushed.IsTriggeredByEvent: same PushType
-      case 'TriggerTransform': if (tr.IgnoreBack || tr.IgnoreStacking) unported(t + ' filters'); return true;
+      // TriggerTransform.IsTriggeredByEvent: IgnoreBack (+0x40) skips a transform back (+0x5c), IgnoreStacking (+0x41) a stacking one (+0x5d)
+      case 'TriggerTransform': if (tr.IgnoreBack && e.Back) return false; if (tr.IgnoreStacking && e.Stacking) return false; return true;
       default: return true;
     }
   }
@@ -884,6 +907,13 @@
    * BoardExtensions.GetPerkMultiplier(m): PerkMultiplier (default 1); times the level of an own ability whose PerkMultiplier names
    * this perk, otherwise (in battle) times the pet's aura-2 value.
    */
+  /** MinionExtensions.GetGoldValue(m): 1 (2 at level 2, 3 at level 3), plus twice the perk multiplier for perk 43, plus SellValue; at most 300 */
+  function getGoldValue(B, m) {
+    let v = m.Level === 3 ? 3 : m.Level === 2 ? 2 : 1;
+    if (m.Perk === 43) v += getPerkMultiplier(B, m) * 2;
+    v += m.SellValue ?? 0;
+    return Math.min(v, 300);
+  }
   function getPerkMultiplier(B, m) {
     if (!m || m.Perk == null) return 1;
     const mult = m.PerkMultiplier ?? 1;
@@ -1173,6 +1203,8 @@
         const d = ga.Owner === 1 ? (b.SharedPowers = b.SharedPowers || {}) : (b.OpponentSharedPowers = b.OpponentSharedPowers || {});
         d[eff.Ability] = (d[eff.Ability] || 0) + v; return null;
       }
+      case 'EffectShuffle': // EffectShuffle.OnGlobal: Try<ShuffleMinions>(targets, source)
+        return [wrap('Try', ev('ShuffleMinions', { Owner: ga.Owner, TargetIds: (ga.TargetIds || []).slice(), SourceId: ga.SourceId || null, ResultItems: null }))];
       case 'EffectSummonRetriever': return [wrap('Try', ev('ForceTrumpets', { Owner: ga.Owner }))]; // EffectSummonRetriever.OnGlobal
       case 'EffectBalance': {
         // EffectBalance.OnGlobal (Single false): all targets; MixStats is not copied here
@@ -1263,6 +1295,12 @@
         return [wrap('Try', ev('StealMinionPerk', { Owner: sa.Owner, Source: sa.SourceId, Target: sa.TargetId, TargetPerkStays: !!eff.TargetPerkStays, IncludeDestroyed: !!eff.IncludeDestroyed,
           IncludeDead: !!eff.IncludeDead, MustBeNew: !!eff.MustBeNew, Result: null, ResultPerk: null, SourceSpell: null }))];
       }
+      case 'EffectShuffle': return null; // no OnSingle override (EffectBase.OnSingle)
+      case 'EffectGainTrumpets': return null; // only OnGlobal
+      case 'EffectShuffleStats': return [wrap('Try', ev('ShuffleStats', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null }))];
+      case 'EffectSwapStats': return [wrap('Try', ev('SwapStats', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, SourceSpell: null }))];
+      case 'EffectRemoveMinion': // EffectRemoveMinion.OnSingle: Try<RemoveMinion>(target) from the source, with the effect's Projectile
+        return [wrap('Try', ev('RemoveMinion', { Owner: sa.Owner, MinionId: sa.TargetId, SourceId: sa.SourceId || null, RemoveType: 0, Projectile: eff.Projectile || null }))];
       case 'EffectPlaySpell': {
         // EffectPlaySpell.OnSingle: the catalogue's spells, each conjured (with SpellPower as its Power) and played by the source at
         // the target: Try<PlaySpell>(Owner, Author 1, Source = source, Target = target)
@@ -1414,6 +1452,12 @@
           MultiplierParameter: eff.MultiplierParameter || null, Future: !!eff.Future, Compound: !!eff.Compound, TriggersDisabled: !!eff.TriggersDisabled,
           ProjectileDisabled: !!eff.ProjectileDisabled, ResultPerkReplaced: null, Result: null });
         return [wrap('Try', g)];
+      }
+      // EffectSpendMana.OnSingle: Try<SpendMinionMana> on the target, Spend = Value.GetValue(args)
+      case 'EffectSpendMana': {
+        if (!eff.Value) unported('EffectSpendMana without a Value');
+        const v = paramValue(eff.Value, pa);
+        return [wrap('Try', ev('SpendMinionMana', { Owner: sa.Owner, TargetId: sa.TargetId, Spend: v, ResultTargetManaOld: 0, ResultTargetManaNew: 0 }))];
       }
       default: return unported(t);
     }
@@ -1597,6 +1641,26 @@
     for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab || !ab.ManaSpender) continue; if (ab.ManaSpenderAmount == null) { used = m.Mana; break; } used += ab.ManaSpenderAmount; }
     return used < m.Mana ? m.Mana - used : 0;
   }
+  /**
+   * MinionModel.CopyFrom: Id, Price, Frozen flags, Enum, Exp, Level, Health and Attack (shallow copies), the perk (with durability,
+   * max durability, multiplier, duration), abilities (copied), Power, SellValue, memories, this turn's / battle's counters, the old and
+   * last targets and the removable buffs. Owner, Location, Point and Mana are not copied.
+   */
+  function copyFrom(n, o) {
+    n.Id = o.Id; n.Price = o.Price; n.Frozen = o.Frozen; n.WasFrozen = o.WasFrozen; n.AutoFroze = o.AutoFroze; n.AddedByEffect = o.AddedByEffect;
+    n.Enum = o.Enum; n.Exp = o.Exp; n.Level = o.Level; n.Health = o.Health.ShallowCopy(); n.Attack = o.Attack.ShallowCopy();
+    n.Perk = o.Perk; n.PerkDurability = o.PerkDurability; n.PerkDurabilityMax = o.PerkDurabilityMax; n.PerkMultiplier = o.PerkMultiplier; n.PerkDuration = o.PerkDuration;
+    n.SellValue = o.SellValue;
+    n.Abilities = (o.Abilities || []).map((a) => Object.assign(Object.create(Object.getPrototypeOf(a)), a));
+    n.Brain = o.Brain ? Object.fromEntries(Object.entries(o.Brain).map(([k, v]) => [k, v.map((x) => ({ ...x }))])) : o.Brain;
+    n.AttackCountsThisTurn = o.AttackCountsThisTurn; n.AttackCountsThisBattle = o.AttackCountsThisBattle; n.HurtCountsThisTurn = o.HurtCountsThisTurn;
+    n.HurtCountsThisBattle = o.HurtCountsThisBattle; n.HurtTotalThisBattle = o.HurtTotalThisBattle; n.SpellCountsThisTurn = o.SpellCountsThisTurn;
+    n.Power = o.Power ? { ...o.Power } : o.Power;
+    n.RemoveableBuffs = o.RemoveableBuffs ? o.RemoveableBuffs.map((x) => (Array.isArray(x) ? x.slice() : { ...x })) : o.RemoveableBuffs;
+    n.LastTargetsThisTurn = o.LastTargetsThisTurn ? o.LastTargetsThisTurn.slice() : o.LastTargetsThisTurn;
+    n.OldTargetsThisTurn = o.OldTargetsThisTurn ? o.OldTargetsThisTurn.slice() : o.OldTargetsThisTurn;
+    n.DragAndDropMode = o.DragAndDropMode;
+  }
   /** MinionExtensions.CopyTriggerCount: abilities with a TriggerLimit take the TriggerCount of the first same-enum ability of copyFrom. */
   function copyTriggerCount(m, from) {
     for (const a of m.Abilities) {
@@ -1665,6 +1729,21 @@
         if (c.Reborn) { copyTriggerCount(m, src); m.AttackCountsThisBattle = src.AttackCountsThisBattle; m.AttackCountsThisTurn = src.AttackCountsThisTurn; }
         base.push(m); break;
       }
+      case 'MinionCatalogueTargetCopy': {
+        // MinionCatalogueTargetCopy.GetBaseMinions: Target's targets (TargetsArgs: the trigger, the source pet and its owner, no aim),
+        // each a new pet of the target's type at the catalogue's level (Exact: the target's level, then MinionModel.CopyFrom with the
+        // new pet's own Id kept); CopyPerk sets the target's perk
+        const src = ca.SourceId ? ca.B.board.findMinion(ca.SourceId) : null; if (!src || !c.Target) return unported('MinionCatalogueTargetCopy without a source or Target');
+        const ids = getTargets(c.Target, { B: ca.B, TriggerEvent: ca.TriggerEvent, OwnerMinion: src, Owner: src.Owner, Aim: null, Random: ca.Random, Reversed: false }) || [];
+        base = ids.map((id) => {
+          const tm = ca.B.board.findMinion(id); if (!tm) unported('MinionCatalogueTargetCopy of a missing pet');
+          const m = generateMinion(ca.B, tm.Enum, c.Exact ? tm.Level : ca.Level, ca.Owner, ca.Location ?? 1);
+          if (c.Exact) { const keep = m.Id; copyFrom(m, tm); m.Id = keep; }
+          if (c.CopyPerk) setPerk(m, tm.Perk ?? null, tm.PerkDuration || 0);
+          return m;
+        });
+        break;
+      }
       case 'MinionCatalogueTriggerTarget': {
         // a fresh copy of the trigger event's target. The game checks CopyAttack twice and never reads CopyHealth,
         // so CopyAttack copies attack and health (MinionCatalogueTriggerTarget.GetBaseMinions, build 26131463)
@@ -1726,11 +1805,18 @@
     else { const n = eff.Amount ? paramValue(eff.Amount, pa) : 1; for (let i = 0; i < n; i++) { const x = make(catalogueMinions(eff.Catalogue, ca)[0]); if (x) out.push(x); } }
     return out.length ? out : null;
   }
+  function procValue(v, a) {
+    if (short(T(v)) === 'ParameterFlat') return v.Value;
+    if (!a.Parent) unported('summon processor parameter without a parent');
+    return paramValue(v, { B: a.B, TargetId: a.Minion.Id, SourceId: a.Parent.Id, TriggerTargetId: a.Minion.Id, TriggerSourceId: a.Parent.Id, AimId: null, Random: null, TriggerEvent: null });
+  }
   function summonProcess(pr, a) {
     const t = short(T(pr)).replace(/^BoardEvents\./, ''); const m = a.Minion, p = a.Parent;
     switch (t) {
-      case 'EffectSummonProcessorSetAttack': if (short(T(pr.Value)) !== 'ParameterFlat') unported(t + ' non-flat'); setAttack(m, pr.Value.Value); return;
-      case 'EffectSummonProcessorSetHealth': if (short(T(pr.Value)) !== 'ParameterFlat') unported(t + ' non-flat'); setHealth(m, pr.Value.Value); return;
+      // SetAttack / SetHealth: ParameterInt.GetValue(new ParameterArgs(processor args)): target and trigger target = the new pet,
+      // source and trigger source = the parent (no aim, random or trigger event)
+      case 'EffectSummonProcessorSetAttack': setAttack(m, procValue(pr.Value, a)); return;
+      case 'EffectSummonProcessorSetHealth': setHealth(m, procValue(pr.Value, a)); return;
       case 'EffectSummonProcessorMakeEnemy': if (!a.Reversed) m.Owner = m.Owner === 1 ? 2 : m.Owner === 2 ? 1 : 0; return;
       case 'EffectSummonProcessorSetAttackToBase': setAttack(m, D.minions[m.Enum].attack * pr.Multiplier); return;
       case 'EffectSummonProcessorSetHealthToBase': setHealth(m, D.minions[m.Enum].health * pr.Multiplier); return;
@@ -1899,7 +1985,20 @@
       const atk0 = m.Attack.Total, hp0 = m.Health.Total;
       let atk = b.Attack; if (b.AttackRange > 0) { const r = rand.next(0, b.AttackRange + 1); b.Attack += r; atk += r; }
       let hp = b.Health; if (b.HealthRange > 0) { const r = rand.next(0, b.HealthRange + 1); hp += r; b.Health += r; }
-      if (b.HealthRestore) unported('BuffMinion.HealthRestore');
+      // GiveMinionBuffMutator.Restore: with a live source and a Hurt/HurtEarly trigger, give back up to the damage not yet restored
+      // (Amount - Restored), at most HealthRestore - the source's power for HealthRestoreAbility; counts it in Restored and the power
+      if (b.Source && b.Trigger && (b.Trigger.cls === 'Hurt' || b.Trigger.cls === 'HurtEarly')) {
+        const src = board.findLiveMinion(b.Source);
+        if (src) {
+          const pow = src.Power[b.HealthRestoreAbility] || 0; const t = b.Trigger; const left = t.Amount - (t.Restored || 0);
+          if (pow < b.HealthRestore && left > 0) {
+            const n = Math.min(Math.min(b.HealthRestore - pow, t.Amount), left);
+            t.Restored = (t.Restored || 0) + n;
+            src.Power[b.HealthRestoreAbility] = pow + n; src._powerDict = true;
+            hp += n; b.Health += n;
+          }
+        }
+      }
       if (m.Perk === 121 && !(B.hooks.sadImmune && B.hooks.sadImmune(m))) { atk = 0; hp = 0; b.Attack = 0; b.Health = 0; }
       const dur = b.Duration || 0;
       // Duration 2 buffs are removable: a negative one from a source takes back what that source gave (records in RemoveableBuffs),
@@ -2170,6 +2269,49 @@
       if (m.Perk !== 55 && m.Abilities.some((a) => a.Enum === 760)) return;
       B.add(wrap('Try', ev('GainReward', { Owner: e.Owner, Rewards: r.LevelsGained, SourceLevel: m.Level, SourceTier: (D.minions[m.Enum] || {}).tier })));
     },
+    /**
+     * ShuffleStatsMutator (Try<ShuffleStats>): a live pet with health and at least 3 permanent stats in all re-splits them at random:
+     * attack r+1, health n-r+1 for r = Next(0, n), n = sum - 2 (the side's random). Anything over a stat's max goes to the other, each is
+     * then capped (attack at least 1) and Set permanently. Emits Done<SetMinionStats> with the uncapped split and the new stats.
+     */
+    ShuffleStatsMutator(B, e) {
+      const x = e.Event; const m = B.board.findLiveMinion(x.TargetId); if (!m || m.Health.Total < 1) return;
+      let n = m.Health.Permanent + m.Attack.Permanent; if (n < 3) return; n -= 2;
+      const r = B.randomizer(e.Owner).next(0, n);
+      let a = r + 1, h = n - r + 1;
+      if (m.Attack.Max < a) { h = h + (a - m.Attack.Max); a = m.Attack.Max; }
+      else if (m.Health.Max < h) { a = a + (h - m.Health.Max); h = m.Health.Max; }
+      m.Attack.Set(Math.max(1, Math.min(a, m.Attack.Max)), false);
+      m.Health.Set(Math.min(h, m.Health.Max), false);
+      B.add(wrap('Done', ev('SetMinionStats', { Owner: e.Owner, Target: x.TargetId, Source: x.SourceId, Attack: a, Health: h, Positive: false, SourcePerk: null, SourceSpell: null,
+        ResultAttack: m.Attack.ShallowCopy(), ResultHealth: m.Health.ShallowCopy() })));
+    },
+    /**
+     * ShuffleMinionsMutator (Try<ShuffleMinions>): the live targets (in target order; FindLiveMinions(ids)) split into the event
+     * owner's side and the other side; within each, every pet in turn takes a random remaining point of its group
+     * (i = Next(0, count), taken out) via SetMinion, recorded in ResultItems. Then Done.
+     */
+    ShuffleMinionsMutator(B, e) {
+      const x = e.Event; const board = B.board; const rand = B.randomizer(e.Owner);
+      const live = (x.TargetIds || []).map((id) => board.findMinion(id, true, true)).filter(Boolean);
+      x.ResultItems = [];
+      for (const group of [live.filter((m) => m.Owner === e.Owner), live.filter((m) => m.Owner !== e.Owner)]) {
+        const points = group.map((m) => ({ x: m.Point.x, y: m.Point.y }));
+        for (const m of group) {
+          if (!points.length) break;
+          const i = rand.next(0, points.length); const p = points[i]; points.splice(i, 1);
+          board.setMinion(p, m); x.ResultItems.push({ Id: m.Id, Point: { x: p.x, y: p.y } });
+        }
+      }
+      B.add(wrap('Done', x));
+    },
+    /** SwapStatsMutator (Try<SwapStats>): a live pet swaps attack and health, permanent and temporary parts each, then Done */
+    SwapStatsMutator(B, e) {
+      const x = e.Event; const m = B.board.findLiveMinion(x.TargetId); if (!m) return;
+      const ap = m.Attack.Permanent, at = m.Attack.Temporary, hp = m.Health.Permanent, ht = m.Health.Temporary;
+      m.Attack.Set(hp, false); m.Attack.Set(ht, true); m.Health.Set(ap, false); m.Health.Set(at, true);
+      B.add(wrap('Done', x));
+    },
     /** SetMinionStatsMutator (Try<SetMinionStats>); DamageRemovableBuffs only touches shop buffs, which battles never hold */
     SetMinionStatsMutator(B, e) {
       const s = e.Event; const m = B.board.findLiveMinion(s.Target); if (!m) return;
@@ -2358,7 +2500,22 @@
     blocksManaRelease: (m) => m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return !!(ab && ab.ManaBurstDisabled); }),
     checkAura: () => {}, // CheckAuraSystem.Execute is an empty method (RET) in build 26131463
     finalCleanup: () => {}, // FinalCleanupMutator.Execute is an empty method (RET) in build 26131463
-    removeMinion: () => unported('RemoveMinionMutator'),
+    /**
+     * RemoveMinionMutator (Try<RemoveMinion>): a relic leaves the relic grid (BoardExtensions.RemoveRelic); any other live pet is
+     * marked Destroyed and leaves the grid (BoardExtensions.RemoveMinion), going to Location 6 for RemoveType 1, else to the graveyard.
+     * Done only when something was removed.
+     */
+    removeMinion(B, e) {
+      const r = e.Event; const board = B.board; const m = board.findMinion(r.MinionId); if (!m) return;
+      if (minionType(m) === 1) {
+        const i = board.Relics.indexOf(m); if (i < 0) return; board.Relics[i] = null;
+      } else {
+        const x = board.findMinion(r.MinionId, true, true); if (!x) return;
+        x.Destroyed = true; const i = board.cells.indexOf(x); if (i >= 0) board.cells[i] = null;
+        if ((r.RemoveType || 0) === 1) x.Location = 6; else board.MinionGraveyard.push(x);
+      }
+      B.add(wrap('Done', r));
+    },
     forceActivatePerk: () => unported('ForceActivatePerkSystem'),
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     minionType: (m) => (D.minions[m.Enum] || {}).type || 0, // MinionTemplate.Type (+0xfc): 1 = relic
