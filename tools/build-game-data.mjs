@@ -17,7 +17,7 @@ const strip = (o) => {
     if (o.$type === "System.RuntimeType") return { $type: "Type" }; // type handles are not readable; never needed by the engine so far
     const r = {};
     for (const [k, v] of Object.entries(o)) {
-      if (v === null || v === false || UI.test(k) || (Array.isArray(v) && v.length === 0)) continue;
+      if (v === null || UI.test(k) || (Array.isArray(v) && v.length === 0)) continue; // keep false: many fields are Nullable<bool> where false != null
       if (k === "$type") { r[k] = v.replace(/^Spacewood\.Core\.Models\.Abilities\./, "").replace(/^Spacewood\.(Core|SpacewoodCore)\.Models\./, ""); continue; }
       r[k] = strip(v);
     }

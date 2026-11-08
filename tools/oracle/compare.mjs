@@ -24,7 +24,9 @@ export function petsFromBoard(boardBefore, idOf) {
   return boardBefore.map((p) => {
     const t = data.minions[p.Enum];
     const id = idOf(p.Id); const b = id[0], u = +id.slice(1);
-    return { Id: model.itemId(b, u), Owner: p.Owner, Enum: p.Enum, x: p.Point.x, Level: p.Level, Attack: p.Attack, Health: p.Health, Perk: p.Perk,
+    return { Id: model.itemId(b, u), Owner: p.Owner, Enum: p.Enum, x: p.Point.x, Level: p.Level, Exp: p.Exp ?? 0, Mana: p.Mana ?? 0, Relic: !!p.Relic,
+      Attack: p.Attack - (p.AttackTemp || 0), AttackTemp: p.AttackTemp || 0, Health: p.Health - (p.HealthTemp || 0), HealthTemp: p.HealthTemp || 0, Perk: p.Perk,
+      PerkDurability: p.PerkDurability ?? null, PerkMultiplier: p.PerkMultiplier ?? null,
       Tribe: t ? t.tribe : null, Abilities: t ? t.abilities.map((a) => Object.assign(new model.MinionAbilityModel(a.e, p.Level, a.native), { Group: a.group })) : [] };
   });
 }
@@ -34,10 +36,10 @@ function runOne(i) {
   if (!out || !out.boardBefore) return { i, status: "no-board" };
   const idOf = makeIdMapper(out.boardBefore);
   const pets = petsFromBoard(out.boardBefore, idOf);
-  const unique = Math.max(0, ...pets.filter((p) => p.Id.BoardId === "M").map((p) => p.Id.Unique));
+  const unique = out.infoBefore ? out.infoBefore.UniqueNumberCounter : Math.max(0, ...pets.filter((p) => p.Id.BoardId === "M").map((p) => p.Id.Unique));
   let res, err = null;
   try {
-    const b = new sim.Battle({ pets, seed: spec.seed, playerSeed: spec.playerSeed, opponentSeed: spec.opponentSeed, unique, hooks: abilities ? abilities.hooks : {} });
+    const b = new sim.Battle({ pets, trumpets: out.infoBefore && { Trumpets: out.infoBefore.Trumpets, OpponentTrumpets: out.infoBefore.OpponentTrumpets, TrumpetsDone: out.infoBefore.TrumpetsDone, OpponentTrumpetsDone: out.infoBefore.OpponentTrumpetsDone }, seed: spec.seed, playerSeed: spec.playerSeed, opponentSeed: spec.opponentSeed, unique, hooks: abilities ? abilities.hooks : {} });
     res = b.run();
   } catch (e) { err = e; }
   const want = lines(out.events, idOf, { depth });

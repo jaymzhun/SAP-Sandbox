@@ -265,9 +265,9 @@
             else if (t.KeepFinding) n++;
           }
         };
-        const ahead = origin.Owner === 1 ? 1 : -1; // Point.Right for the player side, Point.Left for the opponent side
-        if (t.Position === 1 || t.Position === 2) scan(ahead);
-        if (t.Position === 0 || t.Position === 2) scan(-ahead);
+        const ahead = origin.Owner === 1 ? 1 : -1; // Position 0 = ahead, 1 = behind, 2 = both (behind is scanned first)
+        if (t.Position === 1 || t.Position === 2) scan(-ahead);
+        if (t.Position === 0 || t.Position === 2) scan(ahead);
         if (t.Amount) { const a = paramValue(t.Amount, pa); if (a < out.length) unported('TargetsRelative.Amount random take'); }
         return out;
       }
@@ -428,9 +428,8 @@
       out.push(r.Status === 2 ? wrap('Fail', at) : wrap('Do', at));
     }
     if (minion.Perk != null) {
-      const pk = (D.perks || {})[minion.Perk];
-      if (!pk) unported('PerkConstants.GetPerk(' + minion.Perk + ')');
-      for (const e of pk.abilities || []) {
+      const pk = (D.perks || {})[minion.Perk]; // PerkConstants.GetPerk returns null for some perks (e.g. Date, Sticky): no perk abilities
+      for (const e of (pk && pk.abilities) || []) {
         const ab = getAbility(e, 1);
         const r = abilityTriggered(ab, null, trig, false, B, rand, minion.Id);
         if (r.Status !== 0) continue;

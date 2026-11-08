@@ -70,7 +70,9 @@
       this.o = o;
       this.board = new BoardModel();
       this.board.UniqueNumberCounter = o.unique ?? 0;
-      for (const p of o.pets) this.board.setMinion({ x: p.x, y: 0 }, new M.MinionModel(p));
+      for (const p of o.pets) { if (p.Relic) continue; this.board.setMinion({ x: p.x, y: 0 }, new M.MinionModel(p)); }
+      // Relics live in their own grid (BoardModel.Relics), iterated by cell index.
+      this.board.Relics = o.pets.filter((p) => p.Relic).sort((a, b) => a.x - b.x).map((p) => { const m = new M.MinionModel(p); m.Point = { x: p.x, y: 0 }; return m; });
       if (o.trumpets) Object.assign(this.board, o.trumpets);
       this.state = { Seed: o.seed, PlayerSeed: o.playerSeed, OpponentSeed: o.opponentSeed, Turn: 0, Outcome: 0, StartingPlayer: 0, CurrentPriority: 0,
         DamageDealt: 0, DamageTaken: 0, EventLog: [], DisableCrits: false };
