@@ -635,6 +635,35 @@
     B.add(wrap('Done', t));
     if (t.RemovePerk != null) unported('AbilityTriggered.RemovePerk');
   }
+  /**
+   * BoardExtensions.GetPerkMultiplier(m): PerkMultiplier (default 1); times the level of an own ability whose PerkMultiplier names
+   * this perk, otherwise (in battle) times the pet's aura-2 value.
+   */
+  function getPerkMultiplier(B, m) {
+    if (!m || m.Perk == null) return 1;
+    const mult = m.PerkMultiplier ?? 1;
+    const a = m.Abilities.find((x) => { const ab = getAbility(x.Enum, x.Level); return ab && ab.PerkMultiplier != null; });
+    if (a && getAbility(a.Enum, a.Level).PerkMultiplier === m.Perk) return mult * a.Level;
+    if (B.board.IsBattle) { const v = getAuraValue(m, 2); if (v != null) return v * mult; }
+    return mult;
+  }
+  /** BoardExtensions.GetAuraValue(m, aura): sum of the MagicVariable of the pet's own abilities with that AuraEnum (null if none). */
+  function getAuraValue(m, aura) {
+    if (!m || (D.minions[m.Enum] || {}).relicType === 1 || m.Perk === 55) return null;
+    let v = null;
+    for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (ab && ab.AuraEnum === aura) v = (v ?? 0) + (ab.MagicVariable || 0); }
+    return v;
+  }
+  /** BoardExtensions.GetNegativePerkMultiplier(m): 1 (pet 748: its level), plus the MagicVariable of ability 388 on non-deaf enemies, times PerkMultiplier. */
+  function getNegativePerkMultiplier(B, m) {
+    if (!m) return 1;
+    let v = m.Enum === 748 ? m.Level : 1;
+    for (const x of B.board.cells) {
+      if (!x || x.Owner === m.Owner || x.Perk === 55) continue;
+      for (const a of x.Abilities) if (a.Enum === 388) { const ab = getAbility(a.Enum, a.Level); v += (ab && ab.MagicVariable) || 0; }
+    }
+    return m.PerkMultiplier != null ? v * m.PerkMultiplier : v;
+  }
   /** MinionExtensions.HasEffect<T>(model): a visible ability with a pair whose effect is T. */
   function hasEffect(model, type) {
     if (!model) return false; const ab = getAbility(model.Enum, model.Level); if (!ab || ab.HiddenTriggersAndEffects) return false;
@@ -669,8 +698,8 @@
     if (ab.RepeatParameter) reps = paramValue(ab.RepeatParameter, { B, SourceId: minion.Id, TriggerSourceId: sourceOf(t.TriggerEvent) || null, TriggerTargetId: targetOf(t.TriggerEvent) || null, Random: rand, TriggerEvent: t.TriggerEvent });
     const base = ab.Repeat ?? 1;
     for (let i = 0; i < reps; i++) list.push(newActivate(t, ++minion.AbilityActivations));
-    if (t.Type === 1) { const extra = (minion.PerkMultiplier ?? 1) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; list.push(a); } }
-    if (t.Type === 2) { const extra = (minion.PerkMultiplier ?? 1) - 1; if (extra > 0) unported('ailment repeats'); }
+    if (t.Type === 1) { const extra = getPerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; list.push(a); } }
+    if (t.Type === 2) { const extra = getNegativePerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; a.Reversed = minion.Abilities.some((x) => x.Enum === 839); list.push(a); } }
     if (t.Type === 0 && !(ab.RepeatFromAuraDisabled || t.RepeatFromAuraDisabled) && B.hooks.auraRepeats) B.hooks.auraRepeats(B, e, minion, model, ab, list);
     return list;
   }
@@ -1363,7 +1392,7 @@
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
-    findAuras, countAura, tryAttackAdjacent,
+    findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier,
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };

@@ -13,7 +13,7 @@ let abilities = null;
 try { abilities = require("../../js/game/abilities.js"); } catch (e) { if (!/Cannot find module/.test(e.message)) throw e; }
 
 const args = process.argv.slice(2);
-const pos = args.filter((a, j) => !a.startsWith("--") && args[j - 1] !== "--show");
+const pos = args.filter((a, j) => !a.startsWith("--") && args[j - 1] !== "--show" && args[j - 1] !== "--js");
 const [specPath, outPath, which = "all"] = pos;
 const depth = args.includes("--depth");
 const showIdx = args.indexOf("--show"); const show = showIdx >= 0 ? +args[showIdx + 1] : 6;
@@ -61,6 +61,8 @@ if (args.includes("--summary")) {
   }
   for (const [k, v] of [...groups].sort((a, b) => b[1].length - a[1].length)) console.log(String(v.length).padStart(4), k, "  e.g. #" + v.slice(0, 5).join(" #"));
 }
+const jsIdx = args.indexOf("--js");
+if (jsIdx >= 0) { const [lo, hi] = args[jsIdx + 1].split(":").map(Number); for (const i of idxs) { const r = runOne(i); r.got.slice(lo, hi).forEach((l, j) => console.log(`js ${lo + j} ${l}`)); } }
 for (const r of fails.slice(0, show)) {
   const names = (side) => (r.spec[side] || []).map((p) => p.name || p.enum).join(",");
   console.log(`\n#${r.i} [${names("player")} vs ${names("opponent")}] outcome game=${r.wantOutcome} js=${r.outcome} first diff at line ${r.k}${r.err ? " ERROR " + r.err.stack.split("\n").slice(0, +(process.env.STACK || 3)).join(" | ") : ""}`);
