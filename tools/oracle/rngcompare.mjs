@@ -23,8 +23,8 @@ const outs = outPath ? JSON.parse(fs.readFileSync(outPath, "utf8")) : null;
 
 // JS draws, recorded in the game's vocabulary: [method, owner, a, b, result]
 const P = R.DotNetRandom.prototype;
-let log = null, depth = 0;
-const wrap = (name, f, fmt) => function (...a) { if (!log || depth || this.__owner === undefined) return f.apply(this, a); depth++; try { const v = f.apply(this, a); log.push(fmt(this.__owner, a, v)); return v; } finally { depth--; } };
+let log = null, depth = 0, curBattle = null;
+const wrap = (name, f, fmt) => function (...a) { if (!log || depth || this.__owner === undefined) return f.apply(this, a); depth++; try { const v = f.apply(this, a); const r = fmt(this.__owner, a, v); r.at = curBattle ? curBattle.state.EventLog.length : null; log.push(r); return v; } finally { depth--; } };
 P.next = wrap("next", P.next, (o, a, v) => [a[0] === undefined ? "Next0" : a[1] === undefined ? "Next1" : "Next2", o, a[0] ?? null, a[1] ?? null, v]);
 P.nextUlong = wrap("nextUlong", P.nextUlong, (o, a, v) => ["NextUlong0", o, null, null, null]);
 P.nextDouble = wrap("nextDouble", P.nextDouble, (o, a, v) => ["NextDouble0", o, null, null, null]);
@@ -53,7 +53,7 @@ for (const i of idxs) {
   try {
     const b = new sim.Battle({ pets: petsFromBoard(out.boardBefore, idOf), trumpets: out.infoBefore, seed: spec.seed, playerSeed: spec.playerSeed, opponentSeed: spec.opponentSeed,
       unique: out.infoBefore.UniqueNumberCounter, hooks: abilities.hooks });
-    for (const k of [0, 1, 2]) b.rand[k].__owner = k;
+    for (const k of [0, 1, 2]) b.rand[k].__owner = k; curBattle = b;
     b.run();
   } catch (e) { err = e; }
   const got = log; log = null;
@@ -72,7 +72,7 @@ for (const f of fails.slice(0, show)) {
   for (let j = Math.max(0, f.k - 2); j < f.k + 3; j++) {
     if (!f.want[j] && !f.got[j]) break;
     console.log(`${j === f.k ? ">>" : "  "} ${String(j).padStart(4)} game: ${fmt(f.want[j])}${f.want[j] && f.want[j][5] ? "  @" + f.want[j][5].join(",") : ""}`);
-    console.log(`        js:   ${fmt(f.got[j])}`);
+    console.log(`        js:   ${fmt(f.got[j])}${f.got[j] && f.got[j].at != null ? "  [js log line " + f.got[j].at + "]" : ""}`);
   }
 }
 if (args.includes("--list")) console.log("\nfailing:", fails.map((f) => "#" + f.i + (f.err ? "*" : "")).join(" "));

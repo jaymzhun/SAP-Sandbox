@@ -18,13 +18,17 @@ const FIELDS = {
 };
 const TRIGGER_FIELDS = ["SourceId", "TargetId", "AttackerId", "DefenderId", "Amount", "IsFirstAttack", "Perk", "PetActivatedId", "AbilityEnum", "Value"];
 
+// Player board -> P, the merged battle board (opponent pets, summons) -> M, any other board (e.g. an opponent relic) -> Q, R, ...
 export function makeIdMapper(boardBefore) {
-  const playerGuid = boardBefore?.find((p) => p.Owner === 1)?.Id?.BoardId;
-  const g = (b) => (b && typeof b === "object" ? `${b._a}:${b._b}:${b._c}` : b);
-  const pg = g(playerGuid);
+  const g = (b) => (b && typeof b === "object" ? `${b._a}:${b._b}:${b._c}:${b._d}:${b._k}` : b);
+  const pg = g(boardBefore?.find((p) => p.Owner === 1 && !p.Relic)?.Id?.BoardId ?? boardBefore?.find((p) => p.Owner === 1)?.Id?.BoardId);
+  const mg = g(boardBefore?.find((p) => p.Owner === 2 && !p.Relic)?.Id?.BoardId);
+  const other = new Map();
+  for (const p of boardBefore || []) { const k = g(p.Id.BoardId); if (k !== pg && k !== mg && !other.has(k)) other.set(k, String.fromCharCode(81 + other.size)); }
   return (id) => {
     if (!id || id.Unique === undefined) return null;
-    const b = typeof id.BoardId === "string" ? id.BoardId : g(id.BoardId) === pg ? "P" : "M";
+    const k = typeof id.BoardId === "string" ? null : g(id.BoardId);
+    const b = typeof id.BoardId === "string" ? id.BoardId : k === pg ? "P" : other.has(k) ? other.get(k) : "M";
     return `${b}${id.Unique}`;
   };
 }
