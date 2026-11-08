@@ -200,7 +200,16 @@
     if (f.StatsMax != null && (cand.Attack.IsMax && cand.Health.IsMax) !== f.StatsMax) return false;
     if (f.Mana) { const v = paramValue(f.Mana, pa); if (!opCheck(f.ManaOperator, cand.Mana, v)) return false; }
     if (f.Level != null && !opCheck(f.LevelOperator, cand.Level, f.Level)) return false;
-    if (f.Power || f.Charge) unported('MinionFinder.Power/Charge');
+    // Power / Charge (each with its ability): GetPower / GetCharge of the candidate against the parameter (target = candidate, source = owner)
+    const fpa = () => ({ B, TargetId: cand.Id, SourceId: owner ? owner.Id : null, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: null, TriggerEvent: null, Owner: owner ? owner.Owner : 0 });
+    if (f.Power && f.PowerAbility != null && !opCheck(f.PowerOperator || 0, cand.Power[f.PowerAbility] || 0, paramValue(f.Power, fpa()))) return false;
+    if (f.Charge && f.ChargeAbility != null) {
+      // MinionExtensions.GetCharge reads the ability model's Charges, but only once the pet has a power dictionary (+0xd8),
+      // which the game creates on the first AddPower
+      const hasDict = cand._powerDict || Object.keys(cand.Power).length > 0;
+      const a = hasDict ? cand.Abilities.find((x) => x.Enum === f.ChargeAbility) : null;
+      if (!opCheck(f.ChargeOperator || 0, (a && a.Charges) || 0, paramValue(f.Charge, fpa()))) return false;
+    }
     if (f.LevelMax != null && (cand.Level > 2) !== f.LevelMax) return false;
     if (f.Countdown != null) unported('MinionFinder.Countdown');
     if (f.Tier) { const v = paramValue(f.Tier, pa); const tier = (D.minions[cand.Enum] || {}).tier; if (!opCheck(f.TierOperator, tier, v)) return false; }
@@ -321,6 +330,23 @@
     if (ab.AuraTierMax != null && ab.AuraTierMax < minionTier(target)) return false;
     return true;
   }
+  /**
+   * BoardExtensions.FindAura(board, m, aura) -> the first aura ability model: none for RelicType 1; a dead pet (not perk 55)
+   * checks its own aura first; then the grid, forwards for the player and backwards otherwise, over same-side pets that are
+   * not destroyed and not perk 55
+   */
+  function findAura(B, m, aura) {
+    if (!m || (D.minions[m.Enum] || {}).relicType === 1) return null;
+    if (!m.IsAlive && m.Perk !== 55) { const a = findAuraAbilities(m, aura, m)[0]; if (a && checkAura(B, m, a, m)) return a; }
+    const cells = B.board.cells; const n = cells.length;
+    for (let i = 0; i < n; i++) {
+      const x = cells[m.Owner !== 1 ? n - i - 1 : i];
+      if (!x || x.Destroyed || x.Perk === 55 || x.Owner !== m.Owner) continue;
+      const a = findAuraAbilities(m, aura, x)[0];
+      if (a && checkAura(B, m, a, x)) return a;
+    }
+    return null;
+  }
   /** FindAuras(board, m, aura) -> [{Minion, Ability, value, ceil}]; value = the aura ability's MagicVariable; ceil = no TriggerLimit. */
   function findAuras(B, m, aura) {
     if (!m) return [];
@@ -429,13 +455,28 @@
   }
 
   // ---------------------------------------------------------------- Targets (TargetsBase.GetTargets)
+  /** MinionExtensions.IsSilly: in battle, perk 75, unless the pet has ability 839 at level 1 or 3 */
+  const isSilly = (B, m) => !!m && B.board.IsBattle !== false && m.Perk === 75 && !m.Abilities.some((a) => a.Enum === 839 && (a.Level === 1 || a.Level === 3));
   /** ta: TargetsArgs {B, TriggerEvent, OwnerMinion, Aim, Random, Reversed} -> ItemId[] | null */
   function getTargets(t, ta) {
     const B = ta.B, board = B.board, owner = ta.OwnerMinion;
     if (t.Condition) { if (!owner) return null; const ca = { B, TriggerEvent: ta.TriggerEvent, Random: ta.Random, OwnerId: owner.Id, Reversed: ta.Reversed }; if (!conditionCheck(t.Condition, ca)) return null; }
     let out = getTargetsRaw(t, ta);
     if (!out) return null;
-    if (owner && owner.Perk === 75 && !t.ImmuneToSilly) unported('Silly targets');
+    if (owner && !t.ImmuneToSilly && isSilly(B, owner)) {
+      // TargetsBase.GetTargets: a Silly owner retargets at random. Count = ITargetAmount's value (TargetsFind.Limit,
+      // TargetsRelative/TargetsScan.Amount), else TargetsRelative's Position/Distance, else the raw count; then shuffle every
+      // pet (FindMinions(true,true), Fisher-Yates from the end), take that many, keep those with IMinionFiltering's finder Perk
+      const tn = short(T(t)); let n = out.length;
+      const amt = tn === 'TargetsFind' ? t.Limit : tn === 'TargetsRelative' || tn === 'TargetsScan' ? t.Amount : null;
+      if (amt) n = paramValue(amt, paramArgs(ta));
+      else if (tn === 'TargetsRelative') { const d = t.Distance ? paramValue(t.Distance, paramArgs(ta)) : null; n = t.Position === 2 ? (d != null ? d * 2 : 2) : (d != null ? d : 1); }
+      const filtering = ['TargetsAbsolute', 'TargetsFind', 'TargetsMirror', 'TargetsRelative', 'TargetsScan', 'TargetsSelf', 'TargetsTriggerSource'].includes(tn);
+      const perk = filtering && t.MinionFinder ? t.MinionFinder.Perk ?? null : null;
+      let all = fastShuffle(board.findMinions(true, true), ta.Random).slice(0, Math.max(0, n));
+      if (perk != null) all = all.filter((m) => m.Perk === perk);
+      out = all.map((m) => m.Id);
+    }
     if (t.RemoveRelics) out = out.filter((id) => { const m = board.findMinion(id); const ty = m ? (D.minions[m.Enum] || {}).type : 0; return !(ty !== 0 && ty !== 2); });
     if (owner && owner.CurrentTargetsThisTurn && owner.CurrentTargetsThisTurn.length) unported('TargetsBase persisted targets');
     return out;
@@ -452,15 +493,17 @@
         return null;
       }
       case 'TargetsTriggerSource': {
-        if (ta.TriggerEvent && ta.TriggerEvent.cls === 'Force') unported('TargetsTriggerSource on Force');
+        // a forced activation (TriggerEvent+Force, Force+WithSource included) targets one random live pet (list[Next(0, count)])
+        if (isForce(ta.TriggerEvent)) { const live = board.findLiveMinions(); return [live[ta.Random.next(0, live.length)].Id]; }
         const s = sourceOf(ta.TriggerEvent); if (!s) return [];
         if (t.MinionFinder) { const m = board.findMinion(s); if (!m || !predicate(t.MinionFinder, B, m, owner)) return []; }
         return [s];
       }
       case 'TargetsTriggerTarget': {
-        if (!t.ImmuneToSilly && owner && owner.Perk === 75) unported('Silly targets');
+        // Silly: one random live pet (list[Next(0, count)])
+        if (!t.ImmuneToSilly && owner && isSilly(B, owner)) { const live = board.findLiveMinions(); return [live[ta.Random.next(0, live.length)].Id]; }
         const x = targetOf(ta.TriggerEvent); if (x !== undefined) return x ? [x] : [];
-        unported('TargetsTriggerTarget without ITriggerTarget');
+        return owner ? (owner.LastTargetsThisTurn || []).slice() : []; // no ITriggerTarget: the owner's LastTargetsThisTurn (+0x148)
       }
       case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
       case 'TargetsSilly': { const sub = owner && owner.Perk === 75 ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // perk 75 (Silly)
@@ -504,7 +547,8 @@
         if (t.RelativeOrigin != null) { origin = null; const ev2 = ta.TriggerEvent; if (t.RelativeOrigin === 2 && sourceOf(ev2)) origin = board.findMinion(sourceOf(ev2)); else if (t.RelativeOrigin === 3 && targetOf(ev2)) origin = board.findMinion(targetOf(ev2)); }
         let list = findMinions(f, B, origin, ta.Aim, ta.Random);
         if (t.SecondaryMinionFinder) unported('TargetsFind.SecondaryMinionFinder');
-        if (!t.ImmuneToSilly && owner && owner.Perk === 75) unported('Silly targets');
+        // Silly: as many random live pets as were found (shuffle from the end, take)
+        if (!t.ImmuneToSilly && owner && isSilly(B, owner)) return fastShuffle(board.findLiveMinions(), ta.Random).slice(0, list.length).map((m) => m.Id);
         return list.map((m) => m.Id);
       }
       case 'TargetsRelative': {
@@ -907,11 +951,14 @@
     const addAt = (level) => { const n = repeatsAt(level); for (let i = 0; i < n; i++) { const a = newActivate(t, ++minion.AbilityActivations); a.Level = level; list.push(a); } };
     if (t.Type === 0 && !(ab.RepeatFromAuraDisabled || t.RepeatFromAuraDisabled)) {
       const first = minion.Abilities.find((x) => { const xa = getAbility(x.Enum, x.Level); return xa && !xa.RepeatFromAuraDisabled; });
-      if (first && first.Enum === ab.Enum && B.board.IsBattle && findAuras(B, minion, 0).length) unported('BuildRepeatActivations aura 0 (FindAura)');
+      if (first && first.Enum === ab.Enum && B.board.IsBattle) { const a = findAura(B, minion, 0); if (a) addAt(a.Level); }
       for (const ref of findAuras(B, minion, 5)) addAt(ref.Ability.Level);
       if (model && hasTrigger({ Abilities: [model] }, ['TriggerSpendAttack', 'TriggerSpendHealth'], false) && findAuras(B, minion, 13).length) unported('BuildRepeatActivations aura 13');
     }
-    if (model && hasDeathEffect({ Abilities: [model] }) && findAuras(B, minion, 4).length) unported('BuildRepeatActivations aura 4 (FindAura)');
+    if (model && hasDeathEffect({ Abilities: [model] })) {
+      const a = findAura(B, minion, 4);
+      if (a) { if (a.AlwaysIgnoreMinionLevel) list.push(newActivate(t, ++minion.AbilityActivations)); addAt(a.Level); }
+    }
     return list;
   }
   function activateAbilityDo(B, e) {
@@ -986,7 +1033,12 @@
   /** EffectBase.ActivateGlobal -> OnGlobal. A Silly source (not ImmuneToSilly) first flips a coin for the effect's owner. */
   function effectGlobal(eff, ga) {
     const t = short(T(eff));
-    if (!eff.ImmuneToSilly) { const sm = ga.SourceId ? ga.B.board.findMinion(ga.SourceId) : null; if (sm && sm.Perk === 75) unported('EffectBase.ActivateGlobal silly owner'); }
+    // EffectBase.ActivateGlobal: a Silly source flips a coin (Randomizer.FiftyFifty: Next(2) == 1); on tails the effect's owner
+    // becomes the other side (the args object is changed in place)
+    if (!eff.ImmuneToSilly) {
+      const sm = ga.SourceId ? ga.B.board.findMinion(ga.SourceId) : null;
+      if (isSilly(ga.B, sm) && ga.Random.next(2) !== 1) ga.Owner = ga.Owner === 1 ? 2 : ga.Owner === 2 ? 1 : 0;
+    }
     if (!GLOBAL_EFFECTS.has(t)) return null;
     switch (t) {
       case 'EffectGainGold': {
@@ -1838,6 +1890,7 @@
     GiveMinionPowerMutator(B, e) {
       const g = e.Event; const m = B.board.findMinion(g.Target, !g.IncludeDestroyed, !g.IncludeDead); if (!m) return;
       if (g.ResetFirst) delete m.Power[g.Ability];
+      m._powerDict = true;
       m.Power[g.Ability] = (m.Power[g.Ability] || 0) + g.Amount;
       if (g.Future && B.board.IsBattle) (B.board.MinionFutures = B.board.MinionFutures || []).push({ Target: g.Target, Power: g.Amount > 0 ? g.Amount : null, Ability: g.Ability }); // BoardModel +0x1b0
       B.add(wrap('Done', g));
