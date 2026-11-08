@@ -197,3 +197,7 @@ Measured with a Frida trace of every `BoardRandom` draw: a transform ability rol
 - **Ability 839** reverses ailments (TryDamage, Activate) and exempts a pet from perk 121's buff cancel.
 - **TriggerEvent.Force.New(source)** returns the subclass `Force+WithSource` when a source is given.
 - **Open**: the board's Pack / OpponentPack are not in the recordings (enums); the harness leaves them at 0 (Turtle). Matching Find battles agree.
+- **Memories**: `RememberMinionMutator` writes a MinionMemory (enum/attack/health/mana/perk/level/exp/power as the Keep* flags say) into the source's MinionBrain list for the ability; UniqueEnum skips a type already there, and without KeepMany the list is cleared first. `MinionCatalogueMemory` makes one pet per memory. Specs carry no memories, so brains start empty.
+- **StealMinionPerk**: the thief takes the victim's perk; `TriggerStealPerkSystem` then fires PerkLost (unless TargetPerkStays), PerkGained, and PlayedSpellOn for the perk's spell (thief as target, victim as source).
+- **Lambdas not in the data** (resolved live with agent.js `delegateAt` / `methodref` / `classAt`): ability 439's ParameterTriggerValue reads TriggerEvent+Hurt.Amount; PerkCatalogueEvent reads PerkLost.Perk (else perk 8); OrderMinions 18 is Where(HasDeathEffect).
+- **Shop history not in the recordings**: BoardModel PreviousSurvivors (+0xf8) and WackyMinionParameter (+0x1a0) are read as given (empty on the harness boards).
