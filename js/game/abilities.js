@@ -1091,6 +1091,12 @@
       if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
       B.add(wrap('Done', b));
     },
+    /** ReleaseManaSystem (Try<ReleaseMana>): a fainting pet with mana force-runs ability 686 at level 1 */
+    ReleaseManaSystem(B, e) {
+      const r = e.Event; const m = B.board.findMinion(r.TargetId); if (!m || m.Mana < 1) return;
+      B.add(wrap('Do', ev('AbilityTriggered', { Owner: m.Owner, Ability: 686, Level: 1, MinionId: m.Id, Aim: null, TriggerEvent: r.TriggerEvent, UpdateLevel: false, Type: 0, Force: true,
+        RepeatFromAuraDisabled: false, DisableAfterTemp: false, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
+    },
     /** ChangeMinionManaMutator (Try<ChangeMinionMana>) */
     ChangeMinionManaMutator(B, e) {
       const c = e.Event; const board = B.board; const m = board.findLiveMinion(c.TargetId); if (!m) return;

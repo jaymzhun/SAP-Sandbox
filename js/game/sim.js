@@ -490,7 +490,7 @@
       const m = board.findMinion(d.TargetId);
       if (!m || m.Mana < 1) return;
       if (m.Perk !== 55 && hooks.blocksManaRelease && hooks.blocksManaRelease(m)) return;
-      B.add(wrap('Try', ev('ReleaseMana', { Owner: d.Owner, MinionId: d.TargetId, Trigger: bd })));
+      B.add(wrap('Try', ev('ReleaseMana', { Owner: d.Owner, TargetId: d.TargetId, TriggerEvent: bd })));
     });
     // 143 TriggerMinionsSystem.All (greedy): one TriggerMinions per trigger event, grouped by event type
     sys('TriggerMinionsSystem.All', (e) => TRIGGER_EVENTS.has(e.cls), (batch) => {
