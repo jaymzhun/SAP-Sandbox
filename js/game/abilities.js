@@ -43,15 +43,59 @@
   const opCheck = (op, a, b) => op === 0 ? a === b : op === 1 ? a < b : op === 2 ? a <= b : op === 3 ? b < a : op === 4 ? b <= a : false; // OperatorUtility.Check
   const tdiv = (a, b) => (a / b) < 0 ? Math.ceil(a / b) : Math.floor(a / b);
 
+  /**
+   * System.Decimal arithmetic for the values the game computes in decimal (Calculator, ParameterInt.Op3). Values are BigInt
+   * fixed-point at scale 10^28 (a decimal below 7.9 keeps 28 fractional digits); products and quotients round half to even
+   * at the last digit, as decimal does.
+   */
+  const Dec = (() => {
+    const S = 10n ** 28n;
+    const divRound = (n, d) => { if (d < 0n) { n = -n; d = -d; } let q = n / d; const r = n - q * d; const twice = 2n * (r < 0n ? -r : r);
+      if (twice > d || (twice === d && (q % 2n !== 0n))) q += r < 0n ? -1n : 1n; return q; };
+    const floorDiv = (n) => { let q = n / S; if (n < 0n && q * S !== n) q -= 1n; return q * S; };
+    return {
+      int: (v) => BigInt(Math.trunc(v)) * S,
+      from(d) { const scale = (d.flags >> 16) & 0xff; let m = BigInt(d.ulomidLE ?? d.lo) + (BigInt(d.hi || 0) << 64n); if (d.flags >>> 31) m = -m; return m * 10n ** BigInt(28 - scale); },
+      add: (a, b) => a + b, sub: (a, b) => a - b,
+      mul: (a, b) => divRound(a * b, S),
+      div: (a, b) => { if (b === 0n) throw new Error('DivideByZeroException'); return divRound(a * S, b); },
+      mod: (a, b) => { if (b === 0n) throw new Error('DivideByZeroException'); return a % b; },
+      floor: floorDiv,
+      ceil: (n) => -floorDiv(-n),
+      round: (n) => divRound(n, S) * S, // Decimal.Round(d): to even
+      toInt: (n) => Number(n / S), // (int) truncates toward zero
+    };
+  })();
+  /** Calculator.Sum(start): each item applies its operation (0 +, 1 -, 2 *, 3 /, 4 min, 5 max, 6 %) and its rounding, then the calculator's rounding, then (int). */
+  function calculatorSum(c, start) {
+    const rounding = (r, x) => (r === 1 ? Dec.ceil(x) : r === 2 ? Dec.floor(x) : r === 3 ? Dec.round(x) : x);
+    let v = Dec.int(start);
+    for (const it of c.Items || []) {
+      const x = Dec.from(it.Value);
+      switch (it.Operation) {
+        case 0: v = Dec.add(v, x); break;
+        case 1: v = Dec.sub(v, x); break;
+        case 2: v = Dec.mul(v, x); break;
+        case 3: v = Dec.div(v, x); break;
+        case 4: if (v > x) v = x; break;
+        case 5: if (v < x) v = x; break;
+        case 6: v = Dec.mod(v, x); break;
+        default: break;
+      }
+      v = rounding(it.Rounding || 0, v);
+    }
+    return Dec.toInt(rounding(c.Rounding || 0, v));
+  }
+
   // ---------------------------------------------------------------- Parameters (ParameterInt.GetValue)
   /** pa: ParameterArgs {B, TargetId, SourceId, TriggerTargetId, TriggerSourceId, AimId, Random, TriggerEvent, Owner} */
   function paramValue(p, pa) {
     if (p == null) return null;
     let v = paramBase(p, pa);
-    if (p.Calculator) unported('Calculator');
+    if (p.Calculator) v = calculatorSum(p.Calculator, v);
     if (p.Op1_Invert) v = -v;
     if (p.Op2_Addition != null) v += p.Op2_Addition;
-    if (p.Op3_Multiplier != null) { const m = decimal(p.Op3_Multiplier); const x = v * m; v = p.RoundUp ? Math.ceil(x - 1e-12) : Math.floor(x + 1e-12); }
+    if (p.Op3_Multiplier != null) { const x = Dec.mul(Dec.int(v), Dec.from(p.Op3_Multiplier)); v = Dec.toInt(p.RoundUp ? Dec.ceil(x) : Dec.floor(x)); }
     if (p.Op4_Divider != null && p.Op4_Divider !== 0) v = tdiv(v, p.Op4_Divider);
     if (p.Op5_Addition != null) v += p.Op5_Addition;
     if (p.Op6_Addition) v += paramValue(p.Op6_Addition, pa);
@@ -597,6 +641,12 @@
         return [wrap('Try', s)];
       }
       case 'EffectSummon': return effectSummon(eff, sa);
+      case 'EffectLosePerk': {
+        // EffectLosePerk.OnSingle
+        const l = loseMinionPerk(sa.Owner, sa.TargetId, sa.SourceId || null, eff.Perk ?? null, !!eff.IgnoreDurability);
+        Object.assign(l, { IncludeDestroyed: !!eff.IncludeDestroyed, IncludeDead: !!eff.IncludeDead, RenderDelay: !!eff.RenderDelay, RenderLost: !!eff.RenderLost, Positive: eff.Positive ?? null });
+        return [wrap('Try', l)];
+      }
       case 'EffectGivePerk': {
         // EffectGivePerk.OnSingle: Perk, or PerkCatalogue.GetPerk(args) when a catalogue is set
         if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
