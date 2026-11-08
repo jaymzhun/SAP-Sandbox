@@ -183,8 +183,20 @@
     if (f.HasNoPositivePerk != null && cand.Perk != null && !perkPositive(cand.Perk) !== f.HasNoPositivePerk) return false;
     if (f.HasNoNegativePerk != null && cand.Perk != null && perkPositive(cand.Perk) !== f.HasNoNegativePerk) return false;
     if (f.HasTempStats != null) { const has = cand.Attack.Temporary > 0 || cand.Health.Temporary > 0; if (has !== f.HasTempStats) return false; }
+    // Has*Trigger: any one set field that matches is enough (HasBeforeDeathTrigger tests the death effect against HasDeathTrigger's value)
     if (f.HasPlayTrigger != null || f.HasSellTrigger != null || f.HasDeathTrigger != null || f.HasBeforeDeathTrigger != null || f.HasHurtTrigger != null ||
-      f.HasStartBattleTrigger != null || f.HasStartTurnTrigger != null || f.HasEndTurnTrigger != null || f.HasDamageEffect != null) unported('MinionFinder.Has*Trigger');
+      f.HasStartBattleTrigger != null || f.HasStartTurnTrigger != null || f.HasEndTurnTrigger != null) {
+      let ok = false;
+      if (f.HasPlayTrigger != null) ok = hasPlayEffect(cand) === f.HasPlayTrigger;
+      if (f.HasSellTrigger != null && hasSellEffect(cand) === f.HasSellTrigger) ok = true;
+      if (f.HasHurtTrigger != null && hasHurtEffect(cand) === f.HasHurtTrigger) ok = true;
+      if ((f.HasDeathTrigger != null || f.HasBeforeDeathTrigger != null) && hasDeathEffect(cand) === !!f.HasDeathTrigger) ok = true;
+      if (f.HasStartBattleTrigger != null && hasTrigger(cand, ['TriggerStartBattle'], false) === f.HasStartBattleTrigger) ok = true;
+      if (f.HasStartTurnTrigger != null && hasTrigger(cand, ['TriggerStartTurn'], false) === f.HasStartTurnTrigger) ok = true;
+      if (f.HasEndTurnTrigger != null && hasTrigger(cand, ['TriggerEndTurn'], false) === f.HasEndTurnTrigger) ok = true;
+      if (!ok) return false;
+    }
+    if (f.HasDamageEffect != null && cand.Abilities.some((a) => hasEffect(a, 'EffectDamage')) !== f.HasDamageEffect) return false;
     if (f.ExcludeTypeSelf && owner && owner.Enum === cand.Enum) return false;
     if (f.ExcludeType != null && f.ExcludeType === cand.Enum) return false;
     if (f.ExcludeTypes && f.ExcludeTypes.values && f.ExcludeTypes.values.includes(cand.Enum)) return false;
@@ -193,7 +205,10 @@
     if (f.HasSibling != null || f.AllowUniques != null) unported('MinionFinder.HasSibling/AllowUniques');
     if (f.DamageTaken != null && cand.DamageTaken !== f.DamageTaken) return false;
     if (f.DamageDealt != null && (cand.DamageDealtThisBattle > 0) !== f.DamageDealt) return false;
-    if (f.FoodEaten != null || f.LastTargetThisTurn != null || f.OldTargetsThisTurn != null || f.InPack != null || f.IsPreviousSurvivor != null || f.InWackyParameters != null || f.WithoutMemoryAbility != null) unported('MinionFinder.shop fields');
+    if (f.FoodEaten != null && !opCheck(f.FoodEatenOperator || 0, cand.SpellCountsThisTurn || 0, f.FoodEaten)) return false;
+    if (f.LastTargetThisTurn != null) { if (!owner) return false; if ((owner.LastTargetsThisTurn || []).some((x) => idEq(x, cand.Id)) !== f.LastTargetThisTurn) return false; }
+    if (f.OldTargetsThisTurn != null) { if (!owner) return false; if ((owner.OldTargetsThisTurn || []).some((x) => idEq(x, cand.Id)) !== f.OldTargetsThisTurn) return false; }
+    if (f.InPack != null || f.IsPreviousSurvivor != null || f.InWackyParameters != null || f.WithoutMemoryAbility != null) unported('MinionFinder.shop fields (InPack/IsPreviousSurvivor/InWackyParameters/WithoutMemoryAbility)');
     if (f.IsEnemyCheck && cand.Owner !== 2) return false;
     return true;
   }
@@ -673,11 +688,28 @@
     }
     return m.PerkMultiplier != null ? v * m.PerkMultiplier : v;
   }
-  /** MinionExtensions.HasEffect<T>(model): a visible ability with a pair whose effect is T. */
+  /** MinionExtensions.HasEffect<T>(model): a visible ability with a pair whose effect is T, looking inside EffectComposite. */
   function hasEffect(model, type) {
     if (!model) return false; const ab = getAbility(model.Enum, model.Level); if (!ab || ab.HiddenTriggersAndEffects) return false;
-    return (ab.Pairs || []).some((p) => p.Effect && short(T(p.Effect)) === type);
+    const has = (e) => !!e && (short(T(e)) === type || (short(T(e)) === 'EffectComposite' && (e.Effects || []).some(has)));
+    return (ab.Pairs || []).some((p) => has(p.Effect));
   }
+  /**
+   * MinionExtensions.HasTrigger<T>(m, filter): a visible ability whose (non-hidden) trigger is one of the types, looking inside
+   * TriggerComposite. ownOnly is the filter the Has*Effect helpers pass: the trigger's MinionFinder has Other == false.
+   */
+  function hasTrigger(m, types, ownOnly) {
+    const has = (t) => {
+      if (!t || t.Hidden) return false;
+      if (types.includes(short(T(t))) && (!ownOnly || (t.MinionFinder && t.MinionFinder.Other === false))) return true;
+      return short(T(t)) === 'TriggerComposite' && (t.Triggers || []).some(has);
+    };
+    return m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects && has(ab.Trigger); });
+  }
+  const hasPlayEffect = (m) => hasTrigger(m, ['TriggerPlayMinion'], true);
+  const hasSellEffect = (m) => hasTrigger(m, ['TriggerSell'], true) || hasTrigger(m, ['TriggerBeforeSell'], true);
+  const hasHurtEffect = (m) => hasTrigger(m, ['TriggerHurt'], true);
+  const hasDeathEffect = (m) => hasTrigger(m, ['TriggerDeath'], true) || hasTrigger(m, ['TriggerBeforeDeath'], true);
   /** All events inside CastEffects wrappers, depth first. */
   function flattenEvents(list) {
     const out = [];
