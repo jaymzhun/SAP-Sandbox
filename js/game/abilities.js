@@ -790,6 +790,23 @@
         const g = ev('GiveMinionExp', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Amount: paramValue(eff.Amount, pa), ExpType: 0, Result: null, DisableReward: false, Projectile: null });
         return [wrap('Try', g)];
       }
+      case 'EffectTransform': {
+        // EffectTransform.OnSingle
+        if (eff.Back && sa.TriggerEvent && sa.TriggerEvent.cls === 'Transform') unported('EffectTransform.Back');
+        const tm = sa.TargetId ? sa.B.board.findMinion(sa.TargetId) : null;
+        const level = eff.Level != null ? eff.Level : tm ? tm.Level : 1;
+        const nm = catalogueMinions(eff.Catalogue, { B: sa.B, Level: level, Amount: 1, TargetId: sa.TargetId, SourceId: sa.SourceId, Random: sa.Random, Owner: sa.Owner, TriggerEvent: sa.TriggerEvent })[0];
+        if (!nm) return null; // EffectUtility.NoEffect
+        if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
+        const stat = (prm, own) => (eff.CopyStats ? own : prm ? new M.IntegerStat(paramValue(prm, pa)) : null);
+        const t = ev('TransformMinion', { Owner: sa.Owner, IncludeDead: !!eff.IncludeDead, Source: sa.SourceId || null, Target: sa.TargetId, NewMinion: nm, Back: !!eff.Back, BackUpToLevel: eff.BackUpToLevel ?? null,
+          Stacking: false, ResetStats: !!eff.ResetStats, RemovePerkIf: eff.RemovePerkIf ?? null, ForceActivate: !!eff.ForceActivate, Attack: stat(eff.Attack, nm.Attack), Health: stat(eff.Health, nm.Health),
+          Perk: null, Experience: null, Level: eff.Level ?? null, ExtraAttack: eff.Catalogue.ExtraAttack ?? null, ExtraHealth: eff.Catalogue.ExtraHealth ?? null, ExtraExperience: eff.Catalogue.ExtraExperience ?? null,
+          Processors: eff.Processors || null, ResultOldMinion: null, ResultMinion: null });
+        const src = sa.SourceId ? sa.B.board.findMinion(sa.SourceId) : null;
+        if (src) (src.LastSummoned = src.LastSummoned || []).push(sa.TargetId);
+        return [wrap('Try', t)];
+      }
       case 'EffectLosePerk': {
         // EffectLosePerk.OnSingle
         const l = loseMinionPerk(sa.Owner, sa.TargetId, sa.SourceId || null, eff.Perk ?? null, !!eff.IgnoreDurability);
@@ -847,6 +864,14 @@
     }
     return { NewLevel: m.Level, NewExp: m.Exp, NewAttack: m.Attack.ShallowCopy(), NewHealth: m.Health.ShallowCopy(), LevelsGained: m.Level - lvl0, ExpGained: m.Exp - exp0,
       AttackGained: m.Attack.Total - atk0, HealthGained: m.Health.Total - hp0 };
+  }
+  /** MinionExtensions.ResetLevel(m, level): level 1..3 with that level's starting experience. */
+  function resetLevel(m, lvl) { lvl = Math.min(3, Math.max(1, lvl)); m.Level = lvl; m.Exp = LEVEL_EXP[lvl - 1]; resetAbility(m); }
+  /** MinionExtensions.ResetLevelFromExperience: clamp experience, then the level is the number of thresholds reached. */
+  function resetLevelFromExperience(m) {
+    m.Exp = Math.max(0, Math.min(Math.max(...LEVEL_EXP), m.Exp)); m.Level = 0;
+    for (const t of LEVEL_EXP) { if (m.Exp < t) break; m.Level++; }
+    resetAbility(m);
   }
   const LEVEL_EXP = [0, 2, 5]; // BoardConstants experience per level (level 2 = 2 seen on recorded boards; level 3 still to verify)
   /** MinionExtensions.UpdateStatsMax: ability MaxAttack/MaxHealth (SetMaxStats), else the template's AttackMax/HealthMax. */
@@ -1097,6 +1122,45 @@
       B.add(wrap('Do', ev('AbilityTriggered', { Owner: m.Owner, Ability: 686, Level: 1, MinionId: m.Id, Aim: null, TriggerEvent: r.TriggerEvent, UpdateLevel: false, Type: 0, Force: true,
         RepeatFromAuraDisabled: false, DisableAfterTemp: false, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
     },
+    /** TransformMinionMutator (Try<TransformMinion>) */
+    TransformMinionMutator(B, e) {
+      const t = e.Event; const board = B.board;
+      const old = t.IncludeDead ? board.findMinion(t.Target, true, false) : board.findLiveMinion(t.Target);
+      if (!old || (old.Location ?? 1) !== 1) return;
+      // BoardExtensions.RemoveMinion(id, 1): destroyed, off the grid, Location 6 (not to the graveyard)
+      old.Destroyed = true; board.cells[board.index(old.Point)] = null; old.Location = 6;
+      const n = deepCopy(t.NewMinion);
+      n.Id = old.Id; n.Perk = old.Perk; n.Owner = old.Owner; n.Point = { x: old.Point.x, y: old.Point.y };
+      n.Dead = false; n.Destroyed = false; n.DestroyedBy = null;
+      let atk = old.Attack.Permanent, atkT = old.Attack.Temporary, hp = old.Health.Permanent, hpT = old.Health.Temporary;
+      if (t.ResetStats) { atk = n.Attack.Permanent; hp = n.Health.Permanent; }
+      if (t.Attack) { atk = t.Attack.Permanent; atkT = t.Attack.Temporary; }
+      if (t.Health) { hp = t.Health.Permanent; hpT = t.Health.Temporary; }
+      if (t.ExtraAttack != null) atk += t.ExtraAttack;
+      if (t.ExtraHealth != null) hp += t.ExtraHealth;
+      n.Attack.Set(atk, false); n.Attack.Set(atkT, true); n.Health.Set(hp, false); n.Health.Set(hpT, true);
+      n.Mana = old.Mana; n.SellValue = old.SellValue;
+      if (t.RemovePerkIf != null && n.Perk === t.RemovePerkIf) setPerk(n, null, 0, null, null);
+      else if (t.Perk != null) setPerk(n, t.Perk, 0, null, null);
+      else setPerk(n, old.Perk, old.PerkDuration, old.PerkMultiplier, old.PerkDurability);
+      if (t.BackUpToLevel != null && t.BackUpToLevel <= old.Level) resetLevel(n, t.BackUpToLevel);
+      else if (t.Level != null) resetLevel(n, t.Level);
+      else { let x = t.Experience != null ? t.Experience : old.Exp; if (t.ExtraExperience != null) x += t.ExtraExperience; n.Exp = Math.max(0, x); resetLevelFromExperience(n); }
+      if (findAuras(B, old, 12).length && B.randomizer(old.Owner).next(0, 2) === 1) { n.Enum = old.Enum; n.Abilities = old.Abilities; }
+      if (t.ForceActivate) {
+        const filter = n.Abilities.filter((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects; }).map((a) => a.Enum);
+        B.add(ev('ForceActivateAbility', { Owner: e.Owner, Level: null, TargetId: n.Id, AbilityFilter: filter, SourceId: null, RepeatFromAuraDisabled: false, DisableAfterTemp: false }));
+      }
+      // BoardExtensions.SummonMinion(new, old point)
+      if (!canSummonMinion(board, n, old.Point)) return;
+      n.Location = 1;
+      if ((old.Point.x < 5 && n.Owner !== 1) || (old.Point.x > 4 && n.Owner === 1)) n.Owner = n.Owner === 1 ? 2 : 1;
+      board.setMinion(old.Point, n);
+      for (const pr of t.Processors || []) summonProcess(pr, { B, SummonPoint: old.Point, Minion: n, Parent: old, Reversed: false });
+      if (old.Owner === 1) board.Transformations = (board.Transformations || 0) + 1; else board.OpponentTransformations = (board.OpponentTransformations || 0) + 1;
+      t.ResultMinion = n; t.ResultOldMinion = old; t.ResultNewTransformations = board.Transformations || 0; t.ResultNewOpponentTransformations = board.OpponentTransformations || 0;
+      B.add(wrap('Done', t));
+    },
     /** ChangeMinionManaMutator (Try<ChangeMinionMana>) */
     ChangeMinionManaMutator(B, e) {
       const c = e.Event; const board = B.board; const m = board.findLiveMinion(c.TargetId); if (!m) return;
@@ -1243,6 +1307,8 @@
       const pk = PERKS()[g.Perk]; if (!pk || pk.spell == null || !pk.positive) return;
       B.add(ev('PlayedSpellOn', { Owner: g.Owner, Spell: pk.spell, TargetId: g.TargetId, SourceId: g.Source, Shop: false, Disabled: g.TriggersDisabled }));
     },
+    /** TriggerTransformSystem (Done<TransformMinion>) */
+    TriggerTransformSystem(B, e) { const t = e.Event; B.add(ev('Transform', { SourceId: t.Target, Back: t.Back, Stacking: t.Stacking, OldMinion: t.ResultOldMinion })); },
     /** TriggerGainedManaSystem (Done<ChangeMinionMana>) */
     TriggerGainedManaSystem(B, e) { const c = e.Event; if (c.TriggerDisabled || !(c.ResultAmount > 0)) return; B.add(ev('ManaGained', { SourceId: c.TargetId, TargetId: c.SourceId || M.itemId('M', 0), Value: c.Amount })); },
     /** TriggerGiveExpSystem (Done<GiveMinionExp>) */
