@@ -107,10 +107,11 @@
     }
     return v;
   }
+  const isForce = (e) => !!e && (e.cls === 'Force' || e.cls === 'WithSource'); // TriggerEvent+Force and its subclass Force+WithSource
   function paramMinion(p, pa) {
     const id = [pa.SourceId, pa.TargetId, pa.TriggerSourceId, pa.TriggerTargetId, pa.AimId][p.Origin ?? 0];
     if (id) { const m = pa.B.board.findMinion(id); if (!m) throw new Error('Tried to get a minion, but no minion was found'); return m; }
-    if (pa.TriggerEvent && pa.TriggerEvent.cls === 'Force') return null;
+    if (pa.TriggerEvent && isForce(pa.TriggerEvent)) return null;
     throw new Error('Tried to get a minion, but no point was given');
   }
   function paramBase(p, pa) {
@@ -360,7 +361,11 @@
         out = idx.map((x) => x.m);
       }
     }
-    if (f.UniqueLevels || f.UniqueTiers || f.UniqueAilments) unported('MinionFinder.Unique*');
+    // UniqueLevels / UniqueTiers / UniqueAilments: the first pet per level, per template tier, per negative perk (pets without one are dropped)
+    const firstPer = (key) => { const seen = new Map(); for (const m of out) { const k = key(m); if (k === undefined) continue; if (!seen.has(k)) seen.set(k, m); } return [...seen.values()]; };
+    if (f.UniqueLevels) out = firstPer((m) => m.Level);
+    if (f.UniqueTiers) out = firstPer((m) => (D.minions[m.Enum] || {}).tier);
+    if (f.UniqueAilments) out = firstPer((m) => { if (m.Perk == null) return undefined; const pk = PERKS()[m.Perk]; return pk && !pk.positive ? m.Perk : undefined; });
     if (f.Limit != null) out = out.slice(0, f.Limit);
     if (f.Reverse) out.reverse();
     return out;
@@ -803,7 +808,12 @@
     if (!events || !events.length) return;
     B.add(events);
     B.add(wrap('Done', a));
-    if (ab && ab.ManaSpender) unported('ManaSpender');
+    if (ab && ab.ManaSpender) {
+      // ProcessAbilityActivateTry: a mana spender then spends ManaSpenderAmount (all mana when null), or its excess mana with ManaSpenderExcess
+      const sm = ev('SpendMinionMana', { Owner: a.Owner, TargetId: a.MinionId, Spend: ab.ManaSpenderAmount ?? null, ResultTargetManaOld: 0, ResultTargetManaNew: 0 });
+      if (ab.ManaSpenderExcess) sm.Spend = getExcessMana(board.findMinion(a.MinionId));
+      B.add(wrap('Try', sm));
+    }
     if (model) { if (canAbilityCountLimit(B, model, ab)) model.TriggerCount++; if (a.DisableAfterTemp) model.DisabledTemp = true; }
   }
 
@@ -862,6 +872,18 @@
     if (!eff.ImmuneToSilly) { const sm = ga.SourceId ? ga.B.board.findMinion(ga.SourceId) : null; if (sm && sm.Perk === 75) unported('EffectBase.ActivateGlobal silly owner'); }
     if (!GLOBAL_EFFECTS.has(t)) return null;
     switch (t) {
+      case 'EffectGainGold': {
+        // EffectGainGold.OnGlobal
+        if (!eff.Parameter) return null;
+        const g = ev('GainGold', { Owner: ga.Owner, Amount: paramValue(eff.Parameter, globalParamArgs(ga)), SourceId: ga.SourceId || null, Future: !!eff.Future, ResultGained: null, ResultNewValue: null });
+        return [wrap('Try', g)];
+      }
+      case 'EffectGainRolls': {
+        // EffectGainRolls.OnGlobal
+        if (!eff.Rolls) return null;
+        const g = ev('GainRolls', { Owner: ga.Owner, Rolls: paramValue(eff.Rolls, globalParamArgs(ga)), Future: !!eff.Future, SourceId: ga.SourceId || null, Shower: eff.Shower ?? null });
+        return [wrap('Try', g)];
+      }
       case 'EffectCondition': {
         // EffectCondition.OnGlobal: check against the source as owner, then run TrueEffect or FalseEffect globally
         if (!ga.SourceId) return null;
@@ -1229,6 +1251,14 @@
     if (c.WithUniversalBattleAbility != null && inUniversalList(e) === c.WithUniversalBattleAbility) return false; // the game rejects on equality
     return true;
   }
+  /** MinionExtensions.GetExcessMana: mana beyond what the pet's spender abilities use (all of it with perk 55; none left when a spender has no amount) */
+  function getExcessMana(m) {
+    if (!m || !(m.Mana > 0)) return 0;
+    if (m.Perk === 55) return m.Mana;
+    let used = 0;
+    for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab || !ab.ManaSpender) continue; if (ab.ManaSpenderAmount == null) { used = m.Mana; break; } used += ab.ManaSpenderAmount; }
+    return used < m.Mana ? m.Mana - used : 0;
+  }
   /** MinionExtensions.CopyTriggerCount: abilities with a TriggerLimit take the TriggerCount of the first same-enum ability of copyFrom. */
   function copyTriggerCount(m, from) {
     for (const a of m.Abilities) {
@@ -1436,7 +1466,7 @@
       if (!e.AbilityFilter.includes(a.Enum)) continue;
       const rand = B.randomizer(e.Owner);
       const level = e.Level ? paramValue(e.Level, { B, TargetId: e.TargetId, SourceId: e.SourceId || null, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: rand, TriggerEvent: null, Owner: e.Owner }) : a.Level;
-      const trig = ev('Force', { SourceId: e.SourceId });
+      const trig = e.SourceId ? ev('WithSource', { SourceId: e.SourceId }) : ev('Force', {}); // TriggerEvent.Force.New: Force+WithSource when there is a source
       B.add(wrap('Do', ev('AbilityTriggered', { Owner: e.Owner, Ability: a.Enum, Level: level, MinionId: e.TargetId, Aim: null, TriggerEvent: trig, UpdateLevel: false, Type: 0,
         Force: true, RepeatFromAuraDisabled: e.RepeatFromAuraDisabled, DisableAfterTemp: e.DisableAfterTemp, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
     }
@@ -1548,6 +1578,33 @@
         if (c.Add) { c.ResultGiveHealth = v - h0; c.ResultHealthGained = to.Health.Total - h0; c.ResultHealth = to.Health.ShallowCopy(); }
       }
       B.add(wrap('Done', c));
+    },
+    /** GainGoldMutator (Try<GainGold>): BoardExtensions.GainGold (player only; gains capped at 50 a turn via GoldGained, gold kept in 0..300; Future adds to FutureGold) */
+    GainGoldMutator(B, e) {
+      const g = e.Event; const b = B.board; let gained = 0;
+      if (g.Owner === 1) {
+        if (!g.Future) {
+          const room = 50 - (b.GoldGained || 0);
+          if (room > 0) { const amt = Math.min(g.Amount, room); b.GoldGained = (b.GoldGained || 0) + amt; const old = b.Gold || 0; b.Gold = Math.max(0, Math.min(300, old + amt)); gained = old - b.Gold; }
+        } else b.FutureGold = (b.FutureGold || 0) + g.Amount;
+      }
+      g.ResultGained = gained; g.ResultNewValue = b.Gold || 0; // GainGold.SetResult(gained, board.Gold); the game returns old - new as "gained"
+      B.add(wrap('Done', g));
+    },
+    /** GainRollsMutator (Try<GainRolls>): player only; BuildExtensions.GainRolls (FreeRolls kept in 0..10, Future adds to FutureFreeRolls), then ChangeFreeRolls */
+    GainRollsMutator(B, e) {
+      const g = e.Event; const b = B.board; if (g.Owner !== 1) return;
+      const old = b.FreeRolls || 0;
+      if (!g.Future) b.FreeRolls = Math.max(0, Math.min(10, old + g.Rolls)); else b.FutureFreeRolls = (b.FutureFreeRolls || 0) + g.Rolls;
+      B.add(ev('ChangeFreeRolls', { Owner: g.Owner, OldFreeRolls: old, NewFreeRolls: b.FreeRolls || 0, SourceId: g.SourceId, Future: g.Future, Shower: g.Shower }));
+    },
+    /** SpendMinionManaMutator (Try<SpendMinionMana>): Spend (all when null), not below 0 */
+    SpendMinionManaMutator(B, e) {
+      const sm = e.Event; const m = B.board.findMinion(sm.TargetId); if (!m) return;
+      const spend = sm.Spend ?? m.Mana; const old = m.Mana;
+      m.Mana = Math.max(0, m.Mana - spend);
+      sm.ResultTargetManaOld = old; sm.ResultTargetManaNew = m.Mana;
+      B.add(wrap('Done', sm));
     },
     /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
     PushMutator(B, e) {
