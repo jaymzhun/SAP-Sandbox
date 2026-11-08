@@ -814,7 +814,7 @@
         else { const sub = []; for (const x of pair.Effect.Effects || []) { const r = effectSingle(x, sa); if (r && r.length) sub.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: x } })); } if (sub.length) outer.push(wrapList(sub)); } // a composite target's wrapper goes straight to the outer list
       }
       if (perTarget.length) outer.push(ev('CastEffectsParallel', { CastEffects: perTarget }));
-      if (ab.PersistTargets) unported('PersistTargets');
+      if (ab.PersistTargets) { owner.CurrentTargetsThisTurn = (owner.CurrentTargetsThisTurn || []).concat(targets || []); owner.LastTargetsThisTurn = targets; } // MinionModel +0x140 / +0x148
       if ((ab.Interuptor || 0) === 1) return outer; // returned unwrapped
     }
     return [wrapList(outer)];
@@ -825,10 +825,43 @@
     AimId: null, Random: sa.Random, TriggerEvent: sa.TriggerEvent, Owner: sa.Owner });
   /** Effect classes that override EffectBase.OnGlobal (from the metadata; the base returns null). */
   const GLOBAL_EFFECTS = new Set(['EffectAddSharedPower','EffectAddShopMinion','EffectAddShopSpell','EffectBalance','EffectBuffShopMinions','EffectBuffShopPermanent','EffectChangeVictoryMax','EffectChooseMinion','EffectChooseSpell','EffectComposite','EffectCondition','EffectDiscountMinion','EffectDiscountSpell','EffectExchangeStats','EffectFreezeShop','EffectFumble','EffectGainGold','EffectGainLives','EffectGainRolls','EffectGainTrumpets','EffectRandom','EffectRepeat','EffectReplaceMinionShop','EffectReplaceSpellShop','EffectRollShop','EffectSetGold','EffectSetPrice','EffectShuffle','EffectSort','EffectSpendGold','EffectStealMinion','EffectSummonGlobal','EffectSummonRetriever','EffectSwallowShop']);
+  /** ParameterArgs built from EffectGlobalArgs: no target. */
+  const globalParamArgs = (ga) => ({ B: ga.B, SourceId: ga.SourceId, TargetId: null, TriggerSourceId: sourceOf(ga.TriggerEvent) || null, TriggerTargetId: targetOf(ga.TriggerEvent) || null,
+    AimId: ga.AimId ?? null, Random: ga.Random, TriggerEvent: ga.TriggerEvent, Owner: ga.Owner });
+  /** EffectBase.ActivateGlobal -> OnGlobal. A Silly source (not ImmuneToSilly) first flips a coin for the effect's owner. */
   function effectGlobal(eff, ga) {
     const t = short(T(eff));
+    if (!eff.ImmuneToSilly) { const sm = ga.SourceId ? ga.B.board.findMinion(ga.SourceId) : null; if (sm && sm.Perk === 75) unported('EffectBase.ActivateGlobal silly owner'); }
     if (!GLOBAL_EFFECTS.has(t)) return null;
     switch (t) {
+      case 'EffectCondition': {
+        // EffectCondition.OnGlobal: check against the source as owner, then run TrueEffect or FalseEffect globally
+        if (!ga.SourceId) return null;
+        const ok = conditionCheck(eff.Condition, { B: ga.B, TriggerEvent: ga.TriggerEvent, Random: ga.Random, OwnerId: ga.SourceId, TriggerPhase: 1, Reversed: false });
+        const next = ok ? eff.TrueEffect : eff.FalseEffect;
+        return next ? effectGlobal(next, ga) : null;
+      }
+      case 'EffectSummonGlobal': {
+        // EffectSummonGlobal.OnGlobal / GetSummonEvents / GetSummonEvent: summon to the back (or front with UpFront) of a side
+        const B = ga.B, board = B.board; const pa = globalParamArgs(ga);
+        const level = eff.Level ? paramValue(eff.Level, pa) : 1;
+        const ca = { B, Level: level, Amount: 1, TargetId: null, SourceId: ga.SourceId, AimId: ga.AimId ?? null, Random: ga.Random, Owner: ga.Owner, TriggerEvent: ga.TriggerEvent };
+        let forEnemy = !!eff.ForEnemy; if (ga.Reversed) forEnemy = !forEnemy;
+        let x = eff.UpFront ? 4 : 0; if (forEnemy === (ga.Owner === 1)) x = 9 - x;
+        const point = { x, y: 0 };
+        const source = ga.SourceId ? board.findMinion(ga.SourceId) : null;
+        const make = (m) => {
+          if (!m) { m = catalogueMinions(eff.Catalogue, ca)[0]; if (!m) return null; }
+          for (const pr of eff.Processors || []) summonProcess(pr, { B, SummonPoint: point, Minion: m, Parent: source, Reversed: ga.Reversed });
+          if ((D.minions[m.Enum] || {}).relicType === 1) unported('EffectSummonGlobal relic');
+          return wrap('Try', ev('SummonMinion', { Owner: m.Owner, Minion: m, Type: 1, SubType: 0, Jumped: false, TriggerDisabled: !!eff.TriggerDisabled, TargetPoint: { x: point.x, y: point.y },
+            FailCause: 0, SourceId: source ? source.Id : null, Projectile: !!eff.Projectile, ForceActivateAbility: false, PushDirection: null }));
+        };
+        const out = [];
+        if (eff.SinglePass) { for (const m of catalogueMinions(eff.Catalogue, ca)) out.push(make(m)); }
+        else { const n = eff.Amount ? paramValue(eff.Amount, pa) : 1; for (let i = 0; i < n; i++) { const r = make(null); if (r) out.push(r); } }
+        return out.length ? out : null;
+      }
       case 'EffectGainTrumpets': {
         // EffectGainTrumpets.OnGlobal
         if (!eff.Points) return null;
@@ -873,6 +906,13 @@
   function effectSingle(eff, sa) {
     const t = short(T(eff)); const pa = singleParamArgs(sa);
     switch (t) {
+      case 'EffectCondition': {
+        // EffectCondition.OnSingle: owner is the source (the target with TargetAsOwner)
+        const oid = eff.TargetAsOwner ? sa.TargetId : sa.SourceId; if (!oid) return null;
+        const ok = conditionCheck(eff.Condition, { B: sa.B, TriggerEvent: sa.TriggerEvent, Random: sa.Random, OwnerId: oid, TriggerPhase: 1, Reversed: false });
+        const next = ok ? eff.TrueEffect : eff.FalseEffect;
+        return next ? effectSingle(next, sa) : null;
+      }
       case 'EffectGiveBuff': {
         let atk = eff.Attack ? paramValue(eff.Attack, pa) : 0, atkR = eff.AttackRange ? paramValue(eff.AttackRange, pa) : 0;
         let hp = eff.Health ? paramValue(eff.Health, pa) : 0, hpR = eff.HealthRange ? paramValue(eff.HealthRange, pa) : 0;
@@ -1513,7 +1553,11 @@
     tryTriggerMinion, activateAbilityTry, activateAbilityDo,
     castEffectWrapper(B, e) { B.add(e.CastEffects); },
     castEffect(B, e) { B.add(e.EffectResult.Events); },
-    abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
+    abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) {
+      // AbilityCleanupMutator: current targets (+0x140) move to OldTargetsThisTurn (+0x118)
+      if (m.CurrentTargetsThisTurn) m.OldTargetsThisTurn = (m.OldTargetsThisTurn || []).concat(m.CurrentTargetsThisTurn);
+      m.CurrentTargetsThisTurn = null;
+    } },
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
     findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier, setupDamage,
