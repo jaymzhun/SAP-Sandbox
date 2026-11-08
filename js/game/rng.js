@@ -67,7 +67,7 @@
 
   /** Spacewood.Core.Extensions.Randomizer */
   const Randomizer = {
-    positiveInteger: (r) => r.next(2147483647),
+    positiveInteger: (r) => r.next(1, 2147483647), // Next(1, int.MaxValue)
     fiftyFifty: (r) => r.next(2) === 1,
   };
 
