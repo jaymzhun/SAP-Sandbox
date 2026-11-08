@@ -36,7 +36,10 @@ function petsFromBoard(boardBefore, idOf) {
     return { Id: model.itemId(b, u), Owner: p.Owner, Enum: p.Enum, x: p.Point.x, Level: p.Level, Exp: p.Exp ?? 0, Mana: p.Mana ?? 0, Relic: !!p.Relic,
       Attack: p.Attack - (p.AttackTemp || 0), AttackTemp: p.AttackTemp || 0, Health: p.Health - (p.HealthTemp || 0), HealthTemp: p.HealthTemp || 0, Perk: p.Perk,
       PerkDurability: p.PerkDurability ?? null, PerkMultiplier: p.PerkMultiplier ?? null,
-      Tribe: t ? t.tribe : null, Abilities: t ? t.abilities.map((a) => Object.assign(new model.MinionAbilityModel(a.e, p.Level, a.native), { Group: a.group })) : [] };
+      Tribe: t ? t.tribe : null,
+      // the pet's actual abilities when recorded (shop-gained ones included), else its template's
+      Abilities: p.Abilities ? p.Abilities.map((a) => Object.assign(new model.MinionAbilityModel(a.Enum, a.Level, a.Native), { Duration: a.Duration, TriggerCount: a.TriggerCount, ActivatedCount: a.ActivatedCount, Charges: a.Charges, Disabled: a.Disabled, DisabledTemp: a.DisabledTemp, AlwaysIgnoreMinionLevel: a.AlwaysIgnoreMinionLevel, IgnoreRepeats: a.IgnoreRepeats, Group: a.Group }))
+        : t ? t.abilities.map((a) => Object.assign(new model.MinionAbilityModel(a.e, p.Level, a.native), { Group: a.group })) : [] };
   });
 }
 
@@ -52,7 +55,7 @@ for (const i of idxs) {
   let err = null;
   try {
     const b = new sim.Battle({ pets: petsFromBoard(out.boardBefore, idOf), trumpets: out.infoBefore, seed: spec.seed, playerSeed: spec.playerSeed, opponentSeed: spec.opponentSeed,
-      unique: out.infoBefore.UniqueNumberCounter, hooks: abilities.hooks });
+      unique: out.infoBefore.UniqueNumberCounter, hooks: abilities.hooks, boardFields: out.infoBefore.Fields });
     for (const k of [0, 1, 2]) b.rand[k].__owner = k; curBattle = b;
     b.run();
   } catch (e) { err = e; }

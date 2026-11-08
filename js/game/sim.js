@@ -75,6 +75,8 @@
       this.board.Relics = o.pets.filter((p) => p.Relic).sort((a, b) => a.x - b.x).map((p) => { const m = new M.MinionModel(p); m.Point = { x: p.x, y: 0 }; return m; });
       if (o.trumpets) Object.assign(this.board, o.trumpets);
       if (o.boardCapacity != null) this.board.BoardCapacity = o.boardCapacity;
+      // o.boardFields: the board's own counters before the battle (rolls, gold spent, transformations, ...), as BoardModel names them
+      if (o.boardFields) for (const [k, v] of Object.entries(o.boardFields)) if (!/^(UniqueNumberCounter|ReverseMinionAccess|Hash|Dirty|TurnOver|Attacks)/.test(k)) this.board[k] = v;
       if (o.hooks && o.hooks.initMinion) for (const m of this.board.cells.concat(this.board.Relics)) if (m) o.hooks.initMinion(m);
       this.state = { Seed: o.seed, PlayerSeed: o.playerSeed, OpponentSeed: o.opponentSeed, Turn: 0, Outcome: 0, StartingPlayer: 0, CurrentPriority: 0,
         DamageDealt: 0, DamageTaken: 0, EventLog: [], DisableCrits: false };

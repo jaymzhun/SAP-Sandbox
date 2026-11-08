@@ -121,6 +121,7 @@
       case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
       case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
       case 'ParameterMinionMana': { const m = paramMinion(p, pa); return m ? m.Mana : 1; }
+      case 'ParameterRolls': { const m = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!m) return 0; return m.Owner === 1 ? pa.B.board.RollsThisTurn || 0 : m.Owner === 2 ? pa.B.board.OpponentRolls || 0 : 0; } // BuildExtensions.CountRolls
       case 'ParameterTrumpets': { const m = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; return m ? getTrumpets(pa.B.board, m.Owner) : 0; }
       default: return unported(t);
     }
@@ -483,6 +484,14 @@
           if (!predicate(c.MinionFinder, B, m, owner)) return false;
           if (c.HasEventPerk) { const e = ca.TriggerEvent; if (!(e && e.cls === 'PerkLost' && e.Perk === m.Perk)) return false; }
         }
+        return true;
+      }
+      case 'ConditionHighestTier': case 'ConditionLowestTier': {
+        // every other candidate (finder, else every grid pet) must have a strictly lower (higher) tier than the owner
+        if (!owner) return false;
+        const list = c.MinionFinder ? findMinions(c.MinionFinder, B, owner, null, ca.Random) : B.board.cells.filter(Boolean);
+        const hi = t === 'ConditionHighestTier';
+        for (const m of list) { if (idEq(m.Id, owner.Id)) continue; const a = minionTier(m), o = minionTier(owner); if (hi ? !(a < o) : !(o < a)) return false; }
         return true;
       }
       case 'ConditionHasTrumpets': { if (!owner) return false; const v = getTrumpets(B.board, owner.Owner); if (c.Min != null && v < c.Min) return false; if (c.Max != null && c.Max < v) return false; return true; }
@@ -1111,7 +1120,7 @@
       board.setMinion(p, m);
     } else unported('SummonMinionMutator when the summon fails at Do');
     if (s.Jumped && board.IsBattle) m.JumpsThisBattle++;
-    if (!s.TriggerDisabled) { if (e.Owner === 1) board.MinionsSummonedThisTurn++; else board.OpponentMinionsSummonedThisTurn = (board.OpponentMinionsSummonedThisTurn || 0) + 1; }
+    if (!s.TriggerDisabled) { if (e.Owner === 1) board.MinionsSummonedThisTurn++; else board.OpponentSummons = (board.OpponentSummons || 0) + 1; }
     B.add(wrap('Done', s));
     if (s.ForceActivateAbility) {
       const filter = m.Abilities.filter((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects; }).map((a) => a.Enum);
@@ -1253,8 +1262,8 @@
       if ((old.Point.x < 5 && n.Owner !== 1) || (old.Point.x > 4 && n.Owner === 1)) n.Owner = n.Owner === 1 ? 2 : 1;
       board.setMinion(old.Point, n);
       for (const pr of t.Processors || []) summonProcess(pr, { B, SummonPoint: old.Point, Minion: n, Parent: old, Reversed: false });
-      if (old.Owner === 1) board.Transformations = (board.Transformations || 0) + 1; else board.OpponentTransformations = (board.OpponentTransformations || 0) + 1;
-      t.ResultMinion = n; t.ResultOldMinion = old; t.ResultNewTransformations = board.Transformations || 0; t.ResultNewOpponentTransformations = board.OpponentTransformations || 0;
+      if (old.Owner === 1) board.TransformationsThisTurn = (board.TransformationsThisTurn || 0) + 1; else board.OpponentTransformations = (board.OpponentTransformations || 0) + 1;
+      t.ResultMinion = n; t.ResultOldMinion = old; t.ResultNewTransformations = board.TransformationsThisTurn || 0; t.ResultNewOpponentTransformations = board.OpponentTransformations || 0;
       B.add(wrap('Done', t));
     },
     /** ChangeMinionManaMutator (Try<ChangeMinionMana>) */

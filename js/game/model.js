@@ -68,7 +68,8 @@
       this.MinionGraveyard = []; this.MinionSold = []; this.Relics = [];
       this.ReverseMinionAccess = false; this.IsBattle = true; this.UniqueNumberCounter = 0; this.BoardCapacity = 10;
       this.Trumpets = 0; this.TrumpetsDone = false; this.OpponentTrumpets = 0; this.OpponentTrumpetsDone = false;
-      this.PlayerFaintsThisBattle = 0; this.OpponentFaintsThisBattle = 0; this.MinionsSummonedThisTurn = 0; this.Turn = 1;
+      this.PlayerFaintsThisBattle = 0; this.OpponentFaintsThisBattle = 0; this.MinionsSummonedThisTurn = 0; this.OpponentSummons = 0; this.Turn = 1;
+      this.RollsThisTurn = 0; this.OpponentRolls = 0; this.TransformationsThisTurn = 0; this.OpponentTransformations = 0; this.GoldSpent = 0; this.OpponentGoldSpent = 0;
       this.State = 0;
     }
     index(p) { return p.y * this.Width + p.x; }
