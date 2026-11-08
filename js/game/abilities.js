@@ -596,7 +596,193 @@
           Positive: !!eff.Positive, SourcePerk: eff.PerkSource ?? null });
         return [wrap('Try', s)];
       }
+      case 'EffectSummon': return effectSummon(eff, sa);
       default: return unported(t);
+    }
+  }
+
+  // ---------------------------------------------------------------- summons (EffectSummon, MinionCatalogue*, GenerateMinion)
+  const LEVEL_EXP = [0, 2, 5]; // BoardConstants experience per level (level 2 = 2 seen on recorded boards; level 3 still to verify)
+  /** MinionExtensions.UpdateStatsMax: ability MaxAttack/MaxHealth (SetMaxStats), else the template's AttackMax/HealthMax. */
+  function updateStatsMax(m) {
+    let ma = null, mh = null;
+    for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab) continue; if (ab.MaxHealth != null) mh = ab.MaxHealth; if (ab.MaxAttack != null) ma = ab.MaxAttack; }
+    const raw = (D.minions[m.Enum] || {}).raw || {};
+    m.Attack.MaxOverride = ma != null ? ma : (raw.AttackMax ?? null);
+    m.Health.MaxOverride = mh != null ? mh : (raw.HealthMax ?? null);
+    m.Attack.Set(m.Attack.Permanent, false); m.Attack.Set(m.Attack.Temporary, true);
+    m.Health.Set(m.Health.Permanent, false); m.Health.Set(m.Health.Temporary, true);
+  }
+  /** BoardExtensions.GenerateMinion: a new MinionModel with the next id on the merged board. */
+  function generateMinion(B, e, level, owner) {
+    const t = D.minions[e]; if (!t) throw new Error("Template does not exist for '" + e + "'.");
+    const id = M.itemId('M', B.board.nextUnique());
+    const m = new M.MinionModel({ Id: id, Owner: owner, Enum: e, x: 0, Level: level, Exp: LEVEL_EXP[level - 1] ?? 0, Attack: t.attack, Health: t.health, Tribe: t.tribe,
+      Abilities: t.abilities.map((a) => { const x = new M.MinionAbilityModel(a.e, level, true); const ab = getAbility(a.e, level); x.AlwaysIgnoreMinionLevel = !!(ab && ab.AlwaysIgnoreMinionLevel); return x; }) });
+    m.Location = 1;
+    updateStatsMax(m);
+    return m;
+  }
+  /** ListExtensions random take: partial Fisher-Yates from the front with Next(i, count). */
+  function takeRandom(list, n, rand) { const l = list.slice(); for (let i = 0; i < n && i !== l.length; i++) { const k = rand.next(i, l.length); const x = l[k]; l[k] = l[i]; l[i] = x; } return n < l.length ? l.slice(0, Math.max(0, n)) : l; }
+  function setAttack(m, v) { if (m.Attack.Max < v) v = m.Attack.Max; if (v < 1) v = 1; m.Attack.Set(v, false); m.Attack.Set(0, true); }
+  function setHealth(m, v) { if (m.Health.Max < v) v = m.Health.Max; m.Health.Set(v, false); m.Health.Set(0, true); }
+  /** MinionCatalogueBase.GetMinions */
+  function catalogueMinions(c, ca) {
+    const t = short(T(c)); let base;
+    switch (t) {
+      case 'MinionCatalogueFixed': base = (c.Minions || []).map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner)); break;
+      case 'MinionCatalogueList': base = takeRandom(c.Minions || [], ca.Amount, ca.Random).map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner)); break;
+      default: return unported(t);
+    }
+    const pa = { B: ca.B, TargetId: ca.TargetId, SourceId: ca.SourceId, Random: ca.Random, TriggerEvent: ca.TriggerEvent, Owner: ca.Owner };
+    for (const m of base) {
+      if (c.Attack) setAttack(m, paramValue(c.Attack, pa));
+      if (c.AttackRange) { let v = m.Attack.Total; const r = paramValue(c.AttackRange, pa); if (r > 0) v += ca.Random.next(0, r + 1); setAttack(m, v); }
+      if (c.ExtraAttack != null) setAttack(m, m.Attack.Total + c.ExtraAttack);
+      if (c.Health) setHealth(m, paramValue(c.Health, pa));
+      if (c.HealthRange) { let v = m.Health.Total; const r = paramValue(c.HealthRange, pa); if (r > 0) v += ca.Random.next(0, r + 1); setHealth(m, v); }
+      if (c.ExtraHealth != null) setHealth(m, m.Health.Total + c.ExtraHealth);
+      if (c.Perk) unported('MinionCatalogue.Perk');
+      if (c.Countdown) unported('MinionCatalogue.Countdown');
+      if (c.DisableAbility) unported('MinionCatalogue.DisableAbility');
+      if (c.ExtraExperience != null) unported('MinionCatalogue.ExtraExperience');
+    }
+    return base;
+  }
+  function effectSummon(eff, sa) {
+    const B = sa.B, board = B.board; const pa = singleParamArgs(sa);
+    const level = eff.Level ? paramValue(eff.Level, pa) : 1;
+    let side = sa.Owner;
+    const tm = board.findMinion(sa.TargetId); let point = tm ? { x: tm.Point.x, y: tm.Point.y } : { x: 0, y: 0 };
+    if ((point.x < 5 && side !== 1) || (point.x > 4 && side === 1)) side = side === 1 ? 2 : side === 2 ? 1 : 0;
+    const ca = { B, Level: level, Amount: 1, TargetId: sa.TargetId, SourceId: sa.SourceId, Random: sa.Random, Owner: side, TriggerEvent: sa.TriggerEvent };
+    let push = eff.PushDirection ?? null;
+    if (eff.SummonDirection != null) {
+      const dv = (sa.Owner === 1 && eff.SummonDirection === 0) || (sa.Owner === 2 && eff.SummonDirection === 1) ? 1 : -1;
+      let x = point.x + dv; const lo = side !== 1 ? 5 : 0, hi = side !== 1 ? 9 : 4;
+      push = eff.SummonDirection === 0 ? 1 : 0; // RelativeDirection.Reverse
+      if (x >= lo && x <= hi) {
+        do { if (!board.cells[x]) { push = eff.SummonDirection; point = { x: point.x + dv, y: point.y }; break; } x += dv; } while (lo <= x && x <= hi);
+      }
+    }
+    if (eff.Back) point = side === 1 ? { x: 0, y: 0 } : { x: 9, y: 0 };
+    const source = sa.SourceId ? board.findMinion(sa.SourceId) : null;
+    const make = (m) => {
+      if (!m) return null;
+      if (source) { source.LastSummoned = source.LastSummoned || []; source.LastSummoned.push(m.Id); }
+      for (const pr of eff.Processors || []) summonProcess(pr, { B, SummonPoint: point, Minion: m, Parent: source, Reversed: sa.Reversed });
+      const s = ev('SummonMinion', { Owner: m.Owner, Minion: m, Type: 1, SubType: eff.SubType || 0, Jumped: false, TriggerDisabled: false, TargetPoint: { x: point.x, y: point.y },
+        FailCause: 0, SourceId: source ? source.Id : null, Projectile: !!eff.Projectile, ForceActivateAbility: !!eff.ForceActivate, PushDirection: push });
+      return wrap('Try', s);
+    };
+    const out = [];
+    if (eff.SinglePass) { for (const m of catalogueMinions(eff.Catalogue, ca)) { const x = make(m); if (x) out.push(x); } }
+    else { const n = eff.Amount ? paramValue(eff.Amount, pa) : 1; for (let i = 0; i < n; i++) { const x = make(catalogueMinions(eff.Catalogue, ca)[0]); if (x) out.push(x); } }
+    return out.length ? out : null;
+  }
+  function summonProcess(pr, a) {
+    const t = short(T(pr)).replace(/^BoardEvents\./, ''); const m = a.Minion, p = a.Parent;
+    switch (t) {
+      case 'EffectSummonProcessorSetAttack': if (short(T(pr.Value)) !== 'ParameterFlat') unported(t + ' non-flat'); setAttack(m, pr.Value.Value); return;
+      case 'EffectSummonProcessorSetHealth': if (short(T(pr.Value)) !== 'ParameterFlat') unported(t + ' non-flat'); setHealth(m, pr.Value.Value); return;
+      case 'EffectSummonProcessorMakeEnemy': if (!a.Reversed) m.Owner = m.Owner === 1 ? 2 : m.Owner === 2 ? 1 : 0; return;
+      case 'EffectSummonProcessorSetAttackToBase': setAttack(m, D.minions[m.Enum].attack * pr.Multiplier); return;
+      case 'EffectSummonProcessorSetHealthToBase': setHealth(m, D.minions[m.Enum].health * pr.Multiplier); return;
+      case 'EffectSummonProcessorCopyAttack': case 'EffectSummonProcessorCopyHealth': {
+        if (!p) return; const atk = t.endsWith('Attack'); let v = atk ? p.Attack.Total : p.Health.Total;
+        if (pr.Multiplier != null) v = Math.trunc(v * decimal(pr.Multiplier)); if (pr.Addition != null) v += pr.Addition;
+        if (atk) setAttack(m, v); else setHealth(m, v); return;
+      }
+      case 'EffectSummonProcessorCopyLevel': if (p) m.Level = p.Level; return;
+      default: return unported(t);
+    }
+  }
+  // BoardExtensions push helpers. RelativeDirection: 0 forward, 1 backward. DirectionEnum: 1 right (+x), 3 left (-x).
+  const fwd = (owner) => (owner === 1 ? 1 : 3), bwd = (owner) => (owner === 1 ? 3 : 1);
+  const toDx = (dir) => (dir === 1 ? 1 : dir === 3 ? -1 : 0);
+  const isInside = (p, owner) => p.y === 0 && (owner === 1 ? p.x >= 0 && p.x <= 4 : owner === 2 ? p.x >= 5 && p.x <= 9 : true);
+  function canPushMinion(board, m, rel) {
+    const np = { x: m.Point.x + toDx(rel === 0 ? fwd(m.Owner) : bwd(m.Owner)), y: 0 };
+    if (!isInside(np, m.Owner)) return false;
+    const c = board.get(np); const o = c ? board.findMinion(c.Id, true, false) : null;
+    if (o) { if (idEq(o.Id, m.Id) || o.Point.x === m.Point.x) throw new Error('EndlessLoopException: CanPushMinion'); return canPushMinion(board, o, rel); }
+    return true;
+  }
+  /** BoardExtensions.CanSummonMinion: cell in bounds, free or pushable, and fewer live pets than BoardCapacity. */
+  function canSummonMinion(board, m, p) {
+    if (p.x < 0 || p.x >= board.Width || p.y !== 0) return false;
+    const c = board.get(p);
+    if (c && c.IsAlive && !canPushMinion(board, c, 0) && !canPushMinion(board, c, 1)) return false;
+    return board.cells.filter((x) => x && x.IsAlive).length < board.BoardCapacity;
+  }
+  /** BoardExtensions.TryMove: Do<MoveMinion>(quick, forced) for the chain of pushed pets, returned in reverse order. */
+  function tryMove(board, m, dir) {
+    const out = []; let p = { x: m.Point.x, y: 0 };
+    for (let i = 0; ;) {
+      const c = board.get(p); if (!c) break; const o = board.findMinion(c.Id, true, false); if (!o) break;
+      const np = { x: p.x + toDx(dir), y: 0 };
+      if (!isInside(np, m.Owner)) return null;
+      out.push(wrap('Do', ev('MoveMinion', { Owner: m.Owner, MinionId: o.Id, From: { x: p.x, y: 0 }, To: np, Quick: true, Forced: true })));
+      p = np; if (++i > 4) return null;
+    }
+    return out.reverse();
+  }
+  function tryClearSpace(board, p, rel) {
+    const c = board.get(p); const o = c ? board.findMinion(c.Id, true, false) : null;
+    if (!o) return { ok: true, events: [], rel };
+    if (!canPushMinion(board, o, rel)) { rel = rel === 0 ? 1 : 0; if (!canPushMinion(board, o, rel)) return { ok: false, events: [], rel }; }
+    const evs = tryMove(board, o, rel === 0 ? fwd(o.Owner) : bwd(o.Owner));
+    return evs ? { ok: true, events: evs, rel } : { ok: false, events: [], rel };
+  }
+  /** SummonMinionAttemptSystem */
+  function summonAttempt(B, e) {
+    const s = e.Event, board = B.board; let p = { x: s.TargetPoint.x, y: s.TargetPoint.y }; const m = s.Minion;
+    if (s.SubType !== 1) m.Owner = s.Owner;
+    const fail = (cause) => { s.FailCause = cause; B.add(wrap('Fail', s)); };
+    if (!canSummonMinion(board, m, p)) return fail(1);
+    let rel = s.PushDirection ?? 0;
+    if (rel === 1) { const o = board.findLiveMinion(p); if (o && !canPushMinion(board, o, 1)) { p = { x: p.x + (p.x > 4 ? -1 : 1), y: 0 }; rel = 0; } }
+    const r = tryClearSpace(board, p, rel);
+    if (!r.ok) return fail(1);
+    m.Point = { x: p.x, y: p.y }; s.TargetPoint = { x: p.x, y: p.y }; s.PushDirection = r.rel;
+    B.add(r.events.concat([wrap('Do', s)]));
+  }
+  function deepCopy(m) {
+    const c = Object.assign(Object.create(Object.getPrototypeOf(m)), m);
+    c.Attack = m.Attack.ShallowCopy(); c.Health = m.Health.ShallowCopy(); c.Point = { x: m.Point.x, y: m.Point.y };
+    c.Abilities = m.Abilities.map((a) => Object.assign(Object.create(Object.getPrototypeOf(a)), a)); c.Power = Object.assign({}, m.Power); c.LastSummoned = (m.LastSummoned || []).slice();
+    return c;
+  }
+  /** SummonMinionMutator */
+  function summonMutator(B, e) {
+    const s = e.Event, board = B.board;
+    let m = s.Minion; if (s.Type !== 3 && s.Type !== 5) m = deepCopy(m);
+    const p = s.TargetPoint;
+    if (canSummonMinion(board, m, p)) {
+      m.Location = 1;
+      if ((p.x < 5 && m.Owner !== 1) || (p.x > 4 && m.Owner === 1)) m.Owner = m.Owner === 1 ? 2 : 1;
+      board.setMinion(p, m);
+    } else unported('SummonMinionMutator when the summon fails at Do');
+    if (s.Jumped && board.IsBattle) m.JumpsThisBattle++;
+    if (!s.TriggerDisabled) { if (e.Owner === 1) board.MinionsSummonedThisTurn++; else board.OpponentMinionsSummonedThisTurn = (board.OpponentMinionsSummonedThisTurn || 0) + 1; }
+    B.add(wrap('Done', s));
+    if (s.ForceActivateAbility) {
+      const filter = m.Abilities.filter((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects; }).map((a) => a.Enum);
+      B.add(ev('ForceActivateAbility', { Owner: e.Owner, Level: null, TargetId: m.Id, AbilityFilter: filter, SourceId: null, RepeatFromAuraDisabled: false, DisableAfterTemp: false }));
+    }
+  }
+  /** ForceActivateAbilitySystem: Do<AbilityTriggered>(forced) for each listed ability, on a TriggerEvent.Force. */
+  function forceActivateAbility(B, e) {
+    if (!e.AbilityFilter) return;
+    const m = B.board.findMinion(e.TargetId); if (!m || !m.Abilities.length) return;
+    if (((D.minions[m.Enum] || {}).raw || {}).ForceActivateImmune) return;
+    for (const a of m.Abilities) {
+      if (!e.AbilityFilter.includes(a.Enum)) continue;
+      if (e.Level) unported('ForceActivateAbility.Level');
+      const trig = ev('Force', { SourceId: e.SourceId });
+      B.add(wrap('Do', ev('AbilityTriggered', { Owner: e.Owner, Ability: a.Enum, Level: a.Level, MinionId: e.TargetId, Aim: null, TriggerEvent: trig, UpdateLevel: false, Type: 0,
+        Force: true, RepeatFromAuraDisabled: e.RepeatFromAuraDisabled, DisableAfterTemp: e.DisableAfterTemp, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
     }
   }
 
@@ -669,6 +855,15 @@
   }
 
   const triggers = {
+    /** TriggerSummonSystem */
+    TriggerSummonSystem(B, e) {
+      const s = e.Event; if (s.TriggerDisabled) return;
+      if (s.SubType === 1) B.add(ev('Transform', { SourceId: s.Minion.Id }));
+      else if (s.SubType === 3) B.add(ev('PetActivated', { PetActivatedId: s.Minion.Id, AbilityEnum: 10000 }));
+      else B.add(ev('Summon', { SourceId: s.Minion.Id, SubType: s.SubType }));
+    },
+    /** TriggerSummonFailSystem: a summon that fails for lack of space flings the pet */
+    TriggerSummonFailSystem(B, e) { const s = e.Event; if (s.TriggerDisabled || s.FailCause !== 1) return; B.add(ev('Flung', { SourceId: s.Minion.Id, Minion: s.Minion })); },
     /** TriggerChargedMinionSystem: Done<ChargedMinion> -> Charged */
     TriggerChargedMinionSystem(B, e) { const c = e.Event; B.add(ev('Charged', { SourceId: c.MinionId, Ability: c.Ability })); },
     /** TriggerGainedHealthSystem: Done<BuffMinion> with health gained -> HealthGained */
@@ -683,6 +878,7 @@
     castEffect(B, e) { B.add(e.EffectResult.Events); },
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
     mutators, triggers,
+    summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };
 

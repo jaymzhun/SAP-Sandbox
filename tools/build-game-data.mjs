@@ -9,7 +9,7 @@ const load = (prefix) => { const all = {}; for (const f of fs.readdirSync(liveDi
 const enums = JSON.parse(fs.readFileSync(enumPath, "utf8"));
 
 // Drop presentation-only fields and defaults; keep the object graph ($type, $id/$ref) intact.
-const UI = /^(About|AboutLocoKey|AboutArgs|FinePrint|FinePrintLocoKey|CustomNote|RepeatText|Hidden.*|Show.*|Localization|Asset|Relations|Highlight|ExplainPerk|ExplainSpell|GoldPrompt|CompoundGoldPrompt|ForceSequentialAbilityRendering|IgnoreOwnerWhenRendering|ForceParallelEffectsRenderings|RenderPostDelay|RenderDelay|RenderSfx|RenderLost)$/;
+const UI = /^(About|AboutLocoKey|AboutArgs|FinePrint|FinePrintLocoKey|CustomNote|RepeatText|Hidden(Text|Render|AbilityCard|Charges|Power|Memory)|Show.*|Localization|Asset|Relations|Highlight|ExplainPerk|ExplainSpell|GoldPrompt|CompoundGoldPrompt|ForceSequentialAbilityRendering|IgnoreOwnerWhenRendering|ForceParallelEffectsRenderings|RenderPostDelay|RenderDelay|RenderSfx|RenderLost)$/;
 const strip = (o) => {
   if (Array.isArray(o)) return o.map(strip);
   if (o && typeof o === "object") {

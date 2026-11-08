@@ -66,7 +66,7 @@
     constructor(width = 10, height = 1) {
       this.Width = width; this.Height = height; this.cells = new Array(width * height).fill(null);
       this.MinionGraveyard = []; this.MinionSold = []; this.Relics = [];
-      this.ReverseMinionAccess = false; this.IsBattle = true; this.UniqueNumberCounter = 0;
+      this.ReverseMinionAccess = false; this.IsBattle = true; this.UniqueNumberCounter = 0; this.BoardCapacity = 10;
       this.Trumpets = 0; this.TrumpetsDone = false; this.OpponentTrumpets = 0; this.OpponentTrumpetsDone = false;
       this.PlayerFaintsThisBattle = 0; this.OpponentFaintsThisBattle = 0; this.MinionsSummonedThisTurn = 0; this.Turn = 1;
       this.State = 0;
