@@ -1070,12 +1070,14 @@
     m.Health.Set(m.Health.Permanent, false); m.Health.Set(m.Health.Temporary, true);
   }
   /** BoardExtensions.GenerateMinion: a new MinionModel with the next id on the merged board. */
-  function generateMinion(B, e, level, owner) {
+  /** BoardExtensions.GenerateMinion(board, enum, level, owner, location[, random]); with a random, a template with several Tribes picks one. */
+  function generateMinion(B, e, level, owner, location = 1, rand = null) {
     const t = D.minions[e]; if (!t) throw new Error("Template does not exist for '" + e + "'.");
+    if (rand && t.raw && t.raw.Tribes) unported('GenerateMinion random tribe');
     const id = M.itemId('M', B.board.nextUnique());
     const m = new M.MinionModel({ Id: id, Owner: owner, Enum: e, x: 0, Level: level, Exp: LEVEL_EXP[level - 1] ?? 0, Attack: t.attack, Health: t.health, Tribe: t.tribe,
       Abilities: t.abilities.map((a) => { const x = new M.MinionAbilityModel(a.e, level, true); const ab = getAbility(a.e, level); x.AlwaysIgnoreMinionLevel = !!(ab && ab.AlwaysIgnoreMinionLevel); return x; }) });
-    m.Location = 1;
+    m.Location = location;
     updateStatsMax(m);
     return m;
   }
@@ -1083,12 +1085,39 @@
   function takeRandom(list, n, rand) { const l = list.slice(); for (let i = 0; i < n && i !== l.length; i++) { const k = rand.next(i, l.length); const x = l[k]; l[k] = l[i]; l[i] = x; } return n < l.length ? l.slice(0, Math.max(0, n)) : l; }
   function setAttack(m, v) { if (m.Attack.Max < v) v = m.Attack.Max; if (v < 1) v = 1; m.Attack.Set(v, false); m.Attack.Set(0, true); }
   function setHealth(m, v) { if (m.Health.Max < v) v = m.Health.Max; m.Health.Set(v, false); m.Health.Set(0, true); }
+  /** MinionExtensions.CopyTriggerCount: abilities with a TriggerLimit take the TriggerCount of the first same-enum ability of copyFrom. */
+  function copyTriggerCount(m, from) {
+    for (const a of m.Abilities) {
+      const ab = getAbility(a.Enum, a.Level); if (!ab || ab.TriggerLimit == null) continue;
+      const f = from.Abilities.find((x) => x.Enum === a.Enum); if (f) a.TriggerCount = f.TriggerCount;
+    }
+  }
   /** MinionCatalogueBase.GetMinions */
   function catalogueMinions(c, ca) {
     const t = short(T(c)); let base;
     switch (t) {
       case 'MinionCatalogueFixed': base = (c.Minions || []).map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner)); break;
       case 'MinionCatalogueList': base = takeRandom(c.Minions || [], ca.Amount, ca.Random).map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner)); break;
+      case 'MinionCatalogueSelfCopy': {
+        // a copy of the source (its owner, location and level unless ExcludeLevel); Reborn keeps its trigger and attack counts
+        base = []; if (!ca.SourceId) break;
+        const src = ca.B.board.findMinion(ca.SourceId); if (!src) break;
+        const m = generateMinion(ca.B, src.Enum, c.ExcludeLevel ? ca.Level : src.Level, src.Owner, src.Location);
+        if (c.Reborn) { copyTriggerCount(m, src); m.AttackCountsThisBattle = src.AttackCountsThisBattle; m.AttackCountsThisTurn = src.AttackCountsThisTurn; }
+        base.push(m); break;
+      }
+      case 'MinionCatalogueTriggerTarget': {
+        // a fresh copy of the trigger event's target. The game checks CopyAttack twice and never reads CopyHealth,
+        // so CopyAttack copies attack and health (MinionCatalogueTriggerTarget.GetBaseMinions, build 26131463)
+        base = []; const tid = targetOf(ca.TriggerEvent); if (!tid) break;
+        const tm = ca.B.board.findMinion(tid);
+        if (c.MinionFinder && !predicate(c.MinionFinder, ca.B, tm, ca.SourceId ? ca.B.board.findMinion(ca.SourceId) : null)) break;
+        if (!tm) break;
+        const m = generateMinion(ca.B, tm.Enum, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random);
+        if (c.CopyAttack) { m.Attack = tm.Attack.ShallowCopy(); m.Health = tm.Health.ShallowCopy(); }
+        if (c.CopyPerk) setPerk(m, tm.Perk, tm.PerkDuration, tm.PerkMultiplier, tm.PerkDurability);
+        base.push(m); break;
+      }
       default: return unported(t);
     }
     const pa = { B: ca.B, TargetId: ca.TargetId, SourceId: ca.SourceId, Random: ca.Random, TriggerEvent: ca.TriggerEvent, Owner: ca.Owner };
@@ -1101,8 +1130,9 @@
       if (c.ExtraHealth != null) setHealth(m, m.Health.Total + c.ExtraHealth);
       if (c.Perk) unported('MinionCatalogue.Perk');
       if (c.Countdown) unported('MinionCatalogue.Countdown');
-      if (c.DisableAbility) unported('MinionCatalogue.DisableAbility');
-      if (c.ExtraExperience != null) unported('MinionCatalogue.ExtraExperience');
+      if (c.DisableAbility) { m.AbilitiesDisabled = true; m.Abilities.length = 0; } // MinionExtensions.DisableAbilities
+      if (c.Frozen) m.Frozen = true;
+      if (c.ExtraExperience != null) { m.Exp += c.ExtraExperience; resetLevelFromExperience(m); }
     }
     return base;
   }
