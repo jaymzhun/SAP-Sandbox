@@ -130,6 +130,16 @@
         const v = p.MinionFinder && predicate(p.MinionFinder, pa.B, m, src) ? p.TrueValue : p.FalseValue;
         return v ? paramValue(v, pa) : 0;
       }
+      case 'ParameterMinionPower': { const m = paramMinion(p, pa); return m ? (m.Power[p.Ability] || 0) : 1; } // MinionExtensions.GetPower (null -> 0)
+      case 'ParameterLevelSum': { // BoardExtensions.SumLevels: levels of grid pets passing MinionFinder, owner = the Origin pet
+        const m = paramMinion(p, pa); if (!m) return 1; if (!p.MinionFinder) return 0;
+        let n = 0; for (const x of pa.B.board.cells) if (x && predicate(p.MinionFinder, pa.B, x, m)) n += x.Level; return n;
+      }
+      case 'ParameterSharedPower': { // BuildExtensions.GetSharedPower(board, source owner, Ability): SharedPowers / OpponentSharedPowers
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!src) return 0;
+        const d = src.Owner === 1 ? pa.B.board.SharedPowers : src.Owner === 2 ? pa.B.board.OpponentSharedPowers : null;
+        return (d && d[p.Ability]) || 0;
+      }
       case 'ParameterMinionAttack': { const m = paramMinion(p, pa); return m ? m.Attack.Total : 1; }
       case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
       case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
@@ -342,7 +352,11 @@
     if (!types || !types.length || types.includes(1)) list = list.concat(board.Relics.filter(Boolean));
     if (!list.length) return list;
     let out = list.filter((m) => predicate(f, B, m, owner, aim));
-    if (f.Duplicates != null) unported('MinionFinder.Duplicates');
+    if (f.Duplicates != null) {
+      // GroupBy(Enum) in first-seen order, groups of at least Duplicates pets, flattened, then alive only
+      const groups = new Map(); for (const m of out) { if (!groups.has(m.Enum)) groups.set(m.Enum, []); groups.get(m.Enum).push(m); }
+      out = [...groups.values()].filter((g) => f.Duplicates <= g.length).flat().filter((m) => m.IsAlive);
+    }
     if (f.Randomize || f.Limit != null) fastShuffle(out, rand);
     if (!f.ForceUnordered) {
       const keys = [];
@@ -406,6 +420,22 @@
         unported('TargetsTriggerTarget without ITriggerTarget');
       }
       case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
+      case 'TargetsMiddle': {
+        // the middle of the live pets on the owner's side (Friendly) or the other side, in grid order; an even count picks left of
+        // centre for the opponent
+        if (!owner) return null;
+        const list = board.cells.filter((m) => m && m.IsAlive && (t.Friendly ? m.Owner === owner.Owner : m.Owner !== owner.Owner));
+        if (!list.length) return [];
+        let i = Math.trunc(list.length / 2); if (owner.Owner === 2 && list.length % 2 === 0) i -= 1;
+        i = Math.max(0, Math.min(i, list.length - 1));
+        return [list[i].Id];
+      }
+      case 'TargetsMiddleSpace': {
+        // cell 2 (Friendly) or 7, mirrored for the opponent
+        let x = t.Friendly ? 2 : 7; if (owner && owner.Owner === 2) x = 9 - x;
+        if (board.Width <= x) return [];
+        const m = board.get({ x, y: 0 }); return m ? [m.Id] : [];
+      }
       case 'TargetsMirror': {
         // the first live enemy (passing MinionFinder) in a breadth-first walk of the grid from the mirrored cell;
         // neighbours go right then left for the player, left then right for the opponent (rows above/below are off the grid)
@@ -533,6 +563,7 @@
         }
         return true;
       }
+      case 'ConditionIsTrumpetNotDone': { if (!owner) return false; return owner.Owner === 1 ? !B.board.TrumpetsDone : !B.board.OpponentTrumpetsDone; }
       case 'ConditionIsStartOfBattle': return (B.board.BattlePhase || 0) === 0; // BoardModel.BattlePhase (+0x25c) == StartBattle
       case 'ConditionHighestTier': case 'ConditionLowestTier': {
         // every other candidate (finder, else every grid pet) must have a strictly lower (higher) tier than the owner
@@ -794,7 +825,21 @@
     for (let i = 0; i < reps; i++) list.push(newActivate(t, ++minion.AbilityActivations));
     if (t.Type === 1) { const extra = getPerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; list.push(a); } }
     if (t.Type === 2) { const extra = getNegativePerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; a.Reversed = minion.Abilities.some((x) => x.Enum === 839); list.push(a); } }
-    if (t.Type === 0 && !(ab.RepeatFromAuraDisabled || t.RepeatFromAuraDisabled) && B.hooks.auraRepeats) B.hooks.auraRepeats(B, e, minion, model, ab, list);
+    // aura repeats (BuildRepeatActivations): each adds GetAbilityRepeats(aura level) activations at that level
+    const repeatsAt = (level) => {
+      const ab2 = getAbility(t.Ability, level ?? t.Level); if (!ab2) return 0;
+      if (!ab2.RepeatParameter) return ab2.Repeat ?? 1;
+      return paramValue(ab2.RepeatParameter, { B, TargetId: minion.Id, SourceId: minion.Id, TriggerSourceId: sourceOf(t.TriggerEvent) || null, TriggerTargetId: targetOf(t.TriggerEvent) || null,
+        AimId: null, Random: B.randomizer(t.Owner), TriggerEvent: t.TriggerEvent, Owner: t.Owner });
+    };
+    const addAt = (level) => { const n = repeatsAt(level); for (let i = 0; i < n; i++) { const a = newActivate(t, ++minion.AbilityActivations); a.Level = level; list.push(a); } };
+    if (t.Type === 0 && !(ab.RepeatFromAuraDisabled || t.RepeatFromAuraDisabled)) {
+      const first = minion.Abilities.find((x) => { const xa = getAbility(x.Enum, x.Level); return xa && !xa.RepeatFromAuraDisabled; });
+      if (first && first.Enum === ab.Enum && B.board.IsBattle && findAuras(B, minion, 0).length) unported('BuildRepeatActivations aura 0 (FindAura)');
+      for (const ref of findAuras(B, minion, 5)) addAt(ref.Ability.Level);
+      if (model && hasTrigger({ Abilities: [model] }, ['TriggerSpendAttack', 'TriggerSpendHealth'], false) && findAuras(B, minion, 13).length) unported('BuildRepeatActivations aura 13');
+    }
+    if (model && hasDeathEffect({ Abilities: [model] }) && findAuras(B, minion, 4).length) unported('BuildRepeatActivations aura 4 (FindAura)');
     return list;
   }
   function activateAbilityDo(B, e) {
@@ -884,6 +929,11 @@
         const g = ev('GainRolls', { Owner: ga.Owner, Rolls: paramValue(eff.Rolls, globalParamArgs(ga)), Future: !!eff.Future, SourceId: ga.SourceId || null, Shower: eff.Shower ?? null });
         return [wrap('Try', g)];
       }
+      case 'EffectBalance': {
+        // EffectBalance.OnGlobal (Single false): all targets; MixStats is not copied here
+        if (eff.Single) return null;
+        return [wrap('Try', ev('BalanceStats', { Owner: ga.Owner, Source: ga.SourceId || null, Targets: (ga.TargetIds || []).slice(), Results: null, Percent: eff.Percent ?? 0, MixStats: false }))];
+      }
       case 'EffectCondition': {
         // EffectCondition.OnGlobal: check against the source as owner, then run TrueEffect or FalseEffect globally
         if (!ga.SourceId) return null;
@@ -956,6 +1006,11 @@
   function effectSingle(eff, sa) {
     const t = short(T(eff)); const pa = singleParamArgs(sa);
     switch (t) {
+      case 'EffectBalance': {
+        // EffectBalance.OnSingle (Single true): just the target
+        if (!eff.Single) return null;
+        return [wrap('Try', ev('BalanceStats', { Owner: sa.Owner, Source: sa.SourceId || null, Targets: [sa.TargetId], Results: null, Percent: eff.Percent ?? 0, MixStats: !!eff.MixStats }))];
+      }
       case 'EffectCondition': {
         // EffectCondition.OnSingle: owner is the source (the target with TargetAsOwner)
         const oid = eff.TargetAsOwner ? sa.TargetId : sa.SourceId; if (!oid) return null;
@@ -1366,6 +1421,7 @@
         if (atk) setAttack(m, v); else setHealth(m, v); return;
       }
       case 'EffectSummonProcessorCopyLevel': if (p) m.Level = p.Level; return;
+      case 'EffectSummonProcessorSetPerk': setPerk(m, pr.Value ?? null); return;
       default: return unported(t);
     }
   }
@@ -1522,11 +1578,21 @@
       if (b.HealthRestore) unported('BuffMinion.HealthRestore');
       if (m.Perk === 121 && !(B.hooks.sadImmune && B.hooks.sadImmune(m))) { atk = 0; hp = 0; b.Attack = 0; b.Health = 0; }
       const dur = b.Duration || 0;
-      if (dur === 2) unported('BuffMinion removable (Duration 2)');
+      // Duration 2 buffs are removable: a negative one from a source takes back what that source gave (records in RemoveableBuffs),
+      // never leaving a stat below 1; a positive one records (source, attack gained, health gained) below
+      const negative = b.Health < 0 || b.Attack < 0;
+      if (source && dur === 2 && negative && m.RemoveableBuffs) {
+        const mine = m.RemoveableBuffs.filter((r) => idEq(r[0], source.Id));
+        m.RemoveableBuffs = m.RemoveableBuffs.filter((r) => !idEq(r[0], source.Id));
+        atk = mine.reduce((acc, r) => acc - r[1], 0); hp = mine.reduce((acc, r) => acc - r[2], 0);
+        if (m.Health.Total <= Math.abs(hp)) hp = 1 - m.Health.Total;
+        if (m.Attack.Total <= Math.abs(atk)) atk = 1 - m.Attack.Total;
+      }
       addAttack(m, atk, dur);
       M.addHealth(m, hp, dur !== 0);
       b.ResultGiveAttack = atk; b.ResultGiveHealth = hp; b.ResultAttackGained = m.Attack.Total - atk0; b.ResultHealthGained = m.Health.Total - hp0;
       b.ResultAttack = m.Attack.ShallowCopy(); b.ResultHealth = m.Health.ShallowCopy();
+      if (source && dur === 2 && !negative && m.RemoveableBuffs) m.RemoveableBuffs.push([source.Id, b.ResultAttackGained, b.ResultHealthGained]);
       if (b.Future) unported('BuffMinion.Future');
       if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
       B.add(wrap('Done', b));
@@ -1605,6 +1671,32 @@
       m.Mana = Math.max(0, m.Mana - spend);
       sm.ResultTargetManaOld = old; sm.ResultTargetManaNew = m.Mana;
       B.add(wrap('Done', sm));
+    },
+    /**
+     * BalanceStatsMutator (Try<BalanceStats>), in float32 like the game: each pet keeps (1 - Percent) of its own permanent/temporary
+     * attack and health plus an equal share of Percent of the totals (MixStats pools attack with health); Math.Round (to even).
+     */
+    BalanceStatsMutator(B, e) {
+      const bs = e.Event; const list = bs.Targets.map((id) => B.board.findLiveMinion(id)).filter(Boolean);
+      if (!list.length) return;
+      const f = Math.fround, p = f(bs.Percent);
+      let aP = 0, aT = 0, hP = 0, hT = 0;
+      for (const m of list) { aP = f(aP + f(m.Attack.Permanent * p)); aT = f(aT + f(m.Attack.Temporary * p)); hP = f(hP + f(m.Health.Permanent * p)); hT = f(hT + f(m.Health.Temporary * p)); }
+      if (bs.MixStats) { aP = hP = f(f(hP + aP) * 0.5); aT = hT = f(f(hT + aT) * 0.5); }
+      const n = list.length, q = f(1 - p);
+      const round = (x) => { const fl = Math.floor(x); const d = x - fl; return d > 0.5 ? fl + 1 : d < 0.5 ? fl : (fl % 2 === 0 ? fl : fl + 1); };
+      bs.Results = [];
+      for (const m of list) {
+        let x = f(f(q * m.Attack.Permanent) + f(aP / n)), hp = f(f(m.Health.Permanent * q) + f(hP / n));
+        let xt = f(f(m.Attack.Temporary * q) + f(aT / n)), ht = f(f(m.Health.Temporary * q) + f(hT / n));
+        if (n === 1) {
+          if (Math.abs(x - Math.floor(x) - 0.5) < 0.01) { x = Math.floor(x); hp = Math.ceil(hp); }
+          if (Math.abs(xt - Math.floor(xt) - 0.5) < 0.01) { xt = Math.floor(xt); ht = Math.ceil(ht); }
+        }
+        m.Attack.Set(round(x), false); m.Health.Set(round(hp), false); m.Attack.Set(round(xt), true); m.Health.Set(round(ht), true);
+        bs.Results.push({ Id: m.Id, ResultAttack: m.Attack.ShallowCopy(), ResultHealth: m.Health.ShallowCopy() });
+      }
+      B.add(wrap('Done', bs));
     },
     /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
     PushMutator(B, e) {
@@ -1696,8 +1788,9 @@
     SetMinionStatsMutator(B, e) {
       const s = e.Event; const m = B.board.findLiveMinion(s.Target); if (!m) return;
       const atk0 = m.Attack.Total, hp0 = m.Health.Total;
-      if (s.Attack != null) { setAttack(m, s.Attack); s.ResultAttackDelta = m.Attack.Total - atk0; s.ResultAttack = m.Attack.ShallowCopy(); }
-      if (s.Health != null) { m.Health.Set(Math.min(m.Health.Max, s.Health), false); m.Health.Set(0, true); s.ResultHealthDelta = m.Health.Total - hp0; s.ResultHealth = m.Health.ShallowCopy(); }
+      // each stat set also uses |delta| up against the removable-buff records (MinionExtensions.DamageRemovableBuffs)
+      if (s.Attack != null) { setAttack(m, s.Attack); s.ResultAttackDelta = m.Attack.Total - atk0; s.ResultAttack = m.Attack.ShallowCopy(); M.damageRemovableBuffs(m, Math.abs(s.ResultAttackDelta), 0); }
+      if (s.Health != null) { m.Health.Set(Math.min(m.Health.Max, s.Health), false); m.Health.Set(0, true); s.ResultHealthDelta = m.Health.Total - hp0; s.ResultHealth = m.Health.ShallowCopy(); M.damageRemovableBuffs(m, 0, Math.abs(s.ResultHealthDelta)); }
       B.add(wrap('Done', s));
     },
     /** GainTrumpetsMutator (Try<GainTrumpets>): Do<ChangeTrumpets>, or Done<DenyTrumpets> once the trumpets were used */

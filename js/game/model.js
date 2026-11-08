@@ -48,7 +48,7 @@
       this.Mana = o.Mana ?? 0; this.Countdown = null;
       this.LastPositivePerk = null; this.Perk = o.Perk ?? null; this.PerkBought = false;
       this.PerkDurability = o.PerkDurability ?? null; this.PerkDurabilityMax = o.PerkDurabilityMax ?? null; this.PerkMultiplier = o.PerkMultiplier ?? null; this.PerkDuration = 0;
-      this.Abilities = o.Abilities || []; this.AbilitiesDisabled = false;
+      this.Abilities = o.Abilities || []; this.AbilitiesDisabled = false; this.RemoveableBuffs = []; // MinionModel.RemoveableBuffs (+0x160): (source, attack, health)
       this.Dead = false; this.Destroyed = false; this.DestroyedBy = null;
       this.Power = {}; this.Tribe = o.Tribe ?? null;
       this.AttackCountsThisTurn = 0; this.HurtCountsThisTurn = 0; this.SpellCountsThisTurn = 0;
@@ -65,7 +65,7 @@
   class BoardModel {
     constructor(width = 10, height = 1) {
       this.Width = width; this.Height = height; this.cells = new Array(width * height).fill(null);
-      this.MinionGraveyard = []; this.MinionSold = []; this.Relics = [];
+      this.MinionGraveyard = []; this.MinionSold = []; this.Relics = []; this.SharedPowers = {}; this.OpponentSharedPowers = {}; // BoardModel +0x190 / +0x250
       this.ReverseMinionAccess = false; this.IsBattle = true; this.UniqueNumberCounter = 0; this.BoardCapacity = 10;
       this.Trumpets = 0; this.TrumpetsDone = false; this.OpponentTrumpets = 0; this.OpponentTrumpetsDone = false;
       this.PlayerFaintsThisBattle = 0; this.OpponentFaintsThisBattle = 0; this.MinionsSummonedThisTurn = 0; this.OpponentSummons = 0; this.Turn = 1;
@@ -122,8 +122,25 @@
     return n;
   }
 
-  /** MinionExtensions.Damage: temporary health first, then permanent (DamageRemovableBuffs is shop-only). */
+  /**
+   * MinionExtensions.DamageRemovableBuffs(m, attack, health): uses the damage up against the RemoveableBuffs records in order
+   * (records are (source, attack, health)), so a later removal takes back only what is left.
+   */
+  function damageRemovableBuffs(m, atkD, hpD) {
+    if (!(atkD > 0 || hpD > 0) || !m.RemoveableBuffs) return;
+    for (let i = 0; i < m.RemoveableBuffs.length; i++) {
+      if (atkD < 1 && hpD < 1) return;
+      const r = m.RemoveableBuffs[i]; let a = r[1], h = r[2];
+      if (h > 0 || a > 0) {
+        if (hpD > 0 && h > 0) { if (h - hpD < 1) { hpD -= h; h = 0; } else { h -= hpD; hpD = 0; } }
+        if (atkD > 0 && a > 0) { if (a - atkD < 1) { atkD -= a; a = 0; } else { a -= atkD; atkD = 0; } }
+        m.RemoveableBuffs[i] = [r[0], a, h];
+      }
+    }
+  }
+  /** MinionExtensions.Damage: removable-buff records first, then temporary health, then permanent. */
   function damageMinion(m, amount) {
+    damageRemovableBuffs(m, 0, amount);
     const h = m.Health;
     if (h.Temporary > 0) { const t = Math.min(h.Temporary, amount); h.Set(h.Temporary - t, true); amount -= t; }
     h.Set(h.Permanent - amount, false);
@@ -135,7 +152,7 @@
     return true;
   }
 
-  const api = { IntegerStat, MinionAbilityModel, MinionModel, BoardModel, itemId, idEq, idKey, getFrontDistance, damageMinion, addHealth };
+  const api = { IntegerStat, MinionAbilityModel, MinionModel, BoardModel, itemId, idEq, idKey, getFrontDistance, damageMinion, damageRemovableBuffs, addHealth };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else { root.SAPGame = root.SAPGame || {}; root.SAPGame.model = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
