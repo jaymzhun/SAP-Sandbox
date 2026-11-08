@@ -146,6 +146,12 @@
         if (pa.TriggerEvent && pa.TriggerEvent.cls === 'Hurt') return pa.TriggerEvent.Amount;
         return unported('ParameterTriggerValue on ' + (pa.TriggerEvent ? pa.TriggerEvent.cls : 'no event'));
       }
+      case 'ParameterGoldSpent': { // BuildExtensions.CountGoldSpent for the source's side (the other side with Opponent)
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!src) return 0;
+        let o = src.Owner; if (p.Opponent) o = o === 1 ? 2 : o === 2 ? 1 : 0;
+        return o === 1 ? pa.B.board.GoldSpent || 0 : o === 2 ? pa.B.board.OpponentGoldSpent || 0 : 0;
+      }
+      case 'ParameterMinionActivationCount': { const m = paramMinion(p, pa); if (!m) return 1; const a = m.Abilities.find((x) => x.Enum === p.Ability); return a ? a.ActivatedCount || 0 : 0; } // MinionAbilityModel +0x24
       case 'ParameterTurn': return pa.B.board.Turn ?? 0; // BoardModel.Turn (+0x5c)
       case 'ParameterMinionTier': { const m = paramMinion(p, pa); return m ? ((D.minions[m.Enum] || {}).tier ?? 0) : 1; } // MinionModel.Tier = template tier
       case 'ParameterMinionPower': { const m = paramMinion(p, pa); return m ? (m.Power[p.Ability] || 0) : 1; } // MinionExtensions.GetPower (null -> 0)
@@ -604,6 +610,7 @@
       }
       case 'ConditionIsTrumpetNotDone': { if (!owner) return false; return owner.Owner === 1 ? !B.board.TrumpetsDone : !B.board.OpponentTrumpetsDone; }
       case 'ConditionIsReversed': return !!ca.Reversed; // ConditionArgs.Reversed (+0x40)
+      case 'ConditionIsDivisible': { if (!c.Parameter) return false; const v = paramValue(c.Parameter, pa); return v !== 0 && v % c.Divisor === 0; } // 0 is not divisible here
       case 'ConditionIsEven': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 0; }
       case 'ConditionBuild': return !B.board.IsBattle; // BoardExtensions.IsBuild: the value byte of Nullable IsBattle (+0x28) is false
       case 'ConditionMinionsLessThan': { // LessOf count < MoreOf count (each a CompareTeam with a MinionFinder)
@@ -646,6 +653,21 @@
     for (const c of tr.Conditions) if (conditionCheck(c, ca) === !!tr.Invert) return { Status: 2, Loud: !!c.Fumble };
     return { Status: 0, Loud: false };
   }
+  /**
+   * SpellFilter.Predicate(board, spell, targetId, ownerId). Battle PlayedSpellOn events carry the perk's spell as a conjured
+   * SpellModel (Stolen null, Buffed false), as recorded from the game.
+   */
+  function spellFilter(f, e, ownerId) {
+    if (f.Tier != null) { const sp = ((D.lists || {}).releasedSpells || []).find((x) => x.e === e.Spell); if (!sp) unported('SpellFilter tier of an unreleased spell'); if (!opCheck(f.TierOperator || 0, sp.tier, f.Tier)) return false; }
+    if (f.Other != null) { if (!ownerId) return false; if (f.Other === false && !idEq(e.TargetId, ownerId)) return false; if (f.Other === true && idEq(e.TargetId, ownerId)) return false; }
+    if (f.Stolen != null && f.Stolen !== false) return false;
+    if (f.Conjured != null && f.Conjured !== true) return false;
+    if (f.Buffed != null && f.Buffed !== false) return false;
+    const vals = (h) => (h ? h.values || h : null);
+    if (f.Includes && !vals(f.Includes).includes(e.Spell)) return false;
+    if (f.Excludes && vals(f.Excludes).includes(e.Spell)) return false;
+    return true;
+  }
   function isTriggeredRaw(tr, args) {
     const e = args.TriggerEvent; const t = short(T(tr)); const B = args.B;
     const owner = args.OwnerId ? B.board.findMinion(args.OwnerId) : null;
@@ -663,7 +685,7 @@
     }
     const want = TRIGGER_EVENT[t]; if (!want) return unported(t);
     if (!e || e.cls !== want) return false;
-    if (!byEvent(t, tr, e)) return false;
+    if (!byEvent(t, tr, e, args)) return false;
     // the pet a trigger is about: TargetId for ExpGained and PlayedSpellOn (whose SourceId is nullable, so it is not the trigger source;
     // battle #93 of corpus2 triggers on the fed pet), else the event's source
     const id = t === 'TriggerExpGained' || t === 'TriggerPlayedSpellOn' ? e.TargetId : sourceOf(e);
@@ -671,14 +693,14 @@
     if (tr.MinionFinder && !predicate(tr.MinionFinder, B, m, owner)) return false;
     return true;
   }
-  function byEvent(t, tr, e) {
+  function byEvent(t, tr, e, args = {}) {
     switch (t) {
       case 'TriggerHurt': if (!tr.IncludeZero && e.Amount === 0) return false; if (tr.CanRestore && e.Amount - (e.Restored || 0) < 1) return false; return true;
       case 'TriggerHurtEarly': return !!tr.IncludeZero || e.Amount !== 0;
       case 'TriggerKill': return !idEq(e.SourceId, e.TargetId);
       case 'TriggerAttack': return tr.OnlyAttackType == null || (e.AttackType || 0) === tr.OnlyAttackType;
       case 'TriggerBeforeAttack': if (tr.AttackType != null && (e.AttackType || 0) !== tr.AttackType) return false; if (tr.FirstAttack != null && !!e.IsFirstAttack !== tr.FirstAttack) return false; return true;
-      case 'TriggerPlayedSpellOn': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.SpellFilter) unported('TriggerPlayedSpellOn.SpellFilter'); return true;
+      case 'TriggerPlayedSpellOn': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.SpellFilter && !spellFilter(tr.SpellFilter, e, args.OwnerId)) return false; return true;
       case 'TriggerCharged': return e.Ability === tr.Ability;
       case 'TriggerPetActivated': return tr.Ability == null || e.AbilityEnum === tr.Ability;
       case 'TriggerPerkGained': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.Perk != null && e.Perk !== tr.Perk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; return true;
