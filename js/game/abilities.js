@@ -774,6 +774,22 @@
         return [wrap('Try', s)];
       }
       case 'EffectSummon': return effectSummon(eff, sa);
+      case 'EffectMana': {
+        // EffectMana.OnSingle; the mutator evaluates Value again (AmountParameter)
+        if (!eff.Value) return null;
+        let v = paramValue(eff.Value, pa);
+        if (eff.SpellPower) unported('EffectMana.SpellPower');
+        const c = ev('ChangeMinionMana', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Amount: v, AmountParameter: eff.Value, Absolute: !!eff.Absolute,
+          Transfer: eff.Transfer ?? null, SetPower: false, TriggerDisabled: !!eff.TriggerDisabled, TriggerTargetId: targetOf(sa.TriggerEvent) || null, TriggerSourceId: sourceOf(sa.TriggerEvent) || null,
+          TriggerEvent: sa.TriggerEvent, SourceSpell: null, ProjectileDisabled: !!eff.ProjectileDisabled, ResultAmount: 0, ResultMana: 0, ResultTransferedFrom: null });
+        return [wrap('Try', c)];
+      }
+      case 'EffectGiveExp': {
+        // EffectGiveExp.OnSingle
+        if (!eff.Amount) return null;
+        const g = ev('GiveMinionExp', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Amount: paramValue(eff.Amount, pa), ExpType: 0, Result: null, DisableReward: false, Projectile: null });
+        return [wrap('Try', g)];
+      }
       case 'EffectLosePerk': {
         // EffectLosePerk.OnSingle
         const l = loseMinionPerk(sa.Owner, sa.TargetId, sa.SourceId || null, eff.Perk ?? null, !!eff.IgnoreDurability);
@@ -794,6 +810,44 @@
   }
 
   // ---------------------------------------------------------------- summons (EffectSummon, MinionCatalogue*, GenerateMinion)
+  /** MinionExtensions.SetMana / AddMana: 0..50 (the cap is GameConstants.StatsMax). */
+  const setMana = (m, v) => { m.Mana = Math.max(0, Math.min(50, v)); };
+  /**
+   * MinionExtensions.ResetAbility (after a level change): drop the native abilities and add the template's again at the new level,
+   * keeping their charges. AddAbility marks every ability added after the first as IgnoreRepeats.
+   */
+  function resetAbility(m) {
+    if (m.AbilitiesDisabled) return;
+    const charges = new Map(); for (const a of m.Abilities) if (a.Charges != null) charges.set(a.Enum, a.Charges);
+    m.Abilities = m.Abilities.filter((a) => !a.Native);
+    const t = D.minions[m.Enum]; if (!t) return;
+    for (const { e } of t.abilities) {
+      const ab = getAbility(e, m.Level); if (!ab) continue;
+      if (ab.Regain && m.Abilities.length >= 1) continue;
+      if (ab.Singleton && m.Abilities.some((a) => a.Enum === e)) continue;
+      const x = new M.MinionAbilityModel(e, m.Level, true); x.AlwaysIgnoreMinionLevel = !!ab.AlwaysIgnoreMinionLevel; x.IgnoreRepeats = m.Abilities.length > 0;
+      m.Abilities.push(x);
+      if (ab.MaxAttack != null || ab.MaxHealth != null) updateStatsMax(m);
+      if (charges.has(e)) x.Charges = charges.get(e);
+    }
+  }
+  /** MinionExtensions.AddExp(m, n): each point gives +1/+1 (not while Sad unless it has ability 839) and one experience; levels at LEVEL_EXP. */
+  function addExp(m, n) {
+    if (n === 0) return { NewLevel: 0, NewExp: 0, LevelsGained: 0, ExpGained: 0, AttackGained: 0, HealthGained: 0 };
+    const lvl0 = m.Level, exp0 = m.Exp, atk0 = m.Attack.Total, hp0 = m.Health.Total;
+    const stat = (d) => { m.Attack.Add(d, false); if (m.Attack.Permanent < 1) m.Attack.Set(1, false); const h = m.Health.Permanent; m.Health.Add(d, false); if (m.Health.Permanent < 1 && h > 0) m.Health.Set(1, false); };
+    for (let i = 0; i < Math.abs(n); i++) {
+      if (n < 1) {
+        stat(-1);
+        if (m.Exp !== 0) { m.Exp--; const l = m.Level - 1; if (l >= 0 && l < LEVEL_EXP.length && m.Exp < LEVEL_EXP[l] && m.Level !== 1) { m.Level--; resetAbility(m); } }
+      } else {
+        if (m.Perk !== 121 || m.Abilities.some((a) => a.Enum === 839)) stat(1);
+        if (!(LEVEL_EXP.length <= m.Level)) { m.Exp++; if (m.Level >= 0 && m.Level < LEVEL_EXP.length && LEVEL_EXP[m.Level] === m.Exp && m.Level < LEVEL_EXP.length) { m.Level++; resetAbility(m); } }
+      }
+    }
+    return { NewLevel: m.Level, NewExp: m.Exp, NewAttack: m.Attack.ShallowCopy(), NewHealth: m.Health.ShallowCopy(), LevelsGained: m.Level - lvl0, ExpGained: m.Exp - exp0,
+      AttackGained: m.Attack.Total - atk0, HealthGained: m.Health.Total - hp0 };
+  }
   const LEVEL_EXP = [0, 2, 5]; // BoardConstants experience per level (level 2 = 2 seen on recorded boards; level 3 still to verify)
   /** MinionExtensions.UpdateStatsMax: ability MaxAttack/MaxHealth (SetMaxStats), else the template's AttackMax/HealthMax. */
   function updateStatsMax(m) {
@@ -1037,6 +1091,32 @@
       if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
       B.add(wrap('Done', b));
     },
+    /** ChangeMinionManaMutator (Try<ChangeMinionMana>) */
+    ChangeMinionManaMutator(B, e) {
+      const c = e.Event; const board = B.board; const m = board.findLiveMinion(c.TargetId); if (!m) return;
+      if (c.AmountParameter) c.Amount = paramValue(c.AmountParameter, { B, TargetId: c.TargetId, SourceId: c.SourceId, TriggerTargetId: c.TriggerTargetId, TriggerSourceId: c.TriggerSourceId,
+        TriggerEvent: c.TriggerEvent, Random: B.randomizer(c.Owner), Owner: c.Owner });
+      let amount = c.Amount;
+      if (c.Transfer != null) {
+        c.ResultTransferedFrom = [];
+        for (const x of board.cells) {
+          if (!x || !(x.Mana > 0) || idEq(x.Id, m.Id) || x.Owner !== m.Owner || !(c.Transfer > 0)) continue;
+          const take = Math.min(c.Transfer, x.Mana); amount += take; x.Mana -= take; c.ResultTransferedFrom.push({ Id: x.Id, Amount: take, Remaining: x.Mana });
+        }
+      }
+      setMana(m, c.Absolute ? amount : m.Mana + amount);
+      c.ResultAmount = amount; c.ResultMana = m.Mana;
+      B.add(wrap('Done', c));
+    },
+    /** GiveMinionExpMutator (Try<GiveMinionExp>): Done, then Try<GainReward> for a level gained (shop rewards) */
+    GiveMinionExpMutator(B, e) {
+      const g = e.Event; const m = B.board.findLiveMinion(g.TargetId); if (!m) return;
+      const r = addExp(m, g.Amount); g.Result = r;
+      B.add(wrap('Done', g));
+      if (!(r.LevelsGained > 0) || ((D.minions[m.Enum] || {}).raw || {}).Rewardless || g.DisableReward) return;
+      if (m.Perk !== 55 && m.Abilities.some((a) => a.Enum === 760)) return;
+      B.add(wrap('Try', ev('GainReward', { Owner: e.Owner, Rewards: r.LevelsGained, SourceLevel: m.Level, SourceTier: (D.minions[m.Enum] || {}).tier })));
+    },
     /** SetMinionStatsMutator (Try<SetMinionStats>); DamageRemovableBuffs only touches shop buffs, which battles never hold */
     SetMinionStatsMutator(B, e) {
       const s = e.Event; const m = B.board.findLiveMinion(s.Target); if (!m) return;
@@ -1156,6 +1236,15 @@
       if (g.SourceSpell != null) return;
       const pk = PERKS()[g.Perk]; if (!pk || pk.spell == null || !pk.positive) return;
       B.add(ev('PlayedSpellOn', { Owner: g.Owner, Spell: pk.spell, TargetId: g.TargetId, SourceId: g.Source, Shop: false, Disabled: g.TriggersDisabled }));
+    },
+    /** TriggerGainedManaSystem (Done<ChangeMinionMana>) */
+    TriggerGainedManaSystem(B, e) { const c = e.Event; if (c.TriggerDisabled || !(c.ResultAmount > 0)) return; B.add(ev('ManaGained', { SourceId: c.TargetId, TargetId: c.SourceId || M.itemId('M', 0), Value: c.Amount })); },
+    /** TriggerGiveExpSystem (Done<GiveMinionExp>) */
+    TriggerGiveExpSystem(B, e) { const g = e.Event; if (!(g.Amount > 0)) return; B.add(ev('GiveExperience', { SourceId: g.SourceId || M.itemId('M', 0), TargetId: g.TargetId })); },
+    /** TriggerLevelUp (Done<GiveMinionExp>): one Levelup per level gained, TriggerLevel = the level reached */
+    TriggerLevelUp(B, e) {
+      const g = e.Event; const r = g.Result; if (!r) return;
+      for (let i = 0; i < r.LevelsGained; i++) B.add(ev('Levelup', { SourceId: g.TargetId, TriggerLevel: r.NewLevel - r.LevelsGained + 1 + i }));
     },
     /** TriggerPerkLostSystem (Done<PerkLost>) */
     TriggerPerkLostSystem(B, e) { const l = e.Event; if (l.Perk && l.Perk.LostPerk != null) B.add(ev('PerkLost', { SourceId: l.TargetId, Perk: l.Perk.LostPerk })); },
