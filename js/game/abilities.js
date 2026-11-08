@@ -254,6 +254,39 @@
     }
     return out;
   }
+  /** BoardExtensions.GetAdjacent(m, dir, dist): dir 0 = towards the enemy, 1 = behind (from m's side). */
+  function getAdjacent(board, m, dir, dist) {
+    let d = m.Owner !== 1 ? 3 : 1; if (dir === 1) d = d === 1 ? 3 : 1;
+    const x = m.Point.x + (d === 1 ? 1 : -1) * dist;
+    return x < 0 || x >= board.Width ? null : board.get({ x, y: m.Point.y });
+  }
+  /**
+   * DamageAttemptMutator.TryAttackAdjacent (attacks only): Chili (5) hits 1 pet behind for 5, perk 123 1 pet for 4, perk 26 2 pets for 3,
+   * and an event SplashDamage hits 1 pet each side. Each looks up to 5 cells out for live pets of the target's team.
+   */
+  function tryAttackAdjacent(B, source, target, out, e, tryDamage) {
+    if (!source || e.DamageType !== 0) return;
+    const jobs = [];
+    if (source.Perk === 5) jobs.push([1, 5, [1]]);
+    else if (source.Perk === 123) jobs.push([1, 4, [1]]);
+    else if (source.Perk === 26) jobs.push([2, 3, [1]]);
+    if (e.SplashDamage != null && e.SplashDamage > 0) jobs.push([1, e.SplashDamage, [1, 0]]);
+    for (const [count, amount, dirs] of jobs) {
+      for (const dir of dirs) {
+        let hit = 0;
+        for (let i = 0; i < 5; i++) {
+          const adj = getAdjacent(B.board, target, dir, i + 1);
+          if (!adj || adj.Destroyed || adj.Dead || adj.Owner !== target.Owner) continue;
+          const saved = [e.AttackerInitialPerk, e.AttackerInitialPerkMultiplier, e.DefenderInitialPerk, e.DefenderInitialPerkMultiplier];
+          e.SourcePerk = source.Perk; e.AttackerInitialPerk = null; e.AttackerInitialPerkMultiplier = 1; e.DefenderInitialPerk = null; e.DefenderInitialPerkMultiplier = 1;
+          const r = tryDamage(adj, source, e, amount);
+          e.SourcePerk = null; [e.AttackerInitialPerk, e.AttackerInitialPerkMultiplier, e.DefenderInitialPerk, e.DefenderInitialPerkMultiplier] = saved;
+          out.push(...r);
+          if (++hit === count) break;
+        }
+      }
+    }
+  }
   /** DamageCalculationMinion.TryIncreaseAbilityTriggerCount: count the use; an aura at its limit goes to Exhausted. */
   function countAura(B, calc, r) {
     if (r.Template.TriggerLimit == null || !canAbilityCountLimit(B, r.Ability, r.Template)) return;
@@ -1135,7 +1168,7 @@
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
-    findAuras, countAura,
+    findAuras, countAura, tryAttackAdjacent,
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };
