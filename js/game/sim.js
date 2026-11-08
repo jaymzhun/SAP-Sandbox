@@ -120,7 +120,7 @@
         const batch = s.mode === 'all' ? s.queue.takeAll() : s.mode === 'typed' ? s.queue.takeFirstOfSameTypes() : [s.queue.pop()];
         this.executing = batch;
         try { if (s.mode === 'one') s.execute(batch[0]); else s.execute(batch); } finally { this.executing = null; }
-        for (const e of batch) if (!this.logged.has(e.Number)) { this.logged.add(e.Number); this.state.EventLog.push(e); }
+        for (const e of batch) if (!this.logged.has(e.Number)) { this.logged.add(e.Number); this.state.EventLog.push(e); if (this.o.onLog) this.o.onLog(e, this); }
       }
     }
     /** BoardResolver.ProcessBattle */

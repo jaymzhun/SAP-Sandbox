@@ -139,18 +139,16 @@
     bg: 'FieldBattle',
     settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
     rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
-    custom: [], // custom pets: { id, name, sprite, tier, atk, hp, trigger, tkey, vals: [[..],[..],[..]], lim: [0,0,0] }
   };
   let pendingReplay = null;
   let perkQuery = '';
-  function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, settings: S.settings, rnd: S.rnd, custom: S.custom })); } catch (e) { } }
+  function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, settings: S.settings, rnd: S.rnd })); } catch (e) { } }
   function load() {
     let st = null;
     try { if (/^#[tr]=/.test(location.hash)) st = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(3))))); } catch (e) { }
     if (st && location.hash.startsWith('#r=') && st.replay) { pendingReplay = st.replay; st.settings = Object.assign({}, S.settings, st.replay.settings); }
     if (!st) try { st = JSON.parse(localStorage.getItem('sap-sandbox') || 'null'); } catch (e) { }
     if (st) {
-      if (Array.isArray(st.custom)) { S.custom = st.custom.filter(c => c && c.id); for (const c of S.custom) registerCustom(c); }
       if (st.teams) S.teams = st.teams.map(t => Array.from({ length: 5 }, (_, i) => (t[i] && D.pets[t[i].id] ? t[i] : null)));
       if (st.names) S.names = st.names;
       if (st.meta) st.meta.forEach((m, k) => { if (m && S.meta[k]) Object.assign(S.meta[k], m); if (!D.bgs.includes(S.meta[k].bg)) S.meta[k].bg = 'FieldBattle'; });
@@ -368,15 +366,12 @@
     openModal('picker', p => {
       p.append(el('div', { class: 'head' }, el('h2', {}, replace ? 'Change pet' : 'Choose a pet')));
       const filters = el('div', { class: 'filters' });
-      const tabs = ['All', 1, 2, 3, 4, 5, 6, 'Tokens', 'Custom'];
+      const tabs = ['All', 1, 2, 3, 4, 5, 6, 'Tokens'];
       for (const t of tabs) {
         const b = el('button', { class: 'tier-tab' }, typeof t === 'number' ? 'Tier ' + t : t);
         b.addEventListener('click', () => { pickerState.tier = t; draw(); });
         b.dataset.t = t; filters.append(b);
       }
-      const newBtn = el('button', { class: 'tier-tab new-custom', title: 'Build your own pet' }, '+ Custom pet');
-      newBtn.addEventListener('click', () => openCustomBuilder(null, { side, i, replace }));
-      filters.append(newBtn);
       const search = el('input', { class: 'search', placeholder: 'Search pets, abilities or triggers…', value: pickerState.q });
       search.addEventListener('input', () => { pickerState.q = search.value; draw(); });
       filters.append(search);
@@ -399,8 +394,6 @@
             const hay = (d.n + ' ' + COMPILED.normText(d.ab[0] || '') + ' ' + trig).toLowerCase();
             return trig.includes(q) || hay.includes(q) || q.split(/\s+/).every(w => hay.includes(w));
           }
-          if (pickerState.tier === 'Custom') return !!d.custom;
-          if (d.custom) return false;
           if (pickerState.tier === 'Tokens') return !d.r;
           if (!d.r) return false;
           if (pickerState.tier !== 'All' && d.t !== pickerState.tier) return false;
@@ -410,12 +403,7 @@
         });
         list.sort((a, b) => D.pets[a].t - D.pets[b].t || D.pets[a].n.localeCompare(D.pets[b].n));
         grid.innerHTML = '';
-        if (pickerState.tier === 'Custom' && !q) {
-          const nc = el('div', { class: 'pcard newcard' }, el('div', { class: 'plus' }, '+'), el('div', { class: 'pname' }, 'New custom pet'));
-          nc.addEventListener('click', () => openCustomBuilder(null, { side, i, replace }));
-          grid.append(nc);
-          if (!list.length) grid.append(el('div', { class: 'section-title' }, 'No custom pets yet. Make one with the + card.'));
-        } else if (!list.length) grid.append(el('div', { class: 'section-title' }, pickerState.pack === 'Puppy' ? 'No pack list available for this pack — use All packs.' : 'No pets match.'));
+        if (!list.length) grid.append(el('div', { class: 'section-title' }, pickerState.pack === 'Puppy' ? 'No pack list available for this pack — use All packs.' : 'No pets match.'));
         let lastTier = null;
         for (const k of list) {
           const d = D.pets[k];
@@ -426,8 +414,7 @@
             el('div', { class: 'pname' }, d.n),
             el('div', { class: 'pst' }, el('img', { src: UI('Fist'), alt: '' }), String(d.a), el('img', { src: UI('Heart_1'), alt: '' }), String(d.h)),
             el('div', { class: 'tier' }, 'T' + d.t));
-          if (st === 'unsupported') card.append(el('div', { class: 'tag bad', title: 'Battle ability not simulated' }, 'not simulated'));
-          else if (st === 'shop' && CARRIES_OVER.has(k)) card.append(el('div', { class: 'tag good', title: 'Set its shop result in the pet editor' }, 'set in editor'));
+          if (st === 'shop' && CARRIES_OVER.has(k)) card.append(el('div', { class: 'tag good', title: 'Set its shop result in the pet editor' }, 'set in editor'));
           else if (st === 'shop') card.append(el('div', { class: 'tag', title: noBattleText(k) }, SHOP_TRIGGERS.has(STATUS[k].trigger) ? 'shop' : 'no battle effect'));
           else if (st === 'passive') card.append(el('div', { class: 'tag good', title: 'Passive: always active in battle' }, 'passive'));
           card.addEventListener('click', () => {
@@ -436,12 +423,6 @@
             closeModal();
             if (replace) openEditor(side, i);
           });
-          if (d.custom) {
-            card.append(el('div', { class: 'tag custom' }, 'custom'));
-            const eb = el('button', { class: 'cedit', title: 'Edit custom pet' }, '✎');
-            eb.addEventListener('click', ev => { ev.stopPropagation(); openCustomBuilder(k, { side, i, replace }); });
-            card.append(eb);
-          }
           attachTip(card, () => tipFor(k, 1, null, null, undefined, { atk: d.a, hp: d.h }));
           grid.append(card);
         }
@@ -450,267 +431,6 @@
       draw();
       setTimeout(() => search.focus(), 50);
     });
-  }
-
-  // ------------------------------------------------------------------ custom pets
-  // Abilities come from every battle ability text in the game (duplicates merged). Numbers in the text become
-  // editable values; the edited text is compiled with the original pet's ability code.
-  const NUMW = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
-  const SLOT_RE = /(\[\[[^\]]*\]\]|\{\w+\})|(\d+)|\b(one|two|three|four|five)\b/gi;
-  function parseTemplate(raw) {
-    const parts = []; let last = 0, m; SLOT_RE.lastIndex = 0;
-    while ((m = SLOT_RE.exec(raw))) {
-      if (m.index > last) parts.push({ t: raw.slice(last, m.index) });
-      if (m[1]) parts.push({ t: m[1] });
-      else if (m[2]) parts.push({ slot: 'd', v: +m[2] });
-      else parts.push({ slot: 'w', v: NUMW.indexOf(m[3].toLowerCase()), cap: /^[A-Z]/.test(m[3]) });
-      last = SLOT_RE.lastIndex;
-    }
-    if (last < raw.length) parts.push({ t: raw.slice(last) });
-    const key = parts.map(p => (p.slot ? (p.slot === 'd' ? '#' : '@') : p.t)).join('').toLowerCase();
-    return { parts, key, vals: parts.filter(p => p.slot).map(p => p.v) };
-  }
-  const PLURAL = { enemy: 'enemies', friend: 'friends', pet: 'pets', ally: 'allies' };
-  const SINGULAR = Object.fromEntries(Object.entries(PLURAL).map(([a, b]) => [b, a]));
-  // keep "one random enemy" / "three random enemies" agreeing with a count in front of it
-  const agree = (t, count) => t.replace(/^(\s+(?:(?:random|nearest|other|perk-less|last|first|healthiest|strongest|weakest|most|least|healthy|friendly|adjacent)\s+)*)(enemy|enemies|friend|friends|pet|pets|ally|allies)\b/i,
-    (m, pre, noun) => pre + (count > 1 ? PLURAL[noun.toLowerCase()] || noun : SINGULAR[noun.toLowerCase()] || noun));
-  function fillTemplate(parts, vals) {
-    let k = 0, count = null; const out = [];
-    for (const p of parts) {
-      if (!p.slot) {
-        let t = p.t;
-        if (count != null) { t = agree(t, count); count = null; }
-        out.push(t); continue;
-      }
-      const v = vals[k++];
-      if (p.slot === 'w') { const n = Math.max(1, Math.min(5, v | 0)); const w = NUMW[n]; count = n; out.push(p.cap ? w[0].toUpperCase() + w.slice(1) : w); }
-      else { count = null; out.push(String(Math.max(0, Math.min(999, v | 0)))); }
-    }
-    return out.join('');
-  }
-  let TEMPLATES = null;
-  function templates() {
-    if (TEMPLATES) return TEMPLATES;
-    TEMPLATES = new Map();
-    for (const k of Object.keys(D.pets).sort((a, b) => (D.pets[b].r || 0) - (D.pets[a].r || 0) || D.pets[a].t - D.pets[b].t || a.localeCompare(b))) {
-      const d = D.pets[k]; if (d.custom || !STATUS[k] || STATUS[k].status !== 'ok') continue;
-      for (let i = 0; i < 3; i++) {
-        if (!AB[k].levels[i] || !d.ab[i]) continue;
-        const t = parseTemplate(d.ab[i]);
-        if (TEMPLATES.has(t.key)) continue;
-        // default values for each level: the source pet's own levels when they read the same, else this level's
-        const defaults = [0, 1, 2].map(j => { const o = d.ab[j] && parseTemplate(d.ab[j]); return o && o.key === t.key ? o.vals : t.vals; });
-        const plain = COMPILED.normText(fillTemplate(t.parts, t.vals));
-        TEMPLATES.set(t.key, { key: t.key, parts: t.parts, src: k, defaults, srcTrig: STATUS[k].trigger, q: (plain + ' ' + d.n).toLowerCase() });
-      }
-    }
-    return TEMPLATES;
-  }
-  const COUNT_LABEL = { FriendFaints: 'friends faint', EnemyFaints: 'enemies faint', EnemyAttacks: 'enemy attacks', FriendlyAttacks: 'friendly attacks', FriendHurt: 'friends hurt' };
-  const TRIG_PICK_LABEL = { Faint: 'Faint (after it leaves the board)', BeforeFaint: 'Faint (while still on the board)' };
-  let TRIGS = null;
-  function triggerOptions() {
-    if (TRIGS) return TRIGS;
-    const n = new Map();
-    for (const k of Object.keys(AB)) {
-      const st = STATUS[k]; if (!st || st.status !== 'ok' || D.pets[k].custom) continue;
-      const t = st.trigger; if (!t || SHOP_TRIGGERS.has(t) || t === 'Passive') continue;
-      const base = t.startsWith('Count:') ? 'Count:' + t.split(':')[1] : t;
-      n.set(base, (n.get(base) || 0) + 1);
-    }
-    const label = b => b.startsWith('Count:') ? 'Counter: every N ' + COUNT_LABEL[b.split(':')[1]] : (TRIG_PICK_LABEL[b] || TRIG_LABEL[b] || b);
-    TRIGS = [...n.keys()].map(b => ({ code: b, label: label(b) })).sort((a, b) => a.label.localeCompare(b.label));
-    return TRIGS;
-  }
-  function customTexts(cp) {
-    const T = templates().get(cp.tkey); if (!T) return null;
-    return [0, 1, 2].map(i => fillTemplate(T.parts, (cp.vals && cp.vals[i]) || T.defaults[i]));
-  }
-  function registerCustom(cp) {
-    const T = templates().get(cp.tkey); if (!T) return null;
-    const texts = customTexts(cp);
-    const r = COMPILED.compileCustom({ src: T.src, texts, trigger: cp.trigger, limit: cp.lim });
-    D.pets[cp.id] = { n: cp.name || 'Custom Pet', t: cp.tier || 1, a: cp.atk || 1, h: cp.hp || 1, r: 0, tr: cp.trigger, tl: '', ab: texts, custom: true, sprite: cp.sprite || 'Ant' };
-    AB[cp.id] = r.ability; STATUS[cp.id] = r.status;
-    return r;
-  }
-  function unregisterCustom(id) { delete D.pets[id]; delete AB[id]; delete STATUS[id]; }
-  function usedCustom() { const used = new Set(S.teams.flat().filter(Boolean).map(p => p.id)); return S.custom.filter(c => used.has(c.id)); }
-
-  function openCustomBuilder(id, ret = {}) {
-    const existing = id ? S.custom.find(c => c.id === id) : null;
-    const T0 = templates();
-    const cp = existing ? JSON.parse(JSON.stringify(existing)) : (() => {
-      const t = T0.get(parseTemplate(D.pets.Mosquito.ab[0]).key) || T0.values().next().value;
-      return { id: 'Custom_' + Date.now().toString(36), name: 'Custom Pet', sprite: t.src, autoSprite: true, tier: 1, atk: 2, hp: 2, trigger: 'BeforeAttack', tkey: t.key, vals: t.defaults.map(v => v.slice()), lim: [0, 0, 0] };
-    })();
-    let abilityQ = '', spriteQ = '', showSprites = false, showAbilities = !existing;
-    const back = () => {
-      if (ret.back === 'editor' && ret.side != null) openEditor(ret.side, ret.i);
-      else if (ret.side != null) openPicker(ret.side, ret.i, ret.replace); else closeModal();
-    };
-    openModal('editor custom-builder', panel => {
-      let drawing = false;
-      const draw = () => { if (drawing) return; drawing = true; try { drawInner(); } finally { drawing = false; } };
-      const drawInner = () => {
-        const prev = panel.querySelector('.cb-body'); const keepScroll = prev ? prev.scrollTop : 0;
-        const alist = panel.querySelector('.cb-alist'); const keepList = alist ? alist.scrollTop : 0;
-        panel.querySelectorAll('.cb-body, .ed-actions, .head').forEach(n => n.remove());
-        requestAnimationFrame(() => { const b = panel.querySelector('.cb-body'); if (b) b.scrollTop = keepScroll; const l = panel.querySelector('.cb-alist'); if (l) l.scrollTop = keepList; });
-        const T = templates().get(cp.tkey);
-        const head = el('div', { class: 'head' }, el('h2', {}, existing ? 'Edit custom pet' : 'New custom pet'));
-        const body = el('div', { class: 'body cb-body' });
-
-        // --- identity: sprite, name, tier, stats
-        const top = el('div', { class: 'cb-top' });
-        const spr = el('button', { class: 'cb-sprite', title: 'Choose art' }, el('img', { src: petImg(cp.sprite), alt: '' }), el('span', {}, 'Change art'));
-        spr.addEventListener('click', () => { showSprites = !showSprites; draw(); });
-        const fields = el('div', { class: 'cb-fields' });
-        const name = el('input', { class: 'search', value: cp.name, maxlength: 24, placeholder: 'Name' });
-        name.addEventListener('input', () => { cp.name = name.value.slice(0, 24); });
-        const num = (key, min, max) => { const i = el('input', { type: 'number', class: 'cb-num', min, max, value: cp[key] }); i.addEventListener('change', () => { cp[key] = Math.max(min, Math.min(max, i.value | 0)); i.value = cp[key]; }); return i; };
-        const tierSel = el('select', { class: 'cb-select' }); for (let t = 1; t <= 6; t++) tierSel.append(el('option', { value: t }, 'Tier ' + t)); tierSel.value = cp.tier;
-        tierSel.addEventListener('change', () => { cp.tier = +tierSel.value; });
-        fields.append(
-          el('label', { class: 'cb-lbl' }, 'Name'), name,
-          el('div', { class: 'cb-row' },
-            el('label', { class: 'cb-lbl' }, 'Tier'), tierSel,
-            el('label', { class: 'cb-lbl' }, el('img', { class: 'ico', src: UI('Fist'), alt: '' }), ' Attack'), num('atk', 0, 50),
-            el('label', { class: 'cb-lbl' }, el('img', { class: 'ico', src: UI('Heart_1'), alt: '' }), ' Health'), num('hp', 1, 50)));
-        top.append(spr, fields);
-        body.append(top);
-        if (showSprites) {
-          const box = el('div', { class: 'cb-box' });
-          const sq = el('input', { class: 'search', placeholder: 'Search art by pet name…', value: spriteQ });
-          const g = el('div', { class: 'cb-sprites' });
-          const fill = () => {
-            g.innerHTML = ''; const q = spriteQ.trim().toLowerCase();
-            for (const k of Object.keys(D.pets).filter(k => !D.pets[k].custom && (!q || D.pets[k].n.toLowerCase().includes(q))).sort((a, b) => D.pets[a].n.localeCompare(D.pets[b].n)).slice(0, 240)) {
-              const c = el('div', { class: 'cb-spr' + (k === cp.sprite ? ' on' : ''), title: D.pets[k].n }, el('img', { src: petImg(k), alt: '', loading: 'lazy' }));
-              c.addEventListener('click', () => { cp.sprite = k; cp.autoSprite = false; showSprites = false; draw(); });
-              g.append(c);
-            }
-          };
-          sq.addEventListener('input', () => { spriteQ = sq.value; fill(); });
-          fill(); box.append(sq, g); body.append(box);
-          setTimeout(() => sq.focus(), 30);
-        }
-
-        // --- trigger
-        const trow = el('div', { class: 'cb-box' }, el('div', { class: 'cb-h' }, 'Trigger'));
-        const isCount = cp.trigger.startsWith('Count:');
-        const base = isCount ? 'Count:' + cp.trigger.split(':')[1] : cp.trigger;
-        const tsel = el('select', { class: 'cb-select wide' });
-        for (const o of triggerOptions()) tsel.append(el('option', { value: o.code }, o.label));
-        tsel.value = base;
-        tsel.addEventListener('change', () => { const v = tsel.value; cp.trigger = v.startsWith('Count:') ? v + ':' + (isCount ? cp.trigger.split(':')[2] : 3) : v; draw(); });
-        const tr = el('div', { class: 'cb-row' }, tsel);
-        if (isCount) {
-          const n = el('input', { type: 'number', class: 'cb-num', min: 1, max: 20, value: cp.trigger.split(':')[2] });
-          n.addEventListener('change', () => { const v = Math.max(1, Math.min(20, n.value | 0)); cp.trigger = base + ':' + v; draw(); });
-          tr.append(el('label', { class: 'cb-lbl' }, 'N ='), n);
-        }
-        trow.append(tr);
-        if (T && T.srcTrig && T.srcTrig.split(':').slice(0, 2).join(':') !== base.split(':').slice(0, 2).join(':'))
-          trow.append(el('div', { class: 'cb-note' }, `This ability originally uses "${trigLabelOf(T.srcTrig)}". Abilities that refer to "it" or "the target" need a trigger that has one (e.g. friend faints → "it" is that friend).`));
-        body.append(trow);
-
-        // --- ability with editable values for each level
-        const abox = el('div', { class: 'cb-box' }, el('div', { class: 'cb-h' }, 'Ability ', el('span', { class: 'cb-src' }, T ? `from ${D.pets[T.src].n}` : '')));
-        if (T) {
-          const texts = customTexts(cp);
-          const test = COMPILED.compileCustom({ src: T.src, texts, trigger: cp.trigger, limit: cp.lim });
-          for (let L = 0; L < 3; L++) {
-            const row = el('div', { class: 'cb-level' + (test.errors.includes(L + 1) ? ' bad' : '') }, el('span', { class: 'cb-lv' }, 'Lvl ' + (L + 1)));
-            let k = 0, cnt = null;
-            for (const part of T.parts) {
-              if (!part.slot) { row.append(el('span', { html: fmtAbility(cnt != null ? agree(part.t, cnt) : part.t) })); cnt = null; continue; }
-              const idx = k++;
-              cnt = part.slot === 'w' ? cp.vals[L][idx] : null;
-              const inp = el('input', { type: 'number', class: 'cb-val' + (part.slot === 'w' ? ' count' : ''), min: part.slot === 'w' ? 1 : 0, max: part.slot === 'w' ? 5 : 999, value: cp.vals[L][idx], title: part.slot === 'w' ? 'How many (1-5)' : '' });
-              inp.addEventListener('change', () => { const v = Math.max(+inp.min, Math.min(+inp.max, inp.value | 0)); if (v === cp.vals[L][idx] && String(v) === inp.value) return; cp.vals[L][idx] = v; draw(); });
-              row.append(inp);
-            }
-            if (test.errors.includes(L + 1)) row.append(el('span', { class: 'cb-err' }, 'not supported with these values'));
-            abox.append(row);
-          }
-        }
-        const chg = el('button', { class: 'obtn ghost cb-change' }, el('span', {}, showAbilities ? 'Hide ability list' : 'Choose a different ability'));
-        chg.addEventListener('click', () => { showAbilities = !showAbilities; draw(); });
-        abox.append(chg);
-        if (showAbilities) {
-          const aq = el('input', { class: 'search', placeholder: 'Search abilities (e.g. "damage", "summon", "random enemy")…', value: abilityQ });
-          const list = el('div', { class: 'cb-alist' });
-          const fill = () => {
-            list.innerHTML = ''; const words = abilityQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
-            let n = 0;
-            for (const t of templates().values()) {
-              if (words.length && !words.every(w => t.q.includes(w))) continue;
-              if (++n > 150) break;
-              let k = 0;
-              const html = t.parts.map(p => (p.slot ? `<b class="x">${'XYZWVU'[k++] || 'N'}</b>` : fmtAbility(p.t))).join('');
-              const it = el('div', { class: 'cb-aitem' + (t.key === cp.tkey ? ' on' : '') }, el('span', { html }), el('span', { class: 'cb-src' }, D.pets[t.src].n + ' · ' + trigLabelOf(t.srcTrig)));
-              it.addEventListener('click', () => { cp.tkey = t.key; cp.vals = t.defaults.map(v => v.slice()); if (cp.autoSprite) cp.sprite = t.src; showAbilities = false; draw(); });
-              list.append(it);
-            }
-            if (!n) list.append(el('div', { class: 'cb-note' }, 'No abilities match.'));
-            if (n > 150) list.append(el('div', { class: 'cb-note' }, 'Showing the first 150 — type to narrow it down.'));
-          };
-          aq.addEventListener('input', () => { abilityQ = aq.value; fill(); });
-          fill(); abox.append(aq, list);
-          if (!existing || abilityQ) setTimeout(() => aq.focus(), 30);
-        }
-        body.append(abox);
-
-        // --- activations per battle
-        const lbox = el('div', { class: 'cb-box' }, el('div', { class: 'cb-h' }, 'Activations per battle ', el('span', { class: 'cb-src' }, '0 = no limit')));
-        const lr = el('div', { class: 'cb-row' });
-        for (let L = 0; L < 3; L++) {
-          const i = el('input', { type: 'number', class: 'cb-num', min: 0, max: 99, value: cp.lim[L] || 0 });
-          i.addEventListener('change', () => { cp.lim[L] = Math.max(0, Math.min(99, i.value | 0)); i.value = cp.lim[L]; });
-          lr.append(el('label', { class: 'cb-lbl' }, 'Lvl ' + (L + 1)), i);
-        }
-        lbox.append(lr); body.append(lbox);
-
-        // --- actions
-        const acts = el('div', { class: 'ed-actions' });
-        const btn = (txt, icon, fn, cls = '') => { const b = el('button', { class: 'obtn ' + cls }, el('img', { src: UI(icon), alt: '' }), el('span', {}, txt)); b.addEventListener('click', fn); return b; };
-        acts.append(
-          btn('Cancel', 'ArrowLeft', back, 'ghost'),
-          ...(existing ? [btn('Delete', 'Cross', () => {
-            S.custom = S.custom.filter(c => c.id !== cp.id); unregisterCustom(cp.id);
-            S.teams = S.teams.map(t => t.map(p => (p && p.id === cp.id ? null : p)));
-            save(); toast('Custom pet deleted');
-            if (ret.side != null && ret.back !== 'editor') openPicker(ret.side, ret.i, ret.replace); else closeModal();
-          }, 'ghost')] : []),
-          btn('Save', 'Checkmark', () => {
-            cp.name = (cp.name || '').trim() || 'Custom Pet';
-            const r = registerCustom(cp);
-            if (!r || r.status.status !== 'ok') {
-              if (existing) registerCustom(existing); else unregisterCustom(cp.id);
-              toast('That ability doesn\'t work with these values'); return;
-            }
-            const at = S.custom.findIndex(c => c.id === cp.id);
-            if (at >= 0) S.custom[at] = cp; else S.custom.push(cp);
-            if (!existing && ret.side != null) {
-              const old = S.teams[ret.side][ret.i];
-              S.teams[ret.side][ret.i] = ret.replace && old ? Object.assign(newPet(cp.id), { xp: old.xp, perk: old.perk }) : newPet(cp.id);
-            }
-            save(); toast(existing ? 'Custom pet updated' : 'Custom pet added');
-            if (ret.back === 'editor' && ret.side != null) openEditor(ret.side, ret.i); else closeModal();
-          }));
-        panel.insertBefore(head, panel.firstChild);
-        panel.insertBefore(body, panel.querySelector('.close'));
-        panel.insertBefore(acts, panel.querySelector('.close'));
-      };
-      draw();
-    });
-  }
-  function trigLabelOf(t) {
-    if (!t) return '';
-    if (t.startsWith('Count:')) { const [, w, k] = t.split(':'); return `Every ${k} ${COUNT_LABEL[w] || w}`; }
-    return TRIG_PICK_LABEL[t] || TRIG_LABEL[t] || t;
   }
 
   // ------------------------------------------------------------------ editor
@@ -834,7 +554,6 @@
         const acts = el('div', { class: 'ed-actions' });
         const btn = (txt, icon, fn, cls = '') => { const b = el('button', { class: 'obtn ' + cls }, el('img', { src: UI(icon), alt: '' }), el('span', {}, txt)); b.addEventListener('click', fn); return b; };
         acts.append(
-          ...(d.custom ? [btn('Edit custom', 'Paw', () => openCustomBuilder(p.id, { side, i, replace: true, back: 'editor' }), 'ghost')] : []),
           btn('Change pet', 'Refresh', () => openPicker(side, i, true), 'ghost'),
           btn('Reset stats', 'Replay', () => { p.atk = d.a; p.hp = d.h; save(); draw(); }, 'ghost'),
           btn('Remove', 'Cross', () => { S.teams[side][i] = null; closeModal(); }, 'ghost'),
@@ -992,7 +711,7 @@
     });
   }
   function share() {
-    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, custom: usedCustom() };
+    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta };
     const h = '#t=' + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
     history.replaceState(null, '', h);
     const url = location.href;
@@ -1001,10 +720,8 @@
 
   // ------------------------------------------------------------------ battle
   function battleTeams() { return S.teams.map(t => t.map((p, slot) => p && ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0, slot, ctx: p.ctx })).filter(Boolean)); }
-  function simulate(seed) {
-    const b = new Engine.Battle(D, AB, battleTeams(), Object.assign({}, S.settings, { seed }));
-    return b.run();
-  }
+  // Battles run on the game-exact engine (js/game/*: the game's own resolver and ability definitions).
+  function simulate(seed) { return window.SAPGame.adapter.run(battleTeams(), S.settings, seed); }
   const scene = window.SAPBattle.create({
     stage, D, petImg, foodImg, perkName, esc,
     trigLabel: t => TRIG_LABEL[t] || (t && t.startsWith('Count:') ? 'Counter' : t),
@@ -1023,7 +740,7 @@
   const BATTLE_SETTINGS = ['turn', 'rolls', 'battles', 'foodEaten', 'transforms', 'goldSpent', 'lvl3Sold'];
   function replayLink() {
     const settings = {}; for (const k of BATTLE_SETTINGS) settings[k] = S.settings[k];
-    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, custom: usedCustom(), replay: { seed: lastSeed, settings } };
+    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, replay: { seed: lastSeed, settings } };
     return location.href.split('#')[0] + '#r=' + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
   }
   function battleMeta() {
@@ -1035,7 +752,8 @@
   function startBattle(sameLog, forceSeed) {
     if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
     const seed = forceSeed != null ? forceSeed : S.settings.fixedSeed ? S.settings.seed : (Math.random() * 1e9) | 0;
-    const res = sameLog || simulate(seed);
+    let res = sameLog;
+    if (!res) { try { res = simulate(seed); } catch (e) { toast("Can't simulate this battle: " + e.message); console.error(e); return; } }
     if (!sameLog) lastSeed = seed;
     lastLog = res.log;
     document.body.classList.remove('edit'); document.body.classList.add('battle');
@@ -1090,15 +808,18 @@
   async function runOdds() {
     if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
     const box = $('#odds'); box.hidden = false; box.innerHTML = '<span class="ol">Simulating…</span>';
-    const N = 500; const c = { win: 0, lose: 0, draw: 0 };
+    const N = 500; const c = { win: 0, lose: 0, draw: 0 }; let failed = 0, why = '';
     for (let i = 0; i < N; i++) {
-      try { c[simulate(i * 7919 + 13).result]++; } catch (e) { c.draw++; }
+      // a battle that reaches a part of the game not ported yet is not counted (and is reported), never guessed
+      try { c[simulate(i * 7919 + 13).result]++; } catch (e) { failed++; why = why || e.message; }
       if (i % 50 === 49) await wait(0);
     }
-    const pct = k => Math.round(c[k] / N * 1000) / 10;
+    const done = N - failed;
+    if (!done) { box.innerHTML = `<span class="ol">Can't simulate this matchup: ${esc(why)}</span>`; return; }
+    const pct = k => Math.round(c[k] / done * 1000) / 10;
     box.innerHTML = `<span class="ol" style="color:#9fd6ff">${esc(S.names[0])} ${pct('win')}%</span>
       <div class="bar"><i style="width:${pct('win')}%;background:#3fa8ff"></i><i style="width:${pct('draw')}%;background:#c9c0b0"></i><i style="width:${pct('lose')}%;background:#ff6a4a"></i></div>
-      <span class="ol" style="color:#ffb39f">${pct('lose')}% ${esc(S.names[1])}</span><span class="ol" style="font-size:16px">Draw ${pct('draw')}% · ${N} battles</span>`;
+      <span class="ol" style="color:#ffb39f">${pct('lose')}% ${esc(S.names[1])}</span><span class="ol" style="font-size:16px">Draw ${pct('draw')}% · ${done} battles${failed ? ` · ${failed} skipped (${esc(why)})` : ''}</span>`;
   }
 
   // ------------------------------------------------------------------ wiring

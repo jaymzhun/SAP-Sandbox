@@ -733,7 +733,8 @@
     // the pet a trigger is about: TargetId for ExpGained and PlayedSpellOn (whose SourceId is nullable, so it is not the trigger source;
     // battle #93 of corpus2 triggers on the fed pet), else the event's source
     const id = t === 'TriggerExpGained' || t === 'TriggerPlayedSpellOn' ? e.TargetId : sourceOf(e);
-    const m = id ? B.board.findMinion(id) : null;
+    // TriggerFlung.GetMinion: the flung pet is off the board; the event carries it (TriggerEvent+Flung.Minion)
+    const m = t === 'TriggerFlung' ? e.Minion : id ? B.board.findMinion(id) : null;
     if (tr.MinionFinder && !predicate(tr.MinionFinder, B, m, owner)) return false;
     return true;
   }
