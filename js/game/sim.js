@@ -499,7 +499,7 @@
       for (const [type, list] of groups) for (const te of list) {
         const mins = board.findMinions(true, false);
         if (ITRIGGER_DEATH.has(te.cls)) mins.unshift(board.findMinion(te.SourceId));
-        const ids = mins.filter(Boolean).map((m) => m.Id).concat(board.Relics.map((m) => m.Id));
+        const ids = mins.filter(Boolean).map((m) => m.Id).concat(board.findRelics().map((m) => m.Id));
         B.add(ev('TriggerMinions', { TriggerType: type, MinionsToTrigger: ids.map((id) => ({ id, ev: te })), AlreadyTriggered: [], Depth: te.Depth + 1 }));
       }
     }, 'all');

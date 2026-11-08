@@ -90,6 +90,8 @@
       const m = this.get(idOrPoint); return m ? this.findMinion(m.Id, true, true) : null;
     }
     /** BoardExtensions.FindLiveMinions(): alive pets in grid order, reversed when ReverseMinionAccess. */
+    /** BoardExtensions.FindRelics(): relics in grid order, reversed when ReverseMinionAccess. */
+    findRelics() { const r = this.Relics.filter(Boolean); return this.ReverseMinionAccess ? r.reverse() : r; }
     findLiveMinions() { const r = this.cells.filter((m) => m && m.IsAlive); return this.ReverseMinionAccess ? r.reverse() : r; }
     /** BoardExtensions.FindMinions(excludeDestroyed, excludeDead): grid (reversed if ReverseMinionAccess) then graveyard. */
     findMinions(excludeDestroyed, excludeDead) {
