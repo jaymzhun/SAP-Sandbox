@@ -597,6 +597,15 @@
         return [wrap('Try', s)];
       }
       case 'EffectSummon': return effectSummon(eff, sa);
+      case 'EffectGivePerk': {
+        // EffectGivePerk.OnSingle: Perk, or PerkCatalogue.GetPerk(args) when a catalogue is set
+        if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
+        const g = ev('GiveMinionPerk', { Owner: sa.Owner, Perk: eff.Perk, Duration: eff.Duration || 0, Source: sa.SourceId || null, TargetId: sa.TargetId, Inherit: !!eff.Inherit,
+          SourceSpell: null, Durability: eff.Durability ?? null, DurabilityParameter: eff.DurabilityParameter || null, Multiplier: eff.Multiplier ?? null,
+          MultiplierParameter: eff.MultiplierParameter || null, Future: !!eff.Future, Compound: !!eff.Compound, TriggersDisabled: !!eff.TriggersDisabled,
+          ProjectileDisabled: !!eff.ProjectileDisabled, ResultPerkReplaced: null, Result: null });
+        return [wrap('Try', g)];
+      }
       default: return unported(t);
     }
   }
@@ -845,7 +854,68 @@
       if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
       B.add(wrap('Done', b));
     },
+    /** PerkMutator (Try<GiveMinionPerk>) */
+    PerkMutator(B, e) {
+      const g = e.Event; const board = B.board;
+      const m = board.findLiveMinion(g.TargetId); if (!m) return;
+      let source = null;
+      if (g.Source && g.Inherit) { source = board.findMinion(g.Source); if (source && source.Perk != null) g.Perk = source.Perk; }
+      if (g.Perk == null) return;
+      const pk = PERKS()[g.Perk]; if (!pk) unported('PerkConstants.GetPerk(' + g.Perk + ')');
+      if (!pk.positive) {
+        // Ambrosia (60) and White Okra (101) block an ailment and are lost; Strawberry (14) only with an aura of type 11
+        if (m.Perk === 14) unported('PerkMutator Strawberry aura check');
+        if (m.Perk === 60 || m.Perk === 101) { B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, true))); return; }
+      } else if (m.Perk === 120 && !m.Abilities.some((a) => a.Enum === 839)) { // Bloated is lost unless the pet has ability 839
+        B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, false))); return;
+      }
+      let duration = g.Duration || 0;
+      if ((source && source.Perk === 32) || m.Perk === 32) duration = 1; // Corn
+      const pa = () => ({ B, SourceId: g.Source, TargetId: g.TargetId, Random: B.randomizer(g.Owner), Owner: g.Owner });
+      let mult = g.Multiplier;
+      if (g.MultiplierParameter) mult = paramValue(g.MultiplierParameter, pa());
+      const old = m.Perk;
+      if (g.Compound && old === g.Perk) { if (mult == null) mult = 0; mult = (m.PerkMultiplier || 1) + 1 + mult; }
+      let dur = g.Durability;
+      if (g.DurabilityParameter) dur = paramValue(g.DurabilityParameter, pa());
+      setPerk(m, g.Perk, duration, mult ?? null, dur ?? null);
+      g.ResultPerkReplaced = old; g.Result = perkResult(m, null);
+      if (g.Future) unported('GiveMinionPerk.Future');
+      if (g.SourceSpell == null && pk.positive) m.SpellCountsThisTurn++;
+      B.add(wrap('Done', g));
+    },
+    /** LoseMinionPerkMutator (Try<LoseMinionPerk>) */
+    LoseMinionPerkMutator(B, e) {
+      const l = e.Event; const m = B.board.findMinion(l.Target, !l.IncludeDestroyed, !l.IncludeDead); if (!m) return;
+      const lost = (res) => ev('PerkLost', { Owner: l.Owner, TargetId: l.Target, SourceId: l.Source, Perk: res, Projectile: null, RenderDelay: false, RenderSfx: l.RenderSfx, RenderLost: l.RenderLost, FailCause: 0 });
+      if (m.Perk == null) { const f = lost(perkResult(m, null)); f.FailCause = 1; B.add(wrap('Fail', f)); return; }
+      if (l.Perk != null && m.Perk !== l.Perk) return;
+      if (l.Positive != null && perkPositive(m.Perk) !== l.Positive) return;
+      const was = m.Perk;
+      let res; if (!l.IgnoreDurability) res = tryRemovePerk(m); else { setPerk(m, null); res = perkResult(m, was); }
+      B.add(wrap('Done', lost(res)));
+    },
   };
+  /** MinionExtensions.SetPerk(m, perk, duration, multiplier, durability): durability defaults to the template's (only when a perk is set). */
+  function setPerk(m, perk, duration = 0, multiplier = null, durability = null) {
+    m.Perk = perk ?? null; m.PerkDuration = duration; m.PerkMultiplier = multiplier;
+    if (perk != null) { const pk = PERKS()[perk]; if (pk && durability == null) durability = pk.durability ?? null; m.PerkDurability = durability; m.PerkDurabilityMax = durability; }
+  }
+  const perkResult = (m, lost) => ({ LostPerk: lost ?? null, NewPerk: m.Perk, NewDurability: m.PerkDurability, NewDurabilityMax: m.PerkDurabilityMax, NewDuration: m.PerkDuration, Multiplier: m.PerkMultiplier });
+  /** MinionExtensions.TryRemovePerk: a durability perk loses one charge first; the perk goes when none are left. */
+  function tryRemovePerk(m) {
+    if (m.Perk == null) return null;
+    const res = { LostPerk: null, NewPerk: null, NewDurability: null, NewDurabilityMax: null, NewDuration: 0, Multiplier: m.PerkMultiplier };
+    if (m.PerkDurability != null) {
+      m.PerkDurability = m.PerkDurability - 1;
+      if (m.PerkDurability < 1) { m.PerkDurability = null; m.PerkDurabilityMax = null; }
+      res.NewDuration = m.PerkDuration; res.NewDurability = m.PerkDurability; res.NewDurabilityMax = m.PerkDurabilityMax;
+      if (m.PerkDurability != null) { res.NewPerk = m.Perk; return res; }
+    }
+    const lost = m.Perk; setPerk(m, null); res.LostPerk = lost; res.NewPerk = m.Perk; return res;
+  }
+  const loseMinionPerk = (owner, target, source, perk, ignoreDurability) => ev('LoseMinionPerk', { Owner: owner, IncludeDestroyed: false, IncludeDead: false, Source: source, Target: target,
+    Perk: perk, Projectile: null, RenderDelay: false, RenderSfx: true, RenderLost: true, IgnoreDurability: !!ignoreDurability, Positive: null });
   /** MinionExtensions.AddAttack: attack never drops below 1 (decompiled alongside AddHealth). */
   function addAttack(m, amount, dur) { m.Attack.Add(amount, dur !== 0); if (m.Attack.Permanent < 1) m.Attack.Set(1, false); }
   /** DamageMinion.Setup: remember HoneydewMelon/Guava/MapleSyrup holders (perks 93, 105, 110) and their multipliers. */
@@ -870,6 +940,17 @@
     TriggerGainedHealthSystem(B, e) { const b = e.Event; if (b.ResultHealthGained > 0) B.add(ev('HealthGained', { SourceId: b.TargetId, TargetId: b.Source, Value: b.ResultHealthGained })); },
     /** TriggerPetActivatedSystem */
     TriggerPetActivatedSystem(B, e) { const a = e.Event; B.add(ev('PetActivated', { PetActivatedId: a.MinionId, AbilityEnum: a.Ability })); },
+    /** TriggerPerkGainedSystem (Done<GiveMinionPerk>): PerkLost for a replaced perk, PerkGained, then PlayedSpellOn for a positive food perk */
+    TriggerPerkGainedSystem(B, e) {
+      const g = e.Event; if (g.Perk == null) return;
+      if (g.ResultPerkReplaced != null) B.add(ev('PerkLost', { SourceId: g.TargetId, Perk: g.ResultPerkReplaced, ReplacedBy: g.Perk }));
+      B.add(ev('PerkGained', { SourceId: g.TargetId, Perk: g.Perk, Disabled: g.TriggersDisabled }));
+      if (g.SourceSpell != null) return;
+      const pk = PERKS()[g.Perk]; if (!pk || pk.spell == null || !pk.positive) return;
+      B.add(ev('PlayedSpellOn', { Owner: g.Owner, Spell: pk.spell, TargetId: g.TargetId, SourceId: g.Source, Shop: false, Disabled: g.TriggersDisabled }));
+    },
+    /** TriggerPerkLostSystem (Done<PerkLost>) */
+    TriggerPerkLostSystem(B, e) { const l = e.Event; if (l.Perk && l.Perk.LostPerk != null) B.add(ev('PerkLost', { SourceId: l.TargetId, Perk: l.Perk.LostPerk })); },
   };
 
   const hooks = {
