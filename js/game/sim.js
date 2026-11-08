@@ -339,10 +339,11 @@
     S[1].accepts = (e) => e.cls === 'MinionJumpAttackStart'; S[3].accepts = (e) => e.cls === 'ChargedMinionPartially';
     sys('Collector<IDone>', (e) => e.cls === 'Done', () => {});
     sys('Collector<IFail>', (e) => e.cls === 'Fail', () => {});
-    sys('SetBattleStateMutator.Cleanup', (e) => e.cls === 'PhaseHasCompletedCleanup', () => { board.State = 0; });
-    sys('SetBattleStateMutator.StartBattle', (e) => e.cls === 'PhaseStartBattle', () => { board.State = 1; });
-    sys('SetBattleStateMutator.Move', (e) => e.cls === 'PhaseMove', () => { board.State = 2; });
-    sys('SetBattleStateMutator.Trade', (e) => e.cls === 'PhaseTrade', () => { board.State = 3; });
+    // SetBattleStateMutator.*: BoardModel.BattlePhase (+0x25c): StartBattle 0, Trade 1, Move 2, Cleanup 3
+    sys('SetBattleStateMutator.Cleanup', (e) => e.cls === 'PhaseHasCompletedCleanup', () => { board.BattlePhase = 3; });
+    sys('SetBattleStateMutator.StartBattle', (e) => e.cls === 'PhaseStartBattle', () => { board.BattlePhase = 0; });
+    sys('SetBattleStateMutator.Move', (e) => e.cls === 'PhaseMove', () => { board.BattlePhase = 2; });
+    sys('SetBattleStateMutator.Trade', (e) => e.cls === 'PhaseTrade', () => { board.BattlePhase = 1; });
     stub('EndTurnEarlyMutator');
     // 13 TradeSystem
     sys('TradeSystem', (e) => isW(e, 'Do', 'MinionTrade'), (e) => {
