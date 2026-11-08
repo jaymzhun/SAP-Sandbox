@@ -200,7 +200,66 @@
   function getDistance(board, a, b, emptySpaces, skipDead) {
     if (!a || !b) return 0;
     if (emptySpaces) return Math.abs(a.Point.x - b.Point.x);
-    unported('MinionExtensions.GetDistance(counting pets)');
+    // walk from a to b counting occupied cells (dead pets too unless skipDead); arriving at b counts as one more
+    let x = a.Point.x, n = 0;
+    while (x !== b.Point.x) {
+      x += b.Point.x <= a.Point.x ? -1 : 1;
+      if (x === b.Point.x) return n + 1;
+      const c = board.get({ x, y: 0 }); if (c && (!skipDead || !c.Dead)) n++;
+    }
+    return n;
+  }
+  /** MinionExtensions.GetRelativeDirection(from, to): null on the same cell; 0 Forward / 1 Backward from `from`'s side. */
+  function getRelativeDirection(from, to) {
+    if (!from || !to || from.Point.x === to.Point.x) return null;
+    if (from.Owner === 1) return to.Point.x <= from.Point.x ? 1 : 0;
+    if (from.Owner === 2) return from.Point.x <= to.Point.x ? 1 : 0;
+    return null;
+  }
+
+  // ---------------------------------------------------------------- auras (BoardExtensions.FindAuras / FindAuraAbilities / CheckAura)
+  const minionType = (m) => (D.minions[m.Enum] || {}).type || 0;
+  const minionTier = (m) => (D.minions[m.Enum] || {}).tier;
+  /** abilities of `holder` with this AuraEnum whose AuraType is the target's MinionType */
+  function findAuraAbilities(target, aura, holder) {
+    const out = [];
+    for (const a of holder.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab || ab.AuraEnum == null) continue; if (aura != null && ab.AuraEnum !== aura) continue; if ((ab.AuraType || 0) === minionType(target)) out.push(a); }
+    return out;
+  }
+  function checkAura(B, target, model, holder) {
+    if (!model) return false;
+    const ab = getAbility(model.Enum, model.Level); if (!ab) return false;
+    if (ab.AuraExcludeSelf && idEq(target.Id, holder.Id)) return false;
+    if (canAbilityCountLimit(B, model, ab) && !(model.TriggerCount < ab.TriggerLimit)) return false;
+    if (ab.AuraDirection != null) { const rd = getRelativeDirection(holder, target); if (rd == null || rd !== ab.AuraDirection) return false; }
+    if (ab.AuraDistance != null) {
+      if (ab.AuraDistance === 0 && !idEq(target.Id, holder.Id)) return false;
+      if (ab.AuraDistance < getDistance(B.board, holder, target, false, false)) return false;
+    }
+    if (ab.AuraTierMin != null && minionTier(target) < ab.AuraTierMin) return false;
+    if (ab.AuraTierMax != null && ab.AuraTierMax < minionTier(target)) return false;
+    return true;
+  }
+  /** FindAuras(board, m, aura) -> [{Minion, Ability, value, ceil}]; value = the aura ability's MagicVariable; ceil = no TriggerLimit. */
+  function findAuras(B, m, aura) {
+    if (!m) return [];
+    if ((D.minions[m.Enum] || {}).relicType === 1) return [];
+    const ref = (holder, a) => { const ab = getAbility(a.Enum, a.Level); return { Minion: holder, Ability: a, value: ab.MagicVariable || 0, ceil: ab.TriggerLimit == null, Template: ab }; };
+    if (!m.IsAlive) { const a = findAuraAbilities(m, aura, m)[0]; return a && checkAura(B, m, a, m) ? [ref(m, a)] : []; }
+    const out = []; const cells = B.board.cells;
+    for (let i = 0; i < cells.length; i++) {
+      const x = cells[m.Owner !== 1 ? cells.length - i - 1 : i];
+      if (!x || x.Destroyed || x.Perk === 55 || x.Owner !== m.Owner) continue;
+      for (const a of findAuraAbilities(m, aura, x)) if (checkAura(B, m, a, x)) out.push(ref(x, a));
+    }
+    return out;
+  }
+  /** DamageCalculationMinion.TryIncreaseAbilityTriggerCount: count the use; an aura at its limit goes to Exhausted. */
+  function countAura(B, calc, r) {
+    if (r.Template.TriggerLimit == null || !canAbilityCountLimit(B, r.Ability, r.Template)) return;
+    r.Ability.TriggerCount++;
+    if (r.Ability.TriggerCount < r.Template.TriggerLimit) return;
+    (calc.Exhausted = calc.Exhausted || []).push({ Minion: r.Minion, Ability: r.Ability });
   }
   /** ListExtensions.FastShuffle: Fisher-Yates from the end with Next(0, n). */
   function fastShuffle(list, rand) { for (let n = list.length; n >= 2; n--) { const k = rand.next(0, n); const t = list[k]; list[k] = list[n - 1]; list[n - 1] = t; } return list; }
@@ -980,8 +1039,7 @@
       const pk = PERKS()[g.Perk]; if (!pk) unported('PerkConstants.GetPerk(' + g.Perk + ')');
       if (!pk.positive) {
         // Ambrosia (60) and White Okra (101) block an ailment and are lost; Strawberry (14) only with an aura of type 11
-        if (m.Perk === 14) unported('PerkMutator Strawberry aura check');
-        if (m.Perk === 60 || m.Perk === 101) { B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, true))); return; }
+        if (m.Perk === 60 || m.Perk === 101 || (m.Perk === 14 && findAuras(B, m, 11).length > 0)) { B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, true))); return; }
       } else if (m.Perk === 120 && !m.Abilities.some((a) => a.Enum === 839)) { // Bloated is lost unless the pet has ability 839
         B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, false))); return;
       }
@@ -1076,6 +1134,7 @@
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
+    findAuras, countAura,
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };
