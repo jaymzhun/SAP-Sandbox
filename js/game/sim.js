@@ -197,6 +197,8 @@
 
   // ---------------------------------------------------------------- systems table
   function buildSystems(B) {
+    // a system the game runs but the abilities module does not implement yet: stop instead of skipping its event
+    const unportedSys = (name) => { throw Object.assign(new Error("Unported: " + name), { unported: name }); };
     const board = B.board, st = B.state;
     const hooks = B.hooks;
     const S = [];
@@ -437,7 +439,7 @@
     for (const spec of MUT) {
       const [name, w, inner] = spec.split(':');
       const mode = name === 'RollShopDoSystem' ? 'all' : 'one';
-      sys(name, w ? (e) => isW(e, w, inner) : (e) => e.cls === inner, (x) => { const f = hooks.mutators && hooks.mutators[name]; if (f) f(B, x); }, mode);
+      sys(name, w ? (e) => isW(e, w, inner) : (e) => e.cls === inner, (x) => { const f = hooks.mutators && hooks.mutators[name]; if (!f) unportedSys(name); f(B, x); }, mode);
     }
     // 101 AbilityEffectResultSystem, 102 AbilityEffectWrapperSystem, 103 SpendMinionManaMutator, 104 ActivateAbilityDoSystem, 105 ActivateAbilityTrySystem.All
     sys('AbilityEffectResultSystem', (e) => e.cls === 'CastEffect', (e) => hooks.castEffect && hooks.castEffect(B, e));
@@ -462,7 +464,7 @@
       'TriggerStockMinionSystem:Done:AddShopMinions', 'TriggerSpendGoldSystem:Done:SpendGold', 'TriggerGiveExpSystem:Done:GiveMinionExp', 'TriggerLevelUp:Done:GiveMinionExp',
       'TriggerPlaySpellOnSystem:Done:PlayedSpellOn', 'TriggerPlaySpellSystem:Done:PlaySpell', 'TriggerPerkGainedSystem:Done:GiveMinionPerk', 'TriggerStealPerkSystem:Done:StealMinionPerk',
       'TriggerPerkLostSystem:Done:PerkLost'];
-    for (const spec of TRIG) { const [name, w, inner] = spec.split(':'); sys(name, (e) => isW(e, w, inner), (x) => { const f = hooks.triggers && hooks.triggers[name]; if (f) f(B, x); }); }
+    for (const spec of TRIG) { const [name, w, inner] = spec.split(':'); sys(name, (e) => isW(e, w, inner), (x) => { const f = hooks.triggers && hooks.triggers[name]; if (!f) unportedSys(name); f(B, x); }); }
     // 124 TriggerInfrontSystem: PhaseStartBattle, IDone<MoveMinion>, IDone<PushMinion>
     sys('TriggerInfrontSystem', (e) => e.cls === 'PhaseStartBattle' || isDone(e, 'MoveMinion') || isDone(e, 'PushMinion'), () => {
       let fronts = [board.get({ x: 4, y: 0 }), board.get({ x: 5, y: 0 })];
@@ -496,7 +498,7 @@
     });
     const TRIG2 = ['TriggerTransformSystem:Done:TransformMinion', 'TriggerSummonSystem:Done:SummonMinion', 'TriggerSummonFailSystem:Fail:SummonMinion',
       'TriggerSummonRelicSystem:Done:SummonRelic', 'TriggerPushMinionSystem:Done:PushMinion', 'TriggerPushMinionFailSystem:Fail:PushMinion', 'TriggerJumpAttackSystem:Done:MinionJumpAttack'];
-    for (const spec of TRIG2) { const [name, w, inner] = spec.split(':'); sys(name, (e) => isW(e, w, inner), (x) => { const f = hooks.triggers && hooks.triggers[name]; if (f) f(B, x); }); }
+    for (const spec of TRIG2) { const [name, w, inner] = spec.split(':'); sys(name, (e) => isW(e, w, inner), (x) => { const f = hooks.triggers && hooks.triggers[name]; if (!f) unportedSys(name); f(B, x); }); }
     stub('TriggerBeforeSellSystem'); stub('TriggerSellSystem');
     sys('TriggerChargedMinionSystem', (e) => isDone(e, 'ChargedMinion'), (x) => { const f = hooks.triggers && hooks.triggers.TriggerChargedMinionSystem; if (f) f(B, x); });
     // 139 TriggerDestroyEarlySystem / 140 TriggerDestroySystem

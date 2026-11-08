@@ -1946,6 +1946,15 @@
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
     findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier, setupDamage,
+    // DamageAttemptMutator.TryDamage <>c b__3_0/1 (and Ability.Activate): ailments are reversed for a pet with ability 839
+    ailmentReversed: (B, m) => !!m && m.Abilities.some((a) => a.Enum === 839),
+    sadImmune: (m) => m.Abilities.some((a) => a.Enum === 839), // GiveMinionBuffMutator <>c b__0_0: perk 121 does not cancel buffs with ability 839
+    // TriggerBeforeDeathSystem <>c b__0_0: an ability with ManaBurstDisabled (+0x155) stops the fainting pet's mana release
+    blocksManaRelease: (m) => m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return !!(ab && ab.ManaBurstDisabled); }),
+    checkAura: () => {}, // CheckAuraSystem.Execute is an empty method (RET) in build 26131463
+    finalCleanup: () => {}, // FinalCleanupMutator.Execute is an empty method (RET) in build 26131463
+    removeMinion: () => unported('RemoveMinionMutator'),
+    forceActivatePerk: () => unported('ForceActivatePerkSystem'),
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     minionType: (m) => (D.minions[m.Enum] || {}).type || 0, // MinionTemplate.Type (+0xfc): 1 = relic
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
