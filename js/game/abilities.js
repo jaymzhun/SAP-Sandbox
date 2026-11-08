@@ -121,6 +121,7 @@
       case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
       case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
       case 'ParameterMinionMana': { const m = paramMinion(p, pa); return m ? m.Mana : 1; }
+      case 'ParameterTrumpets': { const m = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; return m ? getTrumpets(pa.B.board, m.Owner) : 0; }
       default: return unported(t);
     }
   }
@@ -391,6 +392,7 @@
         }
         return true;
       }
+      case 'ConditionHasTrumpets': { if (!owner) return false; const v = getTrumpets(B.board, owner.Owner); if (c.Min != null && v < c.Min) return false; if (c.Max != null && c.Max < v) return false; return true; }
       case 'ConditionHasRelic': return B.board.Relics.some((m) => m && owner && m.Owner === owner.Owner && (D.minions[m.Enum] || {}).type !== 1 && (!c.MinionFinder || predicate(c.MinionFinder, B, m, owner)));
       default: return unported(t);
     }
@@ -610,8 +612,46 @@
     const t = short(T(eff));
     if (!GLOBAL_EFFECTS.has(t)) return null;
     switch (t) {
+      case 'EffectGainTrumpets': {
+        // EffectGainTrumpets.OnGlobal
+        if (!eff.Points) return null;
+        const points = paramValue(eff.Points, { B: ga.B, SourceId: ga.SourceId, TargetId: null, TriggerSourceId: sourceOf(ga.TriggerEvent) || null, TriggerTargetId: targetOf(ga.TriggerEvent) || null,
+          Random: ga.Random, TriggerEvent: ga.TriggerEvent, Owner: ga.Owner });
+        const g = ev('GainTrumpets', { Owner: ga.Owner, Points: points, SourceId: ga.SourceId, SetPower: eff.Power ?? null, Perk: null, PerkInherit: !!eff.PerkInherit, PerkMultiplier: eff.PerkMultiplier ?? null });
+        if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
+        return [wrap('Try', g)];
+      }
       default: return unported(t + '.OnGlobal');
     }
+  }
+  // ---------------------------------------------------------------- trumpets (BuildExtensions *Trumpets*, GainTrumpets/ChangeTrumpets/TrumpetsMutator)
+  const getTrumpets = (board, o) => (o === 1 ? board.Trumpets : o === 2 ? board.OpponentTrumpets : 0);
+  const areTrumpetsDone = (board, o) => (o === 1 ? !!board.TrumpetsDone : o === 2 ? !!board.OpponentTrumpetsDone : false);
+  const getTrumpetsPerk = (board, o) => (o === 1 ? board.TrumpetsPerk ?? null : o === 2 ? board.OpponentTrumpetsPerk ?? null : null);
+  function setTrumpets(board, o, v) { v = Math.max(0, Math.min(50, v)); if (o === 1) board.Trumpets = v; else if (o === 2) board.OpponentTrumpets = v; return v; }
+  /** BuildExtensions.GainTrumpets: only in battle and while not done; clamps to 0..50; returns the change (null when not allowed). */
+  function gainTrumpets(board, o, n) {
+    if (!board.IsBattle) return null;
+    if (o === 1 || o === 2) { if (areTrumpetsDone(board, o)) return null; }
+    const before = getTrumpets(board, o); const after = Math.max(0, Math.min(50, before + n));
+    if (o === 1) board.Trumpets = after; else if (o === 2) board.OpponentTrumpets = after;
+    return after - before;
+  }
+  /** TrumpetsMutator.SummonTrumpetMinion(owner, max): with trumpets left and fewer than `max` live pets, summon pet 188 at the front, once per battle. */
+  function summonTrumpetMinion(B, o, max) {
+    const board = B.board;
+    if (areTrumpetsDone(board, o) || getTrumpets(board, o) < 1) return;
+    if (board.findLiveMinions().filter((m) => m.Owner === o).length >= max) return;
+    const n = getTrumpets(board, o); const perk = getTrumpetsPerk(board, o);
+    const m = generateMinion(B, 188, 1, o);
+    setAttack(m, n);
+    m.Health.Set(Math.min(m.Health.Max, n), false); m.Health.Set(0, true);
+    setPerk(m, perk);
+    if (o === 1) board.TrumpetsDone = true; else board.OpponentTrumpetsDone = true;
+    const p = { x: o === 1 ? 4 : 5, y: 0 };
+    B.add(wrap('Try', ev('SummonMinion', { Owner: o, Minion: m, Type: 2, SubType: 0, Jumped: false, TriggerDisabled: false, TargetPoint: p, FailCause: 0, SourceId: null, Projectile: false,
+      ForceActivateAbility: false, PushDirection: null })));
+    B.add(wrap('Do', ev('ChangeTrumpets', { Owner: o, SourceId: M.itemId('M', 0), OldTrumpets: n, NewTrumpets: 0, DeltaTrumpets: -n, NewPerk: null, Finale: true })));
   }
   function effectSingle(eff, sa) {
     const t = short(T(eff)); const pa = singleParamArgs(sa);
@@ -904,6 +944,32 @@
       if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
       B.add(wrap('Done', b));
     },
+    /** SetMinionStatsMutator (Try<SetMinionStats>); DamageRemovableBuffs only touches shop buffs, which battles never hold */
+    SetMinionStatsMutator(B, e) {
+      const s = e.Event; const m = B.board.findLiveMinion(s.Target); if (!m) return;
+      const atk0 = m.Attack.Total, hp0 = m.Health.Total;
+      if (s.Attack != null) { setAttack(m, s.Attack); s.ResultAttackDelta = m.Attack.Total - atk0; s.ResultAttack = m.Attack.ShallowCopy(); }
+      if (s.Health != null) { m.Health.Set(Math.min(m.Health.Max, s.Health), false); m.Health.Set(0, true); s.ResultHealthDelta = m.Health.Total - hp0; s.ResultHealth = m.Health.ShallowCopy(); }
+      B.add(wrap('Done', s));
+    },
+    /** GainTrumpetsMutator (Try<GainTrumpets>): Do<ChangeTrumpets>, or Done<DenyTrumpets> once the trumpets were used */
+    GainTrumpetsMutator(B, e) {
+      const g = e.Event; const board = B.board; const o = e.Owner;
+      const old = getTrumpets(board, o);
+      if (areTrumpetsDone(board, o)) { B.add(wrap('Done', ev('DenyTrumpets', { Owner: o, SourceId: g.SourceId, Value: g.Points }))); return; }
+      if (gainTrumpets(board, o, g.Points) == null) return;
+      const now = getTrumpets(board, o);
+      const c = ev('ChangeTrumpets', { Owner: o, SourceId: g.SourceId, OldTrumpets: old, NewTrumpets: now, DeltaTrumpets: now - old, NewPerk: null, Finale: false });
+      if (g.SetPower != null && g.SourceId) { const s = board.findMinion(g.SourceId); if (s) s.Power[g.SetPower] = Math.abs(g.Points); }
+      let perk = g.Perk;
+      if (g.PerkInherit && g.SourceId) { const s = board.findMinion(g.SourceId); if (s) perk = s.Perk; }
+      if (perk != null) { if (o === 1) board.TrumpetsPerk = perk; else if (o === 2) board.OpponentTrumpetsPerk = perk; c.NewPerk = perk; }
+      B.add(wrap('Do', c));
+    },
+    /** ChangeTrumpetsMutator (Do<ChangeTrumpets>) */
+    ChangeTrumpetsMutator(B, e) { const c = e.Event; if (e.Owner === 1) B.board.Trumpets = c.NewTrumpets; else B.board.OpponentTrumpets = c.NewTrumpets; B.add(wrap('Done', c)); },
+    /** TrumpetsMutator.Force (Try<ForceTrumpets>) */
+    'TrumpetsMutator.Force'(B, e) { summonTrumpetMinion(B, e.Event.Owner, 5); },
     /** PerkMutator (Try<GiveMinionPerk>) */
     PerkMutator(B, e) {
       const g = e.Event; const board = B.board;
@@ -1010,6 +1076,7 @@
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
+    summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };
 
