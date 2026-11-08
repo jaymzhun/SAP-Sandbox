@@ -130,6 +130,22 @@
         const v = p.MinionFinder && predicate(p.MinionFinder, pa.B, m, src) ? p.TrueValue : p.FalseValue;
         return v ? paramValue(v, pa) : 0;
       }
+      case 'ParameterTransformations': case 'ParameterSummons': { // BuildExtensions.CountTransformations / CountSummons for the source's side
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!src) return 0; const b = pa.B.board;
+        if (t === 'ParameterTransformations') return src.Owner === 1 ? b.TransformationsThisTurn || 0 : src.Owner === 2 ? b.OpponentTransformations || 0 : 0;
+        return src.Owner === 1 ? b.MinionsSummonedThisTurn || 0 : src.Owner === 2 ? b.OpponentSummons || 0 : 0;
+      }
+      case 'ParameterSoldFinalLevel': { // BuildExtensions.CountFinalLevelSold for the Origin pet's side
+        const m = paramMinion(p, pa); if (!m) return 1; const b = pa.B.board;
+        return m.Owner === 1 ? b.MaxLevelMinionsSold || 0 : m.Owner === 2 ? b.OpponentMatchMinionsSoldFinalLevel || 0 : 0;
+      }
+      case 'ParameterWhenBattle': { const v = pa.B.board.IsBattle ? p.TrueValue : p.FalseValue; return v ? paramValue(v, pa) : 0; }
+      case 'ParameterTriggerValue`1': {
+        // the Fetcher is a C# lambda (not in the data). The only use in this build is ability 439 on Hurt, whose lambda
+        // (AbilityConstants <CreatePack6Danger>b__20_65) returns TriggerEvent+Hurt.Amount (+0x70)
+        if (pa.TriggerEvent && pa.TriggerEvent.cls === 'Hurt') return pa.TriggerEvent.Amount;
+        return unported('ParameterTriggerValue on ' + (pa.TriggerEvent ? pa.TriggerEvent.cls : 'no event'));
+      }
       case 'ParameterMinionPower': { const m = paramMinion(p, pa); return m ? (m.Power[p.Ability] || 0) : 1; } // MinionExtensions.GetPower (null -> 0)
       case 'ParameterLevelSum': { // BoardExtensions.SumLevels: levels of grid pets passing MinionFinder, owner = the Origin pet
         const m = paramMinion(p, pa); if (!m) return 1; if (!p.MinionFinder) return 0;
@@ -420,6 +436,8 @@
         unported('TargetsTriggerTarget without ITriggerTarget');
       }
       case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
+      case 'TargetsSilly': { const sub = owner && owner.Perk === 75 ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // perk 75 (Silly)
+      case 'TargetsUntil': { for (const sub of t.Targets || []) { const r = getTargets(sub, ta); if (r && r.length) return r; } return []; } // first non-empty
       case 'TargetsMiddle': {
         // the middle of the live pets on the owner's side (Friendly) or the other side, in grid order; an even count picks left of
         // centre for the opponent
@@ -564,6 +582,8 @@
         return true;
       }
       case 'ConditionIsTrumpetNotDone': { if (!owner) return false; return owner.Owner === 1 ? !B.board.TrumpetsDone : !B.board.OpponentTrumpetsDone; }
+      case 'ConditionIsReversed': return !!ca.Reversed; // ConditionArgs.Reversed (+0x40)
+      case 'ConditionIsEven': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 0; }
       case 'ConditionIsStartOfBattle': return (B.board.BattlePhase || 0) === 0; // BoardModel.BattlePhase (+0x25c) == StartBattle
       case 'ConditionHighestTier': case 'ConditionLowestTier': {
         // every other candidate (finder, else every grid pet) must have a strictly lower (higher) tier than the owner
@@ -635,7 +655,8 @@
       case 'TriggerPerkGained': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.Perk != null && e.Perk !== tr.Perk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; return true;
       case 'TriggerPerkLost': if (tr.LostPerk != null && e.Perk !== tr.LostPerk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; if (tr.ExcludeReplaced && e.ReplacedBy != null) { if (tr.ExcludeReplacedPositive == null) return false; if (perkPositive(e.ReplacedBy) === tr.ExcludeReplacedPositive) return false; } return true;
       case 'TriggerBuffGained': if (tr.Health && !(e.HealthValue > 0)) return false; if (tr.Attack && !(e.AttackValue > 0)) return false; return true;
-      case 'TriggerPushed': case 'TriggerTransform': if ((t === 'TriggerPushed' && tr.Type != null) || (t === 'TriggerTransform' && (tr.IgnoreBack || tr.IgnoreStacking))) unported(t + ' filters'); return true;
+      case 'TriggerPushed': return (e.Type || 0) === (tr.Type || 0); // TriggerPushed.IsTriggeredByEvent: same PushType
+      case 'TriggerTransform': if (tr.IgnoreBack || tr.IgnoreStacking) unported(t + ' filters'); return true;
       default: return true;
     }
   }
@@ -929,6 +950,12 @@
         const g = ev('GainRolls', { Owner: ga.Owner, Rolls: paramValue(eff.Rolls, globalParamArgs(ga)), Future: !!eff.Future, SourceId: ga.SourceId || null, Shower: eff.Shower ?? null });
         return [wrap('Try', g)];
       }
+      case 'EffectAddSharedPower': { // BuildExtensions.AddSharedPower: no events
+        if (!eff.Amount) return null; const v = paramValue(eff.Amount, globalParamArgs(ga)); const b = ga.B.board;
+        const d = ga.Owner === 1 ? (b.SharedPowers = b.SharedPowers || {}) : (b.OpponentSharedPowers = b.OpponentSharedPowers || {});
+        d[eff.Ability] = (d[eff.Ability] || 0) + v; return null;
+      }
+      case 'EffectSummonRetriever': return [wrap('Try', ev('ForceTrumpets', { Owner: ga.Owner }))]; // EffectSummonRetriever.OnGlobal
       case 'EffectBalance': {
         // EffectBalance.OnGlobal (Single false): all targets; MixStats is not copied here
         if (eff.Single) return null;
@@ -1006,6 +1033,11 @@
   function effectSingle(eff, sa) {
     const t = short(T(eff)); const pa = singleParamArgs(sa);
     switch (t) {
+      case 'EffectGivePower': { // EffectGivePower.OnSingle (Amount defaults to 1)
+        const amt = eff.Amount ? paramValue(eff.Amount, pa) : 1;
+        return [wrap('Try', ev('GiveMinionPower', { Owner: sa.Owner, Target: sa.TargetId, Source: sa.SourceId || null, Ability: eff.Ability, Amount: amt,
+          ResetFirst: !!eff.ResetFirst, IncludeDestroyed: !!eff.IncludeDestroyed, IncludeDead: !!eff.IncludeDead, Future: !!eff.Future }))];
+      }
       case 'EffectBalance': {
         // EffectBalance.OnSingle (Single true): just the target
         if (!eff.Single) return null;
@@ -1217,6 +1249,7 @@
     const t = short(T(c)).replace(/^Ability\.PerkCatalogue\./, '');
     switch (t) {
       case 'PerkCatalogueStatic': return c.Perk ?? 0;
+      case 'PerkCatalogueEvent': return a.TriggerEvent && a.TriggerEvent.cls === 'PerkLost' ? a.TriggerEvent.Perk : 8; // the lost perk, else perk 8
       case 'PerkCatalogueRandom': return perkCatalogueRandom(c, a);
       default: return unported(t);
     }
@@ -1338,6 +1371,24 @@
         base = pick.map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random));
         break;
       }
+      case 'MinionCatalogueCompound': {
+        // active pets passing any of the Finders, then picked like MinionCatalogueFind
+        const pool = ((D.lists || {}).activeMinions || []).filter((e) => (c.Finders || []).some((f) => findPredicate(f, ca, e)));
+        let pick;
+        if (!c.Unique) { pick = []; if (pool.length) for (let i = 0; i < ca.Amount; i++) pick.push(pool[ca.Random.next(0, pool.length)]); }
+        else pick = takeRandom(pool, ca.Amount, ca.Random);
+        if (c.Shuffle) for (let n = pick.length; n > 1;) { const k = ca.Random.next(0, n); n--; const x = pick[k]; pick[k] = pick[n]; pick[n] = x; }
+        base = pick.map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random));
+        break;
+      }
+      case 'MinionCatalogueTriggerSource': {
+        // a fresh copy of the trigger event's source; Reborn keeps its trigger counts
+        base = []; const sid = sourceOf(ca.TriggerEvent); if (!sid) break;
+        const sm = ca.B.board.findMinion(sid); if (!sm) break;
+        const m = generateMinion(ca.B, sm.Enum, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random);
+        if (c.Reborn) copyTriggerCount(m, sm);
+        base.push(m); break;
+      }
       case 'MinionCatalogueSelfCopy': {
         // a copy of the source (its owner, location and level unless ExcludeLevel); Reborn keeps its trigger and attack counts
         base = []; if (!ca.SourceId) break;
@@ -1422,6 +1473,11 @@
       }
       case 'EffectSummonProcessorCopyLevel': if (p) m.Level = p.Level; return;
       case 'EffectSummonProcessorSetPerk': setPerk(m, pr.Value ?? null); return;
+      case 'EffectSummonProcessorCopyPerk': { // the parent's perk (when Positive is set, only a perk of that polarity)
+        if (!p) return;
+        if (p.Perk != null && pr.Positive != null) { const pk = PERKS()[p.Perk]; if (!pk || pk.positive !== pr.Positive) return; }
+        setPerk(m, p.Perk ?? null); return; // a parent without a perk clears the summon's perk
+      }
       default: return unported(t);
     }
   }
@@ -1697,6 +1753,14 @@
         bs.Results.push({ Id: m.Id, ResultAttack: m.Attack.ShallowCopy(), ResultHealth: m.Health.ShallowCopy() });
       }
       B.add(wrap('Done', bs));
+    },
+    /** GiveMinionPowerMutator (Try<GiveMinionPower>): ResetFirst removes the power, then AddPower (no cap) */
+    GiveMinionPowerMutator(B, e) {
+      const g = e.Event; const m = B.board.findMinion(g.Target, !g.IncludeDestroyed, !g.IncludeDead); if (!m) return;
+      if (g.ResetFirst) delete m.Power[g.Ability];
+      m.Power[g.Ability] = (m.Power[g.Ability] || 0) + g.Amount;
+      if (g.Future && B.board.IsBattle) unported('GiveMinionPower.Future');
+      B.add(wrap('Done', g));
     },
     /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
     PushMutator(B, e) {
