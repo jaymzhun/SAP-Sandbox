@@ -51,6 +51,14 @@ const idxs = which === "all" ? specs.map((_, i) => i) : [+which];
 let ok = 0; const fails = [];
 for (const i of idxs) { const r = runOne(i); if (r.same) ok++; else fails.push(r); }
 console.log(`${ok}/${idxs.length} battles identical`);
+if (args.includes("--summary")) {
+  const groups = new Map();
+  for (const r of fails) {
+    const key = r.err ? (r.err.unported ? "Unported: " + r.err.unported : "ERROR " + r.err.message.slice(0, 80)) : "diff: " + ((r.want[r.k] || "(end)").split(" ").slice(0, 2).join(" ") + " vs " + (r.got[r.k] || "(end)").split(" ").slice(0, 2).join(" "));
+    if (!groups.has(key)) groups.set(key, []); groups.get(key).push(r.i);
+  }
+  for (const [k, v] of [...groups].sort((a, b) => b[1].length - a[1].length)) console.log(String(v.length).padStart(4), k, "  e.g. #" + v.slice(0, 5).join(" #"));
+}
 for (const r of fails.slice(0, show)) {
   const names = (side) => (r.spec[side] || []).map((p) => p.name || p.enum).join(",");
   console.log(`\n#${r.i} [${names("player")} vs ${names("opponent")}] outcome game=${r.wantOutcome} js=${r.outcome} first diff at line ${r.k}${r.err ? " ERROR " + r.err.stack.split("\n").slice(0, 3).join(" | ") : ""}`);

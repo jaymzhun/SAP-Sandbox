@@ -32,6 +32,10 @@
   const ORDER_INDEX = new Map(EXECUTION_ORDER.map((t, i) => [t, i]));
   const ITRIGGER_DEATH = new Set(['BeforeDeath', 'DeathEarly', 'Death']); // Abilities.ITriggerDeath
   const PHASE = (cls, group) => ev(cls, { Group: group, Lane: 0, phase: true });
+  /** TriggerEventExtensions.GetSourceOrNull / GetTargetOrNull (ITriggerSource / ITriggerTarget: first and second id fields). */
+  const NO_SOURCE = new Set(['StartBattle', 'BeforeStartBattle', 'StartBattleEnded', 'EmptyFront', 'AllFaint', 'EndTurn', 'StartTurn', 'RollShop', 'BeforeRoll', 'UpgradeTier', 'GoldSpent', 'PlaySpell', 'MinionsStocked', 'BattleDefeat']);
+  function sourceOf(e) { if (!e || NO_SOURCE.has(e.cls)) return undefined; return e.SourceId !== undefined ? e.SourceId : e.AttackerId !== undefined ? e.AttackerId : e.PetActivatedId; }
+  function targetOf(e) { if (!e) return undefined; return e.TargetId !== undefined ? e.TargetId : e.DefenderId; }
 
   // ---------------------------------------------------------------- coordinators / scheduler
   /** WoodQueue (FIFO) or TypeSortedList (TriggerAbilitySystem.All): GetFirstOfSameTypes(remove=true) takes the first type bucket. */
@@ -511,7 +515,7 @@
         sorted.push({ ev: ent.ev, minion: m, tie, seq: sorted.length });
       }
       const prio = (m) => m.Attack.Total + (m.Perk === 70 ? 1000 : 0) - (m.Perk === 117 ? 1000 : 0); // MinionModel.Priority: Churros +1000, Macaron -1000
-      const srcOf = (e) => e.SourceId; // ITriggerSource events carry the pet the trigger is about in SourceId
+      const srcOf = (e) => sourceOf(e); // ITriggerSource: the event's first id field
       const compareTo = (a, b) => {
         const sa = srcOf(a.ev), sb = srcOf(b.ev);
         if (sa !== undefined && sb !== undefined) {
@@ -613,6 +617,6 @@
     return S;
   }
 
-  const api = { Battle, ev, wrap, isW, EXECUTION_ORDER, calculate, newCalc };
+  const api = { Battle, ev, wrap, isW, EXECUTION_ORDER, calculate, newCalc, sourceOf, targetOf };
   if (isNode) module.exports = api; else { root.SAPGame = root.SAPGame || {}; root.SAPGame.sim = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
