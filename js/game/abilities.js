@@ -146,6 +146,8 @@
         if (pa.TriggerEvent && pa.TriggerEvent.cls === 'Hurt') return pa.TriggerEvent.Amount;
         return unported('ParameterTriggerValue on ' + (pa.TriggerEvent ? pa.TriggerEvent.cls : 'no event'));
       }
+      case 'ParameterTurn': return pa.B.board.Turn ?? 0; // BoardModel.Turn (+0x5c)
+      case 'ParameterMinionTier': { const m = paramMinion(p, pa); return m ? ((D.minions[m.Enum] || {}).tier ?? 0) : 1; } // MinionModel.Tier = template tier
       case 'ParameterMinionPower': { const m = paramMinion(p, pa); return m ? (m.Power[p.Ability] || 0) : 1; } // MinionExtensions.GetPower (null -> 0)
       case 'ParameterLevelSum': { // BoardExtensions.SumLevels: levels of grid pets passing MinionFinder, owner = the Origin pet
         const m = paramMinion(p, pa); if (!m) return 1; if (!p.MinionFinder) return 0;
@@ -213,10 +215,20 @@
     if (f.Distance != null) { const d = getDistance(B.board, cand, owner, f.DistanceEmptySpaces, f.DistanceSkipDead); if (!opCheck(f.DistanceOperator, d, f.Distance)) return false; }
     if (f.FrontDistance != null) { const d = getFrontDistance(B.board, cand, !!f.FrontDistanceConsiderEmptySpaces); if (!opCheck(f.FrontDistanceOperator, d, f.FrontDistance)) return false; }
     if (f.BackDistance != null) unported('MinionFinder.BackDistance');
-    if (f.PerkTier || f.WithRollablePerk != null) unported('MinionFinder.PerkTier/WithRollablePerk');
+    // PerkTier / WithRollablePerk test the spell behind the candidate's perk (PerkTemplate.Spell); no perk or spell fails
+    const perkSpell = () => { if (cand.Perk == null) return null; const pk = PERKS()[cand.Perk]; if (!pk || pk.spell == null) return null;
+      const sp = ((D.lists || {}).releasedSpells || []).find((x) => x.e === pk.spell); if (!sp) unported('MinionFinder perk spell not released'); return sp; };
+    if (f.PerkTier) {
+      const sp = perkSpell(); if (!sp) return false;
+      const want = paramValue(f.PerkTier, { B, TargetId: cand.Id, SourceId: owner ? owner.Id : null, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: null, TriggerEvent: null, Owner: owner ? owner.Owner : 0 });
+      if (!opCheck(f.PerkTierOperator ?? 2, sp.tier, want)) return false;
+    }
+    if (f.WithRollablePerk != null) { const sp = perkSpell(); if (!sp) return false; if (sp.rollable !== f.WithRollablePerk) return false; }
     if (f.HasAim != null) { const has = !!aim && idEq(aim, cand.Id); if (has !== f.HasAim) return false; }
     if (f.HasPerk != null && (cand.Perk != null) !== f.HasPerk) return false;
-    if (f.HasMidBattlePerk != null || f.HasUniversalPerk != null) unported('MinionFinder.HasMidBattlePerk/HasUniversalPerk');
+    // HasMidBattlePerk / HasUniversalPerk: "has a perk" must equal the flag, then the perk's MidBattle / Universal must too
+    if (f.HasMidBattlePerk != null) { const has = cand.Perk != null; if (has !== f.HasMidBattlePerk) return false; if (has) { const pk = PERKS()[cand.Perk]; if (!pk || pk.midBattle !== f.HasMidBattlePerk) return false; } }
+    if (f.HasUniversalPerk != null) { const has = cand.Perk != null; if (has !== f.HasUniversalPerk) return false; if (has) { const pk = PERKS()[cand.Perk]; if (!pk || pk.universal !== f.HasUniversalPerk) return false; } }
     if (f.HasPositivePerk != null) { const has = cand.Perk != null; if (has !== f.HasPositivePerk) return false; if (has && perkPositive(cand.Perk) !== f.HasPositivePerk) return false; }
     if (f.HasNegativePerk != null) { const has = cand.Perk != null; if (has !== f.HasNegativePerk) return false; if (has && !perkPositive(cand.Perk) !== f.HasNegativePerk) return false; }
     if (f.HasNoPositivePerk != null && cand.Perk != null && !perkPositive(cand.Perk) !== f.HasNoPositivePerk) return false;
@@ -378,7 +390,8 @@
       const keys = [];
       for (const o of f.Orders || []) {
         if (o === 2 || o === 3) { if (!owner) continue; keys.push([(m) => Math.abs(owner.Point.x - m.Point.x), o === 2]); continue; }
-        if (o === 18 || o === 16 || o === 17) unported('MinionFinder order ' + o);
+        if (o === 18) { out = out.filter((m) => hasDeathEffect(m)); continue; } // OrderMinions 18 is Where(HasDeathEffect)
+        if (o === 16 || o === 17) unported('MinionFinder order ' + o);
         const k = ORDER_KEYS[o]; if (!k) unported('MinionFinder order ' + o); keys.push(k);
       }
       if (f.Limit != null && owner) {
@@ -584,6 +597,7 @@
       case 'ConditionIsTrumpetNotDone': { if (!owner) return false; return owner.Owner === 1 ? !B.board.TrumpetsDone : !B.board.OpponentTrumpetsDone; }
       case 'ConditionIsReversed': return !!ca.Reversed; // ConditionArgs.Reversed (+0x40)
       case 'ConditionIsEven': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 0; }
+      case 'ConditionBuild': return !B.board.IsBattle; // BoardExtensions.IsBuild: the value byte of Nullable IsBattle (+0x28) is false
       case 'ConditionIsStartOfBattle': return (B.board.BattlePhase || 0) === 0; // BoardModel.BattlePhase (+0x25c) == StartBattle
       case 'ConditionHighestTier': case 'ConditionLowestTier': {
         // every other candidate (finder, else every grid pet) must have a strictly lower (higher) tier than the owner
@@ -1649,7 +1663,7 @@
       b.ResultGiveAttack = atk; b.ResultGiveHealth = hp; b.ResultAttackGained = m.Attack.Total - atk0; b.ResultHealthGained = m.Health.Total - hp0;
       b.ResultAttack = m.Attack.ShallowCopy(); b.ResultHealth = m.Health.ShallowCopy();
       if (source && dur === 2 && !negative && m.RemoveableBuffs) m.RemoveableBuffs.push([source.Id, b.ResultAttackGained, b.ResultHealthGained]);
-      if (b.Future) unported('BuffMinion.Future');
+      if (b.Future && board.IsBattle) (board.MinionFutures = board.MinionFutures || []).push({ Target: b.TargetId, Attack: b.Attack > 0 ? b.Attack : null, Health: b.Health > 0 ? b.Health : null }); // BoardModel +0x1b0
       if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
       B.add(wrap('Done', b));
     },
@@ -1759,7 +1773,7 @@
       const g = e.Event; const m = B.board.findMinion(g.Target, !g.IncludeDestroyed, !g.IncludeDead); if (!m) return;
       if (g.ResetFirst) delete m.Power[g.Ability];
       m.Power[g.Ability] = (m.Power[g.Ability] || 0) + g.Amount;
-      if (g.Future && B.board.IsBattle) unported('GiveMinionPower.Future');
+      if (g.Future && B.board.IsBattle) (B.board.MinionFutures = B.board.MinionFutures || []).push({ Target: g.Target, Power: g.Amount > 0 ? g.Amount : null, Ability: g.Ability }); // BoardModel +0x1b0
       B.add(wrap('Done', g));
     },
     /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
