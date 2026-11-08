@@ -161,3 +161,23 @@ Measured with a Frida trace of every `BoardRandom` draw: a transform ability rol
   the activation (not ported yet).
 - `ReleaseManaSystem`: a fainting pet with mana runs `Do<AbilityTriggered>(686, level 1, Force)`.
 - Mana is capped at 50. Experience thresholds come from `BoardConstants` (level n starts at `[0, 2, 5][n-1]`).
+
+## Verification oracles (tools/oracle)
+- `compare.mjs`: compares the EventLog line by line with battles recorded from the game. The recordings now include each pet's
+  real ability list and every scalar BoardModel field (rolls, gold spent, transformations, ...). `--js a:b` prints JS log lines.
+- `rngcompare.mjs`: compares every random draw (method, stream, arguments, result) with a Frida trace of the game's `BoardRandom`
+  calls, cut where `BoardResolver.Finalise` starts hashing. It catches missing or extra draws that the EventLog cannot show while
+  later rolls have range 0.
+- Ids: each board GUID keeps its own letter (player P, battle board M, anything else Q, R, ...). An opponent relic has its own
+  GUID, so it must not share an id with a summon.
+
+## Randomness details
+- `Randomizer.PositiveInteger` is `Next(1, int.MaxValue)` (trade ties in `HasPriority`); `RollPriorityMutator` uses `Next(int.MaxValue)`.
+- `BoardExtensions.GetPerkMultiplier(m)`: PerkMultiplier (default 1), times the level of an own ability whose `PerkMultiplier`
+  names this perk, otherwise (in battle) times the aura-2 value. Perk repeats use it.
+- `GetNegativePerkMultiplier(m)`: 1 (pet 748: its level), plus the MagicVariable of ability 388 on non-deaf enemies, times
+  PerkMultiplier. Ailment repeats use it, with Reversed = the pet has ability 839.
+- Condition, repeat and finder parameters use the owner as both source and target.
+
+## Open questions
+- The harness board reports `BoardCapacity` 198, so recorded battles never hit the summon capacity check (JS assumes 10).
