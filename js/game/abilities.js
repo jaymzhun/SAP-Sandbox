@@ -695,7 +695,7 @@
   function buildRepeatActivations(B, e, minion, model, ab, rand) {
     const t = e.Event; const list = [];
     let reps = ab.Repeat ?? 1;
-    if (ab.RepeatParameter) reps = paramValue(ab.RepeatParameter, { B, SourceId: minion.Id, TriggerSourceId: sourceOf(t.TriggerEvent) || null, TriggerTargetId: targetOf(t.TriggerEvent) || null, Random: rand, TriggerEvent: t.TriggerEvent });
+    if (ab.RepeatParameter) reps = paramValue(ab.RepeatParameter, { B, TargetId: minion.Id, SourceId: minion.Id, TriggerSourceId: sourceOf(t.TriggerEvent) || null, TriggerTargetId: targetOf(t.TriggerEvent) || null, Random: rand, TriggerEvent: t.TriggerEvent });
     const base = ab.Repeat ?? 1;
     for (let i = 0; i < reps; i++) list.push(newActivate(t, ++minion.AbilityActivations));
     if (t.Type === 1) { const extra = getPerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; list.push(a); } }
