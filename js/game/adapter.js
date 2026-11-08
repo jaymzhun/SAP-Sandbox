@@ -46,7 +46,7 @@
     });
     return {
       Id: M.itemId(owner === 1 ? 'P' : 'M', uid), Owner: owner, Enum: e, x: opts.packBack != null && owner === 1 ? opts.packBack - 1 - slot : owner === 1 ? 4 - slot : 5 + slot, Level: level, Exp: xp, Mana: p.mana || 0,
-      Relic: t.type === 1, Attack: p.atk, AttackTemp: 0, Health: p.hp, HealthTemp: 0, Perk: perk,
+      Relic: t.type === 1, SpellCountsThisTurn: +((p.ctx && p.ctx.foodEaten !== '' && p.ctx.foodEaten != null ? p.ctx.foodEaten : opts.foodEaten) || 0), Attack: p.atk, AttackTemp: 0, Health: p.hp, HealthTemp: 0, Perk: perk,
       PerkDurability: perk != null ? ((D.perks[perk] || {}).durability ?? null) : null, PerkMultiplier: null, Tribe: t.tribe, Abilities: abilities,
     };
   }
@@ -115,7 +115,7 @@
     let uid = 0; const ctx = new Map(); const pets = [];
     // the opponent's ids first (M1..), then the player's (P..), like the recorded boards
     for (const [s, owner] of [[1, 2], [0, 1]]) for (const p of teams[s] || []) {
-      if (!p) continue; const inp = petInput(p, owner, ++uid, { packBack: owner === 1 && test.packBack ? teams[0].filter(Boolean).length : null }); pets.push(inp); if (p.ctx) ctx.set(key(inp.Id), p.ctx);
+      if (!p) continue; const inp = petInput(p, owner, ++uid, { packBack: owner === 1 && test.packBack ? teams[0].filter(Boolean).length : null, foodEaten: settings.foodEaten }); pets.push(inp); if (p.ctx) ctx.set(key(inp.Id), p.ctx);
     }
     const log = [];
     const ctxOf = (id) => ctx.get(key(id));

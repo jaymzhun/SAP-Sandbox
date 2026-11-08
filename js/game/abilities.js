@@ -152,6 +152,13 @@
         return o === 1 ? pa.B.board.GoldSpent || 0 : o === 2 ? pa.B.board.OpponentGoldSpent || 0 : 0;
       }
       case 'ParameterMinionActivationCount': { const m = paramMinion(p, pa); if (!m) return 1; const a = m.Abilities.find((x) => x.Enum === p.Ability); return a ? a.ActivatedCount || 0 : 0; } // MinionAbilityModel +0x24
+      case 'ParameterMinionSpellCount': { const m = paramMinion(p, pa); return m ? m.SpellCountsThisTurn || 0 : 1; } // MinionModel +0x110
+      case 'ParameterAttacks': return pa.B.board.Attacks || 0; // BoardModel.Attacks (+0x1dc)
+      case 'ParameterSubstract': return paramValue(p.Value1, pa) - paramValue(p.Value2, pa);
+      case 'ParameterDistance': { // |target x - source x| (0 without both)
+        const tm = pa.TargetId ? pa.B.board.findMinion(pa.TargetId) : null, sm = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
+        return tm && sm ? Math.abs(tm.Point.x - sm.Point.x) : 0;
+      }
       case 'ParameterTurn': return pa.B.board.Turn ?? 0; // BoardModel.Turn (+0x5c)
       case 'ParameterMinionTier': { const m = paramMinion(p, pa); return m ? ((D.minions[m.Enum] || {}).tier ?? 0) : 1; } // MinionModel.Tier = template tier
       case 'ParameterMinionPower': { const m = paramMinion(p, pa); return m ? (m.Power[p.Ability] || 0) : 1; } // MinionExtensions.GetPower (null -> 0)
@@ -507,6 +514,7 @@
       }
       case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
       case 'TargetsSilly': { const sub = owner && owner.Perk === 75 ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // perk 75 (Silly)
+      case 'TargetsReversed': { const sub = ta.Reversed ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // TargetsArgs.Reversed
       case 'TargetsUntil': { for (const sub of t.Targets || []) { const r = getTargets(sub, ta); if (r && r.length) return r; } return []; } // first non-empty
       case 'TargetsMiddle': {
         // the middle of the live pets on the owner's side (Friendly) or the other side, in grid order; an even count picks left of
@@ -655,6 +663,8 @@
       case 'ConditionIsTrumpetNotDone': { if (!owner) return false; return owner.Owner === 1 ? !B.board.TrumpetsDone : !B.board.OpponentTrumpetsDone; }
       case 'ConditionIsReversed': return !!ca.Reversed; // ConditionArgs.Reversed (+0x40)
       case 'ConditionIsDivisible': { if (!c.Parameter) return false; const v = paramValue(c.Parameter, pa); return v !== 0 && v % c.Divisor === 0; } // 0 is not divisible here
+      case 'ConditionIsOdd': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 1; } // negative odd numbers give -1: false
+      case 'ConditionPack': if (owner && (owner.Owner === 1 ? B.board.Deck : B.board.OpponentDeck)) unported('ConditionPack with a custom deck'); return false; // no custom deck: false
       case 'ConditionIsEven': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 0; }
       case 'ConditionBuild': return !B.board.IsBattle; // BoardExtensions.IsBuild: the value byte of Nullable IsBattle (+0x28) is false
       case 'ConditionMinionsLessThan': { // LessOf count < MoreOf count (each a CompareTeam with a MinionFinder)

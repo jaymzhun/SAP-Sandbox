@@ -51,7 +51,7 @@
       this.Abilities = o.Abilities || []; this.AbilitiesDisabled = false; this.RemoveableBuffs = []; // MinionModel.RemoveableBuffs (+0x160): (source, attack, health)
       this.Dead = false; this.Destroyed = false; this.DestroyedBy = null;
       this.Power = {}; this.Tribe = o.Tribe ?? null;
-      this.AttackCountsThisTurn = 0; this.HurtCountsThisTurn = 0; this.SpellCountsThisTurn = 0;
+      this.AttackCountsThisTurn = 0; this.HurtCountsThisTurn = 0; this.SpellCountsThisTurn = o.SpellCountsThisTurn ?? 0; // foods eaten this turn (shop)
       this.AttackCountsThisBattle = 0; this.JumpsThisBattle = 0; this.DamageDealtThisBattle = 0; this.HurtCountsThisBattle = 0; this.HurtTotalThisBattle = null;
       this.LastSummoned = []; this.DamageTaken = false; this.AbilityActivations = 0;
     }
