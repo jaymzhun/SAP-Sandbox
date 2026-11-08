@@ -76,12 +76,13 @@
     /** BoardExtensions.SetMinion */
     setMinion(p, m) { this.cells[this.index(p)] = m; if (m) m.Point = { x: p.x, y: p.y }; }
     get Items() { return this.cells; }
-    /** BoardExtensions.FindMinion(id, excludeDestroyed, excludeDead): grid cells first, then graveyard, then sold. */
+    /** BoardExtensions.FindMinion(id, excludeDestroyed, excludeDead): grid cells, then graveyard, sold, relics (shop is empty in battle). */
     findMinion(id, excludeDestroyed = false, excludeDead = false) {
       if (!id) return null;
       for (const m of this.cells) if (m && idEq(m.Id, id) && (!excludeDestroyed || !m.Destroyed) && (!excludeDead || !m.Dead)) return m;
       for (const m of this.MinionGraveyard) if (m && idEq(m.Id, id) && (!excludeDestroyed || !m.Destroyed)) return m;
       for (const m of this.MinionSold) if (m && idEq(m.Id, id) && (!excludeDestroyed || !m.Destroyed)) return m;
+      for (const m of this.Relics) if (m && idEq(m.Id, id) && (!excludeDestroyed || !m.Destroyed)) return m;
       return null;
     }
     findLiveMinion(idOrPoint) {
