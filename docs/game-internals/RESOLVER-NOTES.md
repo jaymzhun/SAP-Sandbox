@@ -146,3 +146,18 @@ A forced trigger with no pet gives 1.
 - Predicate fields in use: Other, Team (0 friend, 1 enemy), Alive, IncludeDead, Perk, WithoutPerk, Health/Attack (with
   Operator 0 `==`, 1 `<`, 2 `<=`, 3 `>`, 4 `>=`), Level, Tier, Types, Direction, Distance, FrontDistance, the Has*Perk
   family, IsEnemyCheck (owner must be 2), Exclude/IncludeTypes, and others listed in `MinionFinder.Predicate`.
+
+## Pre-activation passes (ActivateAbilityTrySystem.HandleAbilityTriggered)
+Measured with a Frida trace of every `BoardRandom` draw: a transform ability rolls its catalogue twice.
+- After `BuildRepeatActivations`, abilities 941/931 or any ability with `HasEffect<EffectTransform>` run `Ability.Activate` once
+  ahead for each activation. That pass consumes RNG, unique ids and `ActivatedCount`, and its events are thrown away.
+  - Each `Try<TransformMinion>` in the result fires `BeforeTransform(target)` through `TryActivate`: every pet (FindMinions order)
+    runs TryTriggerMinion, and only `Do<AbilityTriggered>` results are kept, as `Try<AbilityActivate>`s. There are no tie-break draws.
+  - An empty result stops HandleAbilityTriggered (no activations, no Done).
+  - The handled activation is added and removed from the list while the index still advances, so only every other activation gets
+    this pass. The rest are added afterwards as usual.
+  - Perk-sourced effects only, when none of the pet's own abilities transforms and it holds perk 94 or 103.
+- Ability 928 or `HasEffect<EffectJumpAttack>` has a similar pass that also fires BeforeAttack and stores the precomputed events on
+  the activation (not ported yet).
+- `ReleaseManaSystem`: a fainting pet with mana runs `Do<AbilityTriggered>(686, level 1, Force)`.
+- Mana is capped at 50. Experience thresholds come from `BoardConstants` (level n starts at `[0, 2, 5][n-1]`).

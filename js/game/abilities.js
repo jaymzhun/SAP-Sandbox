@@ -617,12 +617,46 @@
     const ab = getAbility(t.Ability, t.Level);
     if (!ab) return;
     if (abilityTriggered(ab, model, t.TriggerEvent, t.Force, B, rand, t.MinionId).Status !== 0) return;
-    if (ab.Enum === 928) unported('ActivateAbilityTry jump-attack precompute (928)');
-    if (ab.Enum === 941 || ab.Enum === 931) unported('ActivateAbilityTry transform precompute');
     const acts = buildRepeatActivations(B, e, minion, model, ab, rand);
+    if (ab.Enum === 928 || hasEffect(model, 'EffectJumpAttack')) unported('ActivateAbilityTry jump-attack precompute');
+    // Transforms are run once ahead (Ability.Activate, consuming RNG) to fire BeforeTransform on the pets about to change.
+    // Only every other activation gets this pass: each one handled is removed from the list while the index still advances.
+    if (ab.Enum === 941 || ab.Enum === 931 || hasEffect(model, 'EffectTransform')) {
+      const perkOnly = !minion.Abilities.some((x) => hasEffect(x, 'EffectTransform')) && (minion.Perk === 94 || minion.Perk === 103);
+      for (let i = 0; i < acts.length; i++) {
+        const a = acts[i];
+        const r = activate(B, ab, model, a.TriggerEvent, a.Force, a.MinionId, a.Aim, B.randomizer(a.Owner), a.EffectMultiplier, perkOnly, a.Reversed);
+        if (!r || !r.length) return;
+        for (const x of flattenEvents(r)) if (x.cls === 'Try' && x.Event && x.Event.cls === 'TransformMinion') tryActivate(B, ev('BeforeTransform', { SourceId: x.Event.Target }));
+        B.add(wrap('Try', a)); acts.splice(i, 1);
+      }
+    }
     for (const a of acts) B.add(wrap('Try', a));
     B.add(wrap('Done', t));
     if (t.RemovePerk != null) unported('AbilityTriggered.RemovePerk');
+  }
+  /** MinionExtensions.HasEffect<T>(model): a visible ability with a pair whose effect is T. */
+  function hasEffect(model, type) {
+    if (!model) return false; const ab = getAbility(model.Enum, model.Level); if (!ab || ab.HiddenTriggersAndEffects) return false;
+    return (ab.Pairs || []).some((p) => p.Effect && short(T(p.Effect)) === type);
+  }
+  /** All events inside CastEffects wrappers, depth first. */
+  function flattenEvents(list) {
+    const out = [];
+    const walk = (e) => { if (!e) return; if (e.cls === 'CastEffectsSequentially' || e.cls === 'CastEffectsParallel') e.CastEffects.forEach(walk); else if (e.cls === 'CastEffect') e.EffectResult.Events.forEach(walk); else out.push(e); };
+    list.forEach(walk); return out;
+  }
+  /** ActivateAbilityTrySystem.TryActivate(trigger): triggers resolved at once, without tie-breaks; only Do<AbilityTriggered> results are kept, as their activations. */
+  function tryActivate(B, trig) {
+    for (const m of B.board.findMinions(false, false)) {
+      const res = tryTriggerMinion(B, m, trig, B.randomizer(m.Owner)) || [];
+      for (const r of res) {
+        if (!(r.cls === 'Do' && r.Event && r.Event.cls === 'AbilityTriggered')) continue;
+        const t = r.Event; const mm = B.board.findMinion(t.MinionId); if (!mm) continue;
+        const model = mm.Abilities.find((x) => x.Enum === t.Ability) || null;
+        for (const a of buildRepeatActivations(B, r, mm, model, getAbility(t.Ability, t.Level), B.randomizer(t.Owner))) B.add(wrap('Try', a));
+      }
+    }
   }
   function newActivate(t, n) {
     return ev('AbilityActivate', { Owner: t.Owner, Ability: t.Ability, MinionId: t.MinionId, Level: t.Level, Aim: t.Aim, TriggerEvent: t.TriggerEvent, Type: t.Type, Reversed: false,
