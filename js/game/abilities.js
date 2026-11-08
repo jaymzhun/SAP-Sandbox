@@ -870,6 +870,18 @@
         if (src) (src.LastSummoned = src.LastSummoned || []).push(sa.TargetId);
         return [wrap('Try', t)];
       }
+      case 'EffectPush': {
+        // EffectPush.OnSingle; To = 1 pushes to a random cell of the target's side
+        let dir = eff.Direction || 0, dist = eff.Distance || 0;
+        if (eff.To === 1) {
+          const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) return null;
+          const lo = tm.Owner === 1 ? 0 : 5, hi = tm.Owner === 1 ? 4 : 9;
+          const x = Math.trunc(sa.Random.nextDouble() * (hi - lo + 1)) + lo;
+          const d = x - tm.Point.x; dir = d < 1 ? 1 : 0; if (tm.Owner === 2) dir = dir === 0 ? 1 : 0; dist = Math.abs(d);
+        }
+        return [wrap('Try', ev('PushMinion', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Direction: dir, Distance: dist, Type: eff.Type || 0,
+          FinalDelta: null, SourcePerk: null, FailCause: 0, ProjectileDisabled: !!eff.ProjectileDisabled, ResultLostPerk: null }))];
+      }
       case 'EffectLosePerk': {
         // EffectLosePerk.OnSingle
         const l = loseMinionPerk(sa.Owner, sa.TargetId, sa.SourceId || null, eff.Perk ?? null, !!eff.IgnoreDurability);
@@ -1185,6 +1197,27 @@
       B.add(wrap('Do', ev('AbilityTriggered', { Owner: m.Owner, Ability: 686, Level: 1, MinionId: m.Id, Aim: null, TriggerEvent: r.TriggerEvent, UpdateLevel: false, Type: 0, Force: true,
         RepeatFromAuraDisabled: false, DisableAfterTemp: false, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
     },
+    /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
+    PushMutator(B, e) {
+      const pm = e.Event; const board = B.board;
+      const target = board.findMinion(pm.TargetId, true, false);
+      const source = (pm.SourceId && board.findMinion(pm.SourceId)) || target; if (!source) return;
+      if (!target) return;
+      if (target.Perk === 66 && (pm.Type || 0) === 0) { const f = wrap('Fail', pm); pm.ResultLostPerk = tryRemovePerk(target); B.add(f); return; } // perk 66 resists pushes
+      let d = source.Owner !== 1 ? 3 : 1; if (pm.Direction) d = d === 1 ? 3 : d === 3 ? 1 : d === 0 ? 2 : 0; // DirectionUtility.Relative
+      const from = { x: target.Point.x, y: target.Point.y };
+      let x = from.x + toDx(d) * pm.Distance;
+      const lo = target.Owner === 1 ? 0 : 5, hi = target.Owner === 1 ? 4 : 9; x = Math.max(lo, Math.min(hi, x)); // GetMinMaxPoint
+      const to = { x, y: from.y };
+      board.cells[board.index(from)] = null;
+      const r = tryClearSpace(board, to, pm.Direction === 0 ? 1 : 0);
+      if (!r.ok) { board.cells[board.index(from)] = target; return; }
+      B.add(r.events);
+      B.add(wrap('Try', ev('SummonMinion', { Owner: target.Owner, Minion: target, Type: 5, SubType: 2, Jumped: (pm.Type || 0) === 1, TriggerDisabled: true, TargetPoint: to, FailCause: 0,
+        SourceId: null, Projectile: false, ForceActivateAbility: false, PushDirection: null })));
+      pm.FinalDelta = { x: to.x - from.x, y: 0 };
+      B.add(wrap('Done', pm));
+    },
     /** TransformMinionMutator (Try<TransformMinion>) */
     TransformMinionMutator(B, e) {
       const t = e.Event; const board = B.board;
@@ -1370,6 +1403,10 @@
       const pk = PERKS()[g.Perk]; if (!pk || pk.spell == null || !pk.positive) return;
       B.add(ev('PlayedSpellOn', { Owner: g.Owner, Spell: pk.spell, TargetId: g.TargetId, SourceId: g.Source, Shop: false, Disabled: g.TriggersDisabled }));
     },
+    /** TriggerPushMinionSystem (Done<PushMinion>) */
+    TriggerPushMinionSystem(B, e) { const pm = e.Event; B.add(ev('Pushed', { SourceId: pm.TargetId, Type: pm.Type || 0 })); },
+    /** TriggerPushMinionFailSystem (Fail<PushMinion>): the resisting perk is used up */
+    TriggerPushMinionFailSystem(B, e) { const pm = e.Event; if (pm.ResultLostPerk && pm.ResultLostPerk.LostPerk != null) B.add(ev('PerkLost', { SourceId: pm.TargetId, Perk: pm.ResultLostPerk.LostPerk })); },
     /** TriggerTransformSystem (Done<TransformMinion>) */
     TriggerTransformSystem(B, e) { const t = e.Event; B.add(ev('Transform', { SourceId: t.Target, Back: t.Back, Stacking: t.Stacking, OldMinion: t.ResultOldMinion })); },
     /** TriggerGainedManaSystem (Done<ChangeMinionMana>) */
