@@ -117,6 +117,17 @@
     const t = short(T(p));
     switch (t) {
       case 'ParameterFlat': return p.Value;
+      case 'ParameterPerMinion': { // count of MinionFinder.FindMinions(board, source, no aim, random)
+        if (!p.MinionFinder) return 0; const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
+        return findMinions(p.MinionFinder, pa.B, src, null, pa.Random).length;
+      }
+      case 'ParameterWhenTarget': { // TrueValue when the Origin pet passes MinionFinder, else FalseValue (0 when it is null)
+        const id = [pa.SourceId, pa.TargetId, pa.TriggerSourceId, pa.TriggerTargetId][p.Origin ?? 0] || null;
+        const m = id ? pa.B.board.findMinion(id) : null;
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
+        const v = p.MinionFinder && predicate(p.MinionFinder, pa.B, m, src) ? p.TrueValue : p.FalseValue;
+        return v ? paramValue(v, pa) : 0;
+      }
       case 'ParameterMinionAttack': { const m = paramMinion(p, pa); return m ? m.Attack.Total : 1; }
       case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
       case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
@@ -389,6 +400,21 @@
         unported('TargetsTriggerTarget without ITriggerTarget');
       }
       case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
+      case 'TargetsMirror': {
+        // the first live enemy (passing MinionFinder) in a breadth-first walk of the grid from the mirrored cell;
+        // neighbours go right then left for the player, left then right for the opponent (rows above/below are off the grid)
+        if (!owner) return null;
+        const W = board.Width; const start = W - owner.Point.x - 1;
+        const ok = (m) => !!m && m.IsAlive && m.Owner !== owner.Owner && (!t.MinionFinder || predicate(t.MinionFinder, B, m, owner));
+        const seen = new Set(); const q = [start]; const dirs = owner.Owner === 1 ? [1, -1] : [-1, 1];
+        while (q.length) {
+          const x = q.shift(); const m = board.get({ x, y: 0 });
+          if (ok(m)) return [m.Id];
+          seen.add(x);
+          for (const d of dirs) { const nx = x + d; if (nx >= 0 && nx < W && !seen.has(nx)) q.push(nx); }
+        }
+        return null;
+      }
       case 'TargetsFind': {
         const f = t.MinionFinder; const limit = t.Limit ? paramValue(t.Limit, paramArgs(ta)) : null;
         if (f.Duplicates == null) f.Alive = true; // the game sets this on the shared finder
@@ -853,7 +879,7 @@
         const make = (m) => {
           if (!m) { m = catalogueMinions(eff.Catalogue, ca)[0]; if (!m) return null; }
           for (const pr of eff.Processors || []) summonProcess(pr, { B, SummonPoint: point, Minion: m, Parent: source, Reversed: ga.Reversed });
-          if ((D.minions[m.Enum] || {}).relicType === 1) unported('EffectSummonGlobal relic');
+          if ((D.minions[m.Enum] || {}).type === 1) unported('EffectSummonGlobal relic'); // MinionTemplate.Type (+0xfc)
           return wrap('Try', ev('SummonMinion', { Owner: m.Owner, Minion: m, Type: 1, SubType: 0, Jumped: false, TriggerDisabled: !!eff.TriggerDisabled, TargetPoint: { x: point.x, y: point.y },
             FailCause: 0, SourceId: source ? source.Id : null, Projectile: !!eff.Projectile, ForceActivateAbility: false, PushDirection: null }));
         };
@@ -979,6 +1005,18 @@
           SplashDamage: eff.SplashDamage ?? null, DamageMultiplier: eff.DamageMultiplier ?? null, FixedDamage: eff.FixedDamage ?? null });
         if (idEq(sa.SourceId, sa.TargetId)) return [wrap('Fail', j)]; // Fails.SourceAndTargetIsSame
         return [wrap('Try', j)];
+      }
+      case 'EffectDestroyMinion': {
+        // EffectDestroyMinion.OnSingle
+        return [wrap('Try', ev('MinionAbilityDestroy', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Type: eff.Type || 0,
+          Projectile: eff.Projectile || null, TriggerDisabled: !!eff.TriggerDisabled }))];
+      }
+      case 'EffectCopyStats': {
+        // EffectCopyStats.OnSingle: the source copies the target's stats
+        if (!sa.SourceId) return null;
+        return [wrap('Try', ev('CopyMinionStats', { Owner: sa.Owner, CopyFrom: sa.TargetId, CopyTo: sa.SourceId, Attack: !!eff.Attack, AttackMultiplier: eff.AttackMultiplier ?? null,
+          AttackMax: eff.AttackMax ?? null, Health: !!eff.Health, HealthMultiplier: eff.HealthMultiplier ?? null, HealthMax: eff.HealthMax ?? null, Add: !!eff.Add, Rounding: eff.Rounding ?? null,
+          ResultGiveAttack: 0, ResultGiveHealth: 0, ResultAttackGained: 0, ResultHealthGained: 0, ResultAttack: null, ResultHealth: null }))];
       }
       case 'EffectPush': {
         // EffectPush.OnSingle; To = 1 pushes to a random cell of the target's side
@@ -1352,6 +1390,33 @@
       B.add(B.doTradeDamage(thrown.Id, at.Id, false, { ignoreAdjacents: true, attackType: 1 }));
       B.add(wrap('Done', j));
     },
+    /**
+     * CopyMinionStatsMutator (Try<CopyMinionStats>): stat = from's stat (times the multiplier, rounded up only with Rounding 1, then truncated),
+     * capped by the max, plus to's own stat with Add; health is at least 1.
+     */
+    CopyMinionStatsMutator(B, e) {
+      const c = e.Event; const board = B.board;
+      const from = board.findLiveMinion(c.CopyFrom), to = board.findLiveMinion(c.CopyTo);
+      if (!to || !from) return;
+      const a0 = to.Attack.Total, h0 = to.Health.Total;
+      const scaled = (v, mult) => { if (mult == null) return v; const x = Dec.mul(Dec.int(v), Dec.from(mult)); return Dec.toInt(c.Rounding === 1 ? Dec.ceil(x) : x); };
+      if (c.Attack) {
+        let v = scaled(from.Attack.Total, c.AttackMultiplier);
+        if (c.AttackMax != null && c.AttackMax < v) v = c.AttackMax;
+        if (c.Add) v += to.Attack.Total;
+        setAttack(to, v);
+        if (c.Add) { c.ResultGiveAttack = v - a0; c.ResultAttackGained = to.Attack.Total - a0; c.ResultAttack = to.Attack.ShallowCopy(); }
+      }
+      if (c.Health) {
+        let v = scaled(from.Health.Total, c.HealthMultiplier);
+        if (c.HealthMax != null && c.HealthMax < v) v = c.HealthMax;
+        if (c.Add) v += to.Health.Total;
+        if (v < 1) v = 1;
+        setHealth(to, v);
+        if (c.Add) { c.ResultGiveHealth = v - h0; c.ResultHealthGained = to.Health.Total - h0; c.ResultHealth = to.Health.ShallowCopy(); }
+      }
+      B.add(wrap('Done', c));
+    },
     /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
     PushMutator(B, e) {
       const pm = e.Event; const board = B.board;
@@ -1583,6 +1648,14 @@
     tryTriggerMinion, activateAbilityTry, activateAbilityDo,
     castEffectWrapper(B, e) { B.add(e.CastEffects); },
     castEffect(B, e) { B.add(e.EffectResult.Events); },
+    /** MinionAbilityDestroySystem (Try<MinionAbilityDestroy>): Type 1 kills as damage type 2, Type 3 as type 3 (marking CountdownDestroyed), else type 1 */
+    abilityDestroy(B, e) {
+      const d = e.Event; let dt = 1;
+      if (d.Type === 1) dt = 2;
+      else if (d.Type === 3) { dt = 3; const m = B.board.findLiveMinion(d.TargetId); if (m) m.CountdownDestroyed = true; }
+      B.add(wrap('Try', ev('MarkMinionDead', { Owner: d.Owner, TargetId: d.TargetId, SourceId: d.SourceId, DamageType: dt, TriggerDisabled: !!d.TriggerDisabled })));
+      B.add(wrap('Done', d));
+    },
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) {
       // AbilityCleanupMutator: current targets (+0x140) move to OldTargetsThisTurn (+0x118)
       if (m.CurrentTargetsThisTurn) m.OldTargetsThisTurn = (m.OldTargetsThisTurn || []).concat(m.CurrentTargetsThisTurn);
@@ -1592,6 +1665,7 @@
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
     findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier, setupDamage,
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
+    minionType: (m) => (D.minions[m.Enum] || {}).type || 0, // MinionTemplate.Type (+0xfc): 1 = relic
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };
 

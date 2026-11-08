@@ -396,7 +396,10 @@
         m.Destroyed = true; m.DestroyedBy = d.SourceId; m.Location = 2;
         if (d.SourceId) { const s = board.findMinion(d.SourceId); if (s && s.Owner === 1 && m.Owner === 2) st.PetsDefeated = (st.PetsDefeated || 0) + 1; }
         board.MinionGraveyard.push(m);
-        const i = board.cells.indexOf(m); if (i >= 0) board.cells[i] = null;
+        // BoardExtensions.DestroyMinion: relics (MinionTemplate.Type 1) leave the relic grid, everything else the minion grid
+        const rt = hooks.minionType ? hooks.minionType(m) : 0;
+        if (rt === 1) { const r = board.Relics.indexOf(m); if (r >= 0) board.Relics[r] = null; }
+        else { const i = board.cells.indexOf(m); if (i >= 0) board.cells[i] = null; }
       }
       B.add(wrap('Done', d));
     });
