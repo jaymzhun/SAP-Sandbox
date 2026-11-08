@@ -181,3 +181,19 @@ Measured with a Frida trace of every `BoardRandom` draw: a transform ability rol
 
 ## Open questions
 - The harness board reports `BoardCapacity` 198, so recorded battles never hit the summon capacity check (JS assumes 10).
+
+## Findings from the long-tail port (build 26131463)
+
+- **BattlePhase** (BoardModel +0x25c): StartBattle 0, Trade 1, Move 2, Cleanup 3. `ConditionIsStartOfBattle` tests it for 0.
+- **Template fields**: MinionTemplate +0xfc is `Type` (1 = relic), +0x100 is `RelicType`. `DestroyMinion`/`RemoveMinion` use Type to pick the relic grid; `ConditionHasRelic` and the aura lookups skip RelicType 1.
+- **Game-ordered lists** drive random picks: `SpellConstants.GetReleasedSpells`, `PerkConstants.GetReleasedPerks`, `MinionConstants.GetActiveMinions` (dumped with agent.js `constantLists`, carried in data.js `lists`).
+- **ListExtensions random helpers**: pick one = `list[Next(0, count)]`; take with replacement = that, Amount times; take unique = partial Fisher-Yates from the front with `Next(i, count)`; shuffle = Fisher-Yates from the end with `Next(0, n)`.
+- **PerkCatalogueRandom**: NegativeRisk ≥ 1 skips the roll and picks a negative perk; otherwise `NextDouble() < NegativeRisk` decides. Positive perks come one per released spell (so duplicates weight the pick).
+- **MinionCatalogueTriggerTarget** reads `CopyAttack` twice and never `CopyHealth`, so CopyAttack copies both stats.
+- **Removable buffs** (GiveMinionBuff Duration 2): per-source records in MinionModel.RemoveableBuffs; damage (`MinionExtensions.Damage`) and SetMinionStats use them up via `DamageRemovableBuffs`, so a later removal takes back only what is left.
+- **EffectBalance** works in float32 and rounds with `Math.Round` (half to even, the native helper at 0x1800036a0).
+- **Aura repeats**: `BuildRepeatActivations` adds activations for aura 5 (and 13 / 0 / 4 in cases not yet ported) at the aura holder's level.
+- **Empty systems**: `CheckAuraSystem.Execute` and `FinalCleanupMutator.Execute` are `RET` in this build.
+- **Ability 839** reverses ailments (TryDamage, Activate) and exempts a pet from perk 121's buff cancel.
+- **TriggerEvent.Force.New(source)** returns the subclass `Force+WithSource` when a source is given.
+- **Open**: the board's Pack / OpponentPack are not in the recordings (enums); the harness leaves them at 0 (Turtle). Matching Find battles agree.
