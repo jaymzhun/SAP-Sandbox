@@ -338,7 +338,8 @@
     // ---- 0..169, in BoardResolver.get_AllSystems order
     sys('PhaseInitiateGroupSystem', (e) => e.cls === 'InitiatePhaseGroupEvent', (e) => { const g = B.phases[e.Group]; if (g && g.length) B.add(g[0]); });
     for (let i = 1; i <= 5; i++) stub(['', 'Collector<MinionJumpAttackStart>', 'Collector<PlayMinionResult>', 'Collector<ChargedMinionPartially>', 'Collector<RollShopResult>', 'Collector<ChangeFreeRolls>'][i]);
-    S[1].accepts = (e) => e.cls === 'MinionJumpAttackStart'; S[3].accepts = (e) => e.cls === 'ChargedMinionPartially';
+    S[1].accepts = (e) => e.cls === 'MinionJumpAttackStart'; S[2].accepts = (e) => e.cls === 'PlayMinionResult'; S[3].accepts = (e) => e.cls === 'ChargedMinionPartially';
+    S[4].accepts = (e) => e.cls === 'RollShopResult'; S[5].accepts = (e) => e.cls === 'ChangeFreeRolls'; // collectors: the event is only recorded
     sys('Collector<IDone>', (e) => e.cls === 'Done', () => {});
     sys('Collector<IFail>', (e) => e.cls === 'Fail', () => {});
     // SetBattleStateMutator.*: BoardModel.BattlePhase (+0x25c): StartBattle 0, Trade 1, Move 2, Cleanup 3

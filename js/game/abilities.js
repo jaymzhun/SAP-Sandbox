@@ -398,7 +398,7 @@
       const keys = [];
       for (const o of f.Orders || []) {
         if (o === 2 || o === 3) { if (!owner) continue; keys.push([(m) => Math.abs(owner.Point.x - m.Point.x), o === 2]); continue; }
-        if (o === 18) { out = out.filter((m) => hasDeathEffect(m)); continue; } // OrderMinions 18 is Where(HasDeathEffect)
+        if (o === 18) { keys.push([(m) => (hasDeathEffect(m) ? 1 : 0), true]); continue; } // OrderMinions 18: OrderByDescending(HasDeathEffect) (FUN_180f855f0, the same sort as the perk 28/36 keys)
         if (o === 16 || o === 17) unported('MinionFinder order ' + o);
         const k = ORDER_KEYS[o]; if (!k) unported('MinionFinder order ' + o); keys.push(k);
       }
@@ -664,7 +664,9 @@
     const want = TRIGGER_EVENT[t]; if (!want) return unported(t);
     if (!e || e.cls !== want) return false;
     if (!byEvent(t, tr, e)) return false;
-    const id = t === 'TriggerExpGained' ? e.TargetId : sourceOf(e);
+    // the pet a trigger is about: TargetId for ExpGained and PlayedSpellOn (whose SourceId is nullable, so it is not the trigger source;
+    // battle #93 of corpus2 triggers on the fed pet), else the event's source
+    const id = t === 'TriggerExpGained' || t === 'TriggerPlayedSpellOn' ? e.TargetId : sourceOf(e);
     const m = id ? B.board.findMinion(id) : null;
     if (tr.MinionFinder && !predicate(tr.MinionFinder, B, m, owner)) return false;
     return true;
@@ -676,6 +678,7 @@
       case 'TriggerKill': return !idEq(e.SourceId, e.TargetId);
       case 'TriggerAttack': return tr.OnlyAttackType == null || (e.AttackType || 0) === tr.OnlyAttackType;
       case 'TriggerBeforeAttack': if (tr.AttackType != null && (e.AttackType || 0) !== tr.AttackType) return false; if (tr.FirstAttack != null && !!e.IsFirstAttack !== tr.FirstAttack) return false; return true;
+      case 'TriggerPlayedSpellOn': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.SpellFilter) unported('TriggerPlayedSpellOn.SpellFilter'); return true;
       case 'TriggerCharged': return e.Ability === tr.Ability;
       case 'TriggerPetActivated': return tr.Ability == null || e.AbilityEnum === tr.Ability;
       case 'TriggerPerkGained': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.Perk != null && e.Perk !== tr.Perk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; return true;
