@@ -432,7 +432,8 @@
   }
   function conditionBase(c, ca, owner) {
     const B = ca.B; const t = short(T(c));
-    const pa = { B, SourceId: ca.OwnerId, TriggerSourceId: sourceOf(ca.TriggerEvent) || null, TriggerTargetId: targetOf(ca.TriggerEvent) || null, Random: ca.Random, TriggerEvent: ca.TriggerEvent };
+    // ParameterArgs(ConditionArgs): Source and Target are both the owner
+    const pa = { B, SourceId: ca.OwnerId, TargetId: ca.OwnerId, TriggerSourceId: sourceOf(ca.TriggerEvent) || null, TriggerTargetId: targetOf(ca.TriggerEvent) || null, Random: ca.Random, TriggerEvent: ca.TriggerEvent };
     switch (t) {
       case 'ConditionBattle': return !!B.board.IsBattle;
       case 'ConditionAll': return (c.Conditions || []).every((x) => conditionCheck(x, ca));

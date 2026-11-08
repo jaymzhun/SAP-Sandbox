@@ -63,7 +63,7 @@ if (args.includes("--summary")) {
 }
 for (const r of fails.slice(0, show)) {
   const names = (side) => (r.spec[side] || []).map((p) => p.name || p.enum).join(",");
-  console.log(`\n#${r.i} [${names("player")} vs ${names("opponent")}] outcome game=${r.wantOutcome} js=${r.outcome} first diff at line ${r.k}${r.err ? " ERROR " + r.err.stack.split("\n").slice(0, 3).join(" | ") : ""}`);
+  console.log(`\n#${r.i} [${names("player")} vs ${names("opponent")}] outcome game=${r.wantOutcome} js=${r.outcome} first diff at line ${r.k}${r.err ? " ERROR " + r.err.stack.split("\n").slice(0, +(process.env.STACK || 3)).join(" | ") : ""}`);
   for (let j = Math.max(0, r.k - 3); j < r.k + 4; j++) {
     const a = r.want[j], b = r.got[j];
     if (a === undefined && b === undefined) break;
