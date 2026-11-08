@@ -642,7 +642,27 @@
     if (!ab) return;
     if (abilityTriggered(ab, model, t.TriggerEvent, t.Force, B, rand, t.MinionId).Status !== 0) return;
     const acts = buildRepeatActivations(B, e, minion, model, ab, rand);
-    if (ab.Enum === 928 || hasEffect(model, 'EffectJumpAttack')) unported('ActivateAbilityTry jump-attack precompute');
+    // Jump attacks are run once ahead (Ability.Activate, consuming RNG) to fire BeforeAttack for both pets of each jump, and the
+    // activation keeps those results (PrecomputedEvents). Same skip-every-other indexing as the transform pass below.
+    if (ab.Enum === 928 || hasEffect(model, 'EffectJumpAttack')) {
+      for (let i = 0; i < acts.length; i++) {
+        const a = acts[i];
+        const r = activate(B, ab, model, a.TriggerEvent, a.Force, a.MinionId, a.Aim, B.randomizer(a.Owner), a.EffectMultiplier, false, false);
+        if (!r || !r.length) return;
+        for (const res of r) {
+          const jumps = flattenEvents([res]).filter((x) => x.cls === 'Try' && x.Event && x.Event.cls === 'MinionJumpAttack');
+          if (!jumps.length) continue;
+          for (const x of jumps) {
+            const id = ++B.jumpAttackCounter; // ActivateAbilityTrySystem static counter
+            const j = x.Event; const thrower = B.board.findMinion(j.TargetToThrow), target = B.board.findMinion(j.TargetToThrowAt);
+            const b1 = ev('BeforeAttack', { AttackerId: j.TargetToThrow, DefenderId: j.TargetToThrowAt, IsFirstAttack: thrower.AttackCountsThisBattle === 0, AttackType: 1, JumpAttacker: j.TargetToThrow, JumpAttackId: id });
+            const b2 = ev('BeforeAttack', { AttackerId: j.TargetToThrowAt, DefenderId: j.TargetToThrow, IsFirstAttack: target.AttackCountsThisBattle === 0, AttackType: 1, JumpAttacker: j.TargetToThrow, JumpAttackId: id });
+            tryActivate(B, b1); tryActivate(B, b2);
+          }
+          a.PrecomputedEvents = r; B.add(wrap('Try', a)); acts.splice(i, 1);
+        }
+      }
+    }
     // Transforms are run once ahead (Ability.Activate, consuming RNG) to fire BeforeTransform on the pets about to change.
     // Only every other activation gets this pass: each one handled is removed from the list while the index still advances.
     if (ab.Enum === 941 || ab.Enum === 931 || hasEffect(model, 'EffectTransform')) {
@@ -910,6 +930,15 @@
         const src = sa.SourceId ? sa.B.board.findMinion(sa.SourceId) : null;
         if (src) (src.LastSummoned = src.LastSummoned || []).push(sa.TargetId);
         return [wrap('Try', t)];
+      }
+      case 'EffectJumpAttack': {
+        // EffectJumpAttack.OnSingle: the source jumps at the target
+        if (!sa.SourceId) return null; // EffectUtility.NoEffect
+        if (eff.DamageMultiplier != null || eff.Repeats != null) unported('EffectJumpAttack DamageMultiplier/Repeats');
+        const j = ev('MinionJumpAttack', { Owner: 0, /* the ctor sets no owner */ TargetToThrow: sa.SourceId, FailCause: 0, ThrowerSourceId: sa.SourceId, TargetToThrowAt: sa.TargetId,
+          SplashDamage: eff.SplashDamage ?? null, DamageMultiplier: eff.DamageMultiplier ?? null, FixedDamage: eff.FixedDamage ?? null });
+        if (idEq(sa.SourceId, sa.TargetId)) return [wrap('Fail', j)]; // Fails.SourceAndTargetIsSame
+        return [wrap('Try', j)];
       }
       case 'EffectPush': {
         // EffectPush.OnSingle; To = 1 pushes to a random cell of the target's side
@@ -1238,6 +1267,21 @@
       B.add(wrap('Do', ev('AbilityTriggered', { Owner: m.Owner, Ability: 686, Level: 1, MinionId: m.Id, Aim: null, TriggerEvent: r.TriggerEvent, UpdateLevel: false, Type: 0, Force: true,
         RepeatFromAuraDisabled: false, DisableAfterTemp: false, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
     },
+    /**
+     * ThrowMinionMutator (Try<MinionJumpAttack>): the thrown pet hits the target (splash/fixed damage, attack type 1), then takes the
+     * target's hit back with adjacents ignored. Neither attacks with health. If either is gone, both just count an attack.
+     */
+    ThrowMinionMutator(B, e) {
+      const j = e.Event; const board = B.board;
+      const thrown = board.findLiveMinion(j.TargetToThrow), at = board.findLiveMinion(j.TargetToThrowAt);
+      if (!thrown || !at) {
+        for (const id of [j.TargetToThrow, j.TargetToThrowAt]) { const m = board.findMinion(id); if (m) { m.AttackCountsThisTurn++; if (board.IsBattle) m.AttackCountsThisBattle++; } }
+        return;
+      }
+      B.add(B.doTradeDamage(at.Id, thrown.Id, false, { splash: j.SplashDamage, multiplier: j.DamageMultiplier, fixed: j.FixedDamage, attackType: 1 }));
+      B.add(B.doTradeDamage(thrown.Id, at.Id, false, { ignoreAdjacents: true, attackType: 1 }));
+      B.add(wrap('Done', j));
+    },
     /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
     PushMutator(B, e) {
       const pm = e.Event; const board = B.board;
@@ -1415,8 +1459,8 @@
   function addAttack(m, amount, dur) { m.Attack.Add(amount, dur !== 0); if (m.Attack.Permanent < 1) m.Attack.Set(1, false); }
   /** DamageMinion.Setup: remember HoneydewMelon/Guava/MapleSyrup holders (perks 93, 105, 110) and their multipliers. */
   function setupDamage(dm, B, source, target) {
-    if (source && [93, 105, 110].includes(source.Perk)) { dm.AttackerInitialPerk = source.Perk; dm.AttackerInitialPerkMultiplier = source.PerkMultiplier ?? 1; }
-    if (target && [93, 105, 110].includes(target.Perk)) { dm.DefenderInitialPerk = target.Perk; dm.DefenderInitialPerkMultiplier = target.PerkMultiplier ?? 1; }
+    if (source && [93, 105, 110].includes(source.Perk)) { dm.AttackerInitialPerk = source.Perk; dm.AttackerInitialPerkMultiplier = getPerkMultiplier(B, source); }
+    if (target && [93, 105, 110].includes(target.Perk)) { dm.DefenderInitialPerk = target.Perk; dm.DefenderInitialPerkMultiplier = getPerkMultiplier(B, target); }
   }
 
   const triggers = {
@@ -1444,6 +1488,8 @@
       const pk = PERKS()[g.Perk]; if (!pk || pk.spell == null || !pk.positive) return;
       B.add(ev('PlayedSpellOn', { Owner: g.Owner, Spell: pk.spell, TargetId: g.TargetId, SourceId: g.Source, Shop: false, Disabled: g.TriggersDisabled }));
     },
+    /** TriggerJumpAttackSystem (Done<MinionJumpAttack>): the jumper counts as pushed (type 1) */
+    TriggerJumpAttackSystem(B, e) { B.add(ev('Pushed', { SourceId: e.Event.TargetToThrow, Type: 1 })); },
     /** TriggerPushMinionSystem (Done<PushMinion>) */
     TriggerPushMinionSystem(B, e) { const pm = e.Event; B.add(ev('Pushed', { SourceId: pm.TargetId, Type: pm.Type || 0 })); },
     /** TriggerPushMinionFailSystem (Fail<PushMinion>): the resisting perk is used up */
@@ -1470,7 +1516,7 @@
     abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) unported('AbilityCleanup PersistTargets'); },
     mutators, triggers,
     summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
-    findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier,
+    findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier, setupDamage,
     summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
     attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
   };

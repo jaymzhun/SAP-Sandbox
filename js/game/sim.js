@@ -94,6 +94,7 @@
         2: [PHASE('PhaseTrade', 2), PHASE('PhaseEmptyFront', 2), PHASE('PhaseMove', 2), PHASE('PhaseHasCompletedCleanup', 2)],
         3: [PHASE('PhaseFinalCleanup', 3)],
       };
+      this.jumpAttackCounter = 0;
       this.systems = buildSystems(this);
     }
     randomizer(owner) { return this.rand[owner]; }
@@ -309,20 +310,28 @@
       c.ResultingEvents.push(wrap('Done', inner));
       return c.ResultingEvents;
     }
-    /** BoardExtensions.DoTradeDamage(board, target, source, ...) -> Try<DamageMinion> list (one hit, two with perk 4) */
-    function doTradeDamage(targetId, sourceId, useHealth) {
+    /**
+     * BoardExtensions.DoTradeDamage(board, defender, attacker, disableCrits, doHealthDamage, splashDamage?, ignoreAdjacents?, damageMultiplier?, fixedDamage?, attackType)
+     * -> Try<DamageMinion> list (one hit, two with perk 4); a hit of 0 is left out. o: { splash, ignoreAdjacents, multiplier, fixed, attackType }
+     */
+    function doTradeDamage(targetId, sourceId, useHealth, o = {}) {
       const out = []; const src = board.findMinion(sourceId, true, true); const tgt = board.findMinion(targetId, true, true);
       if (!src) return out;
       const hits = (src.Perk === 4 ? 1 : 0) + 1;
       for (let i = 0; i < hits; i++) {
-        const amount = useHealth ? src.Health.Total : src.Attack.Total;
-        const inner = ev('DamageMinion', { Owner: src.Owner, Amount: amount, Range: 0, TargetId: targetId, SourceId: src.Id, DamageType: 0, AttackType: 0,
-          AttackerInitialPerk: src.Perk, AttackerInitialPerkMultiplier: src.PerkMultiplier ?? 1, DefenderInitialPerk: tgt ? tgt.Perk : null, DefenderInitialPerkMultiplier: tgt ? (tgt.PerkMultiplier ?? 1) : 1 });
+        let amount = useHealth ? src.Health.Total : src.Attack.Total;
+        if (o.multiplier != null) throw Object.assign(new Error('Unported: DoTradeDamage damageMultiplier'), { unported: 'DoTradeDamage damageMultiplier' });
+        if (o.fixed != null) amount = o.fixed;
+        const inner = ev('DamageMinion', { Owner: src.Owner, Amount: amount, Range: 0, TargetId: targetId, SourceId: src.Id, DamageType: 0, AttackType: o.attackType || 0,
+          SplashDamage: o.splash ?? null, AttackerInitialPerk: null, AttackerInitialPerkMultiplier: 1, DefenderInitialPerk: null, DefenderInitialPerkMultiplier: 1 });
+        if (hooks.setupDamage) hooks.setupDamage(inner, B, src, tgt);
+        if (o.ignoreAdjacents) inner.AdjacentDisabled = true;
         if (B.state.DisableCrits) inner.CriticalDisabled = true;
         if (inner.Amount > 0) out.push(wrap('Try', inner));
       }
       return out;
     }
+    B.doTradeDamage = doTradeDamage;
 
     // ---- 0..169, in BoardResolver.get_AllSystems order
     sys('PhaseInitiateGroupSystem', (e) => e.cls === 'InitiatePhaseGroupEvent', (e) => { const g = B.phases[e.Group]; if (g && g.length) B.add(g[0]); });
@@ -470,7 +479,12 @@
       B.add(ev('Attack', { AttackerId: t.attackerId, DefenderId: t.defenderId }));
       B.add(ev('Attack', { AttackerId: t.defenderId, DefenderId: t.attackerId }));
     });
-    sys('TriggerAttackSystem.JumpAttack', (e) => isDone(e, 'MinionJumpAttack'), (e) => hooks.triggers && hooks.triggers['TriggerAttackSystem.JumpAttack'] && hooks.triggers['TriggerAttackSystem.JumpAttack'](B, e));
+    // 127 TriggerAttackSystem.JumpAttack: both pets get an Attack (type 1)
+    sys('TriggerAttackSystem.JumpAttack', (e) => isDone(e, 'MinionJumpAttack'), (e) => {
+      const j = e.Event;
+      B.add(ev('Attack', { AttackerId: j.TargetToThrow, DefenderId: j.TargetToThrowAt, AttackType: 1 }));
+      B.add(ev('Attack', { AttackerId: j.TargetToThrowAt, DefenderId: j.TargetToThrow, AttackType: 1 }));
+    });
     // 128 TriggerKillSystem
     sys('TriggerKillSystem', (e) => isDone(e, 'MarkMinionDead'), (e) => {
       const d = e.Event; if (d.TriggerDisabled || !d.SourceId) return;
