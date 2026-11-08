@@ -654,7 +654,7 @@
       for (const tid of targets || []) {
         const sa = { B, Level: ab.Level, Owner: owner.Owner, TargetId: tid, SourceId: owner.Id, TriggerEvent: trig, Random: rand, EffectMultiplier: effectMultiplier, Reversed: reversed };
         if (effects) { const r = effectSingle(pair.Effect, sa); if (r && r.length) perTarget.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: pair.Effect } })); }
-        else { const sub = []; for (const x of pair.Effect.Effects || []) { const r = effectSingle(x, sa); if (r && r.length) sub.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: x } })); } if (sub.length) perTarget.push(wrapList(sub)); }
+        else { const sub = []; for (const x of pair.Effect.Effects || []) { const r = effectSingle(x, sa); if (r && r.length) sub.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: x } })); } if (sub.length) outer.push(wrapList(sub)); } // a composite target's wrapper goes straight to the outer list
       }
       if (perTarget.length) outer.push(ev('CastEffectsParallel', { CastEffects: perTarget }));
       if (ab.PersistTargets) unported('PersistTargets');
