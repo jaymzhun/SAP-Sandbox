@@ -123,6 +123,11 @@
         if (!p.MinionFinder) return 0; const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
         return findMinions(p.MinionFinder, pa.B, src, null, pa.Random).length;
       }
+      case 'ParameterWhenValue': { // ParameterWhenValue.GetBaseValue: TrueValue when Check(TestOperator, TestValue1, TestValue2), else FalseValue
+        if (!p.TestValue1 || !p.TestValue2) return unported('ParameterWhenValue without test values');
+        const v = opCheck(p.TestOperator || 0, paramValue(p.TestValue1, pa), paramValue(p.TestValue2, pa)) ? p.TrueValue : p.FalseValue;
+        return v ? paramValue(v, pa) : unported('ParameterWhenValue without a result value');
+      }
       case 'ParameterWhenTarget': { // TrueValue when the Origin pet passes MinionFinder, else FalseValue (0 when it is null)
         const id = [pa.SourceId, pa.TargetId, pa.TriggerSourceId, pa.TriggerTargetId][p.Origin ?? 0] || null;
         const m = id ? pa.B.board.findMinion(id) : null;
@@ -511,6 +516,11 @@
         if (!t.ImmuneToSilly && owner && isSilly(B, owner)) { const live = board.findLiveMinions(); return [live[ta.Random.next(0, live.length)].Id]; }
         const x = targetOf(ta.TriggerEvent); if (x !== undefined) return x ? [x] : [];
         return owner ? (owner.LastTargetsThisTurn || []).slice() : []; // no ITriggerTarget: the owner's LastTargetsThisTurn (+0x148)
+      }
+      case 'TargetsAim': { // TargetsAim.GetTargetsRaw: the aim, if any (Left / Right add its neighbours)
+        if (!ta.Aim) return [];
+        if (t.Left || t.Right) unported('TargetsAim Left/Right');
+        return [ta.Aim];
       }
       case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
       case 'TargetsSilly': { const sub = owner && owner.Perk === 75 ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // perk 75 (Silly)
@@ -994,7 +1004,7 @@
 
   // ---------------------------------------------------------------- Ability.Activate
   function activate(B, ab, model, trig, force, ownerId, aim, rand, effectMultiplier, perkOnly, reversed) {
-    if (!ab || !ab.Pairs || !ab.Trigger) return null;
+    if (!ab || !ab.Trigger) return null; // an ability without Pairs (dropped as empty by the data build) still activates, with no effects
     const board = B.board; const owner = board.findMinion(ownerId);
     if (!owner || owner.Location === 6) return null;
     if (!reversed && ab.Perk != null) { const pk = (D.perks || {})[ab.Perk]; if (pk && !pk.positive && B.hooks.ailmentReversed) reversed = B.hooks.ailmentReversed(B, owner); }
@@ -1011,7 +1021,7 @@
     owner.LastSummoned = [];
     const parallel = !!ab.ForceParallelEffectsRenderings;
     const wrapList = (list) => ev(parallel ? 'CastEffectsParallel' : 'CastEffectsSequentially', { CastEffects: list });
-    for (const pair of ab.Pairs) {
+    for (const pair of ab.Pairs || []) {
       if (perkOnly && !(pair.Effect && pair.Effect.PerkSource != null)) continue;
       const ta = { B, TriggerEvent: trig, OwnerMinion: owner, Aim: aim, Random: rand, Reversed: reversed };
       const targets = getTargets(pair.Targets, ta);
@@ -1033,6 +1043,89 @@
     return [wrapList(outer)];
   }
 
+  // ---------------------------------------------------------------- Spells
+  /** a new SpellModel (SpellModel(ItemId, SpellEnum)); BoardExtensions.GenerateItemId takes the board's next unique number */
+  function newSpell(B, e) {
+    const tpl = (D.spells || {})[e]; if (!tpl) unported('spell ' + e + ' (not in the data)');
+    return { cls: 'SpellModel', Id: M.itemId('M', B.board.nextUnique()), Enum: e, Price: tpl.Price, Frozen: false, Power: null, Stolen: null, Conjured: null, Relic: null, Buffed: false, Links: null };
+  }
+  /** SpellCatalogueBase.GetSpells: the catalogue's spells, then Price (a cap), Discount, Frozen and Power */
+  function spellCatalogue(c, ca) {
+    const t = short(T(c)); let out;
+    switch (t) {
+      case 'SpellCatalogueList': {
+        // SpellCatalogueList.GetSpellsBase: Spells within TierMin / TierMax (and unlocked or not, TierUnlocked), then Amount picks
+        // list[Next(0, count)]; without AllowDuplicates a picked spell leaves the list
+        const cand = [];
+        for (const e of c.Spells || []) {
+          const tpl = (D.spells || {})[e]; if (!tpl) unported('spell ' + e + ' (not in the data)');
+          if (c.TierMin != null && tpl.Tier < c.TierMin) continue;
+          if (c.TierMax != null && c.TierMax < tpl.Tier) continue;
+          if (c.TierUnlocked != null && c.TierUnlocked !== (tpl.Tier <= (ca.B.board.Tier || 0))) continue;
+          cand.push(e);
+        }
+        out = [];
+        for (let i = 0; i < ca.Amount; i++) {
+          if (!cand.length) unported('SpellCatalogueList with nothing to pick');
+          const e = cand[ca.Random.next(0, cand.length)];
+          out.push(newSpell(ca.B, e));
+          if (!c.AllowDuplicates) cand.splice(cand.indexOf(e), 1);
+        }
+        break;
+      }
+      default: return unported(t);
+    }
+    for (const sp of out) {
+      if (c.Price != null && c.Price < sp.Price) sp.Price = c.Price;
+      if (c.Discount != null) sp.Price -= c.Discount;
+      if (c.Frozen != null) sp.Frozen = c.Frozen;
+      if (c.Power != null) sp.Power = c.Power;
+    }
+    return out;
+  }
+  /** BoardPartExtensions.CanAimSpellAt: the spell's Aim (no owner pet, Owner 1, no random) includes the target; no Aim is false */
+  function canAimSpellAt(B, sp, id) {
+    const tpl = (D.spells || {})[sp.Enum]; if (!tpl || !tpl.Aim) return false;
+    const r = getTargets(tpl.Aim, { B, TriggerEvent: null, OwnerMinion: null, OwnerSpell: sp, Owner: 1, Aim: id, Random: null, Reversed: false });
+    return !!r && r.some((x) => idEq(x, id));
+  }
+  /** BoardExtensions.GetSpellMultiplier: 1, plus (no source) the level of every pet ability 89 that can trigger */
+  function spellMultiplier(B, sourceId) {
+    let m = 1; if (sourceId) return m;
+    for (const pet of B.board.cells) {
+      if (!pet) continue;
+      for (const model of pet.Abilities || []) if (model.Enum === 89 && canMinionAbilityTrigger(B, model, getAbility(89, model.Level))) m += model.Level;
+    }
+    return m;
+  }
+  /**
+   * Spell.Activate(board, owner, spell, source, aim, random): per pair, targets from TargetsArgs (no trigger, no owner pet, the spell,
+   * the owner, the aim); effect args are Level 1 and Owner 1 (as in the game) with the source, the aim and the spell. The global
+   * result is a CastEffect; the per-target results go in one CastEffectsParallel (added even when empty); the first pair then adds
+   * Done<PlayedSpellOn> per target. A pair without targets ends the activation unless AlwaysActivateAllPairs.
+   * (MinionModel.SpellMemory is set for a target whose template has a RememberSpells ability; none does in this build.)
+   */
+  function activateSpell(B, tpl, owner, sp, sourceId, aimId, rand) {
+    const result = []; const pairs = tpl.Pairs || [];
+    const cast = (r, eff) => ev('CastEffect', { Owner: owner, EffectResult: { Events: r, Effect: eff } });
+    for (let i = 0; i < pairs.length; i++) {
+      const pair = pairs[i];
+      if (short(T(pair.Effect)) === 'EffectComposite') unported('spell with EffectComposite');
+      const targets = getTargets(pair.Targets, { B, TriggerEvent: null, OwnerMinion: null, OwnerSpell: sp, Owner: owner, Aim: aimId, Random: rand, Reversed: false });
+      const ga = { B, Level: 1, Owner: 1, TargetIds: targets, SourceId: sourceId, TriggerEvent: null, Random: rand, EffectMultiplier: null, Reversed: false, AimId: aimId, Spell: sp };
+      const r = effectGlobal(pair.Effect, ga); if (r && r.length) result.push(cast(r, pair.Effect));
+      if (!targets || !targets.length) { if (!tpl.AlwaysActivateAllPairs) return result; continue; }
+      const per = [];
+      for (const tid of targets) {
+        const sa = { B, Level: 1, Owner: 1, TargetId: tid, SourceId: sourceId, TriggerEvent: null, Random: rand, EffectMultiplier: null, Reversed: false, Spell: sp };
+        const r2 = effectSingle(pair.Effect, sa); if (r2 && r2.length) per.push(cast(r2, pair.Effect));
+      }
+      result.push(ev('CastEffectsParallel', { CastEffects: per }));
+      if (i === 0) for (const tid of targets) result.push(wrap('Done', ev('PlayedSpellOn', { Owner: owner, TargetId: tid, Spell: sp })));
+    }
+    return result;
+  }
+
   // ---------------------------------------------------------------- Effects (OnGlobal / OnSingle)
   const singleParamArgs = (sa) => ({ B: sa.B, TargetId: sa.TargetId, SourceId: sa.SourceId, TriggerSourceId: sourceOf(sa.TriggerEvent) || null, TriggerTargetId: targetOf(sa.TriggerEvent) || null,
     AimId: null, Random: sa.Random, TriggerEvent: sa.TriggerEvent, Owner: sa.Owner });
@@ -1042,7 +1135,18 @@
   const globalParamArgs = (ga) => ({ B: ga.B, SourceId: ga.SourceId, TargetId: null, TriggerSourceId: sourceOf(ga.TriggerEvent) || null, TriggerTargetId: targetOf(ga.TriggerEvent) || null,
     AimId: ga.AimId ?? null, Random: ga.Random, TriggerEvent: ga.TriggerEvent, Owner: ga.Owner });
   /** EffectBase.ActivateGlobal -> OnGlobal. A Silly source (not ImmuneToSilly) first flips a coin for the effect's owner. */
-  function effectGlobal(eff, ga) {
+  function effectGlobal(eff, ga) { return withSpellSource(eff, effectGlobalRaw(eff, ga)); }
+  /**
+   * EffectBase.ActivateSingle / ActivateGlobal, after OnSingle / OnGlobal: every resulting event (and a wrapper's inner event)
+   * that has a SourceSpell (ISourceSpell) gets the effect's SpellSource, null included.
+   */
+  const SPELL_SOURCE_EVENTS = new Set(['BuffMinion', 'ChangeMinionMana', 'ExchangeStats', 'ForceActivateAbility', 'GiveMinionPerk', 'SetMinionStats', 'StealMinionPerk', 'SwapStats']);
+  function withSpellSource(eff, r) {
+    if (!r || !r.length) return r;
+    for (const e of r) for (const x of [e, e && e.Event]) if (x && SPELL_SOURCE_EVENTS.has(x.cls)) x.SourceSpell = eff.SpellSource ?? null;
+    return r;
+  }
+  function effectGlobalRaw(eff, ga) {
     const t = short(T(eff));
     // EffectBase.ActivateGlobal: a Silly source flips a coin (Randomizer.FiftyFifty: Next(2) == 1); on tails the effect's owner
     // becomes the other side (the args object is changed in place)
@@ -1144,7 +1248,8 @@
       ForceActivateAbility: false, PushDirection: null })));
     B.add(wrap('Do', ev('ChangeTrumpets', { Owner: o, SourceId: M.itemId('M', 0), OldTrumpets: n, NewTrumpets: 0, DeltaTrumpets: -n, NewPerk: null, Finale: true })));
   }
-  function effectSingle(eff, sa) {
+  function effectSingle(eff, sa) { return withSpellSource(eff, effectSingleRaw(eff, sa)); }
+  function effectSingleRaw(eff, sa) {
     const t = short(T(eff)); const pa = singleParamArgs(sa);
     switch (t) {
       case 'EffectRememberMinion': { // EffectRememberMinion.OnSingle: the source remembers the target
@@ -1157,6 +1262,19 @@
         if (!sa.SourceId) return null;
         return [wrap('Try', ev('StealMinionPerk', { Owner: sa.Owner, Source: sa.SourceId, Target: sa.TargetId, TargetPerkStays: !!eff.TargetPerkStays, IncludeDestroyed: !!eff.IncludeDestroyed,
           IncludeDead: !!eff.IncludeDead, MustBeNew: !!eff.MustBeNew, Result: null, ResultPerk: null, SourceSpell: null }))];
+      }
+      case 'EffectPlaySpell': {
+        // EffectPlaySpell.OnSingle: the catalogue's spells, each conjured (with SpellPower as its Power) and played by the source at
+        // the target: Try<PlaySpell>(Owner, Author 1, Source = source, Target = target)
+        if (!eff.SpellCatalogue) return null;
+        const amount = eff.AmountParameter ? paramValue(eff.AmountParameter, pa) : eff.Amount || 0;
+        const out = [];
+        for (const sp of spellCatalogue(eff.SpellCatalogue, { B: sa.B, Amount: amount, SourceId: sa.SourceId || null, Random: sa.Random })) {
+          sp.Conjured = true;
+          if (eff.SpellPower) sp.Power = paramValue(eff.SpellPower, pa);
+          out.push(wrap('Try', ev('PlaySpell', { Owner: sa.Owner, Author: 1, Spell: sp, Source: sa.SourceId || null, Target: sa.TargetId, Steal: false, Power: null })));
+        }
+        return out;
       }
       case 'EffectGivePower': { // EffectGivePower.OnSingle (Amount defaults to 1)
         const amt = eff.Amount ? paramValue(eff.Amount, pa) : 1;
@@ -1179,10 +1297,17 @@
         let atk = eff.Attack ? paramValue(eff.Attack, pa) : 0, atkR = eff.AttackRange ? paramValue(eff.AttackRange, pa) : 0;
         let hp = eff.Health ? paramValue(eff.Health, pa) : 0, hpR = eff.HealthRange ? paramValue(eff.HealthRange, pa) : 0;
         const restore = eff.HealthRestore ? paramValue(eff.HealthRestore, pa) : 0;
+        if (sa.Spell) {
+          // played by a spell: the spell is Buffed, and the stats are multiplied by BoardExtensions.GetSpellMultiplier plus the
+          // spell's Power (EffectSingleArgs.SpellMultiplier)
+          sa.Spell.Buffed = true;
+          let m = spellMultiplier(sa.B, sa.SourceId); if (sa.Spell.Power != null) m += sa.Spell.Power;
+          atk *= m; atkR *= m; hp *= m; hpR *= m;
+        }
         if (sa.EffectMultiplier != null) { atk *= sa.EffectMultiplier; atkR *= sa.EffectMultiplier; hp *= sa.EffectMultiplier; hpR *= sa.EffectMultiplier; }
         const b = ev('BuffMinion', { Owner: sa.Owner, TargetId: sa.TargetId, Source: sa.SourceId, Attack: atk, AttackRange: atkR, Health: hp, HealthRange: hpR, HealthRestore: restore,
           HealthRestoreAbility: eff.HealthRestoreAbility || 0, Duration: eff.Duration || 0, Future: !!eff.Future, Trigger: sa.TriggerEvent,
-          AttackParameter: eff.LateParameters ? eff.Attack : null, HealthParameter: eff.LateParameters ? eff.Health : null });
+          AttackParameter: eff.LateParameters ? eff.Attack : null, HealthParameter: eff.LateParameters ? eff.Health : null, SourceSpell: null });
         if (!sa.Reversed) return [wrap('Try', b)];
         unported('EffectGiveBuff reversed');
       }
@@ -1897,6 +2022,25 @@
       }
       B.add(wrap('Done', bs));
     },
+    /**
+     * PlaySpellMutator (Try<PlaySpell>): BoardExtensions.PlaySpell (CanPlaySpell: a spell with an Aim needs a live pet it can aim
+     * at; the target must be aimable), then Power += the event's Power, Spell.Activate once, and Done. A conjured spell skips the
+     * shop, the spell history and the gold (no SpendGold).
+     */
+    PlaySpellMutator(B, e) {
+      const p = e.Event; const sp = p.Spell; const tpl = (D.spells || {})[sp.Enum]; if (!tpl) unported('spell ' + sp.Enum + ' (not in the data)');
+      if (p.Author === 0) unported('PlaySpell by the player');
+      if (!sp.Conjured) unported('PlaySpell of a shop spell');
+      if (tpl.Aim && !B.board.findLiveMinions().some((m) => canAimSpellAt(B, sp, m.Id))) return; // CanPlaySpellResult 4
+      if (p.Target && !canAimSpellAt(B, sp, p.Target)) return;
+      sp.Stolen = !!p.Steal; sp.Frozen = false;
+      if (tpl.GameCounter) unported('PlaySpell GameCounter');
+      const rand = B.randomizer(p.Owner);
+      sp.Power = (sp.Power ?? 0) + (p.Power ?? 0);
+      B.add(activateSpell(B, tpl, p.Owner, sp, p.Source || null, p.Target || null, rand));
+      if (sp.Links && sp.Links.length) unported('EscapeSpell');
+      B.add(wrap('Done', p));
+    },
     /** GiveMinionPowerMutator (Try<GiveMinionPower>): ResetFirst removes the power, then AddPower (no cap) */
     GiveMinionPowerMutator(B, e) {
       const g = e.Event; const m = B.board.findMinion(g.Target, !g.IncludeDestroyed, !g.IncludeDead); if (!m) return;
@@ -1978,7 +2122,7 @@
       if (t.ExtraAttack != null) atk += t.ExtraAttack;
       if (t.ExtraHealth != null) hp += t.ExtraHealth;
       n.Attack.Set(atk, false); n.Attack.Set(atkT, true); n.Health.Set(hp, false); n.Health.Set(hpT, true);
-      n.Mana = old.Mana; n.SellValue = old.SellValue;
+      n.Mana = old.Mana; n.SellValue = old.SellValue; n.RemoveableBuffs = old.RemoveableBuffs; // MinionModel +0x60, +0xe0, +0x160 carry over
       if (t.RemovePerkIf != null && n.Perk === t.RemovePerkIf) setPerk(n, null, 0, null, null);
       else if (t.Perk != null) setPerk(n, t.Perk, 0, null, null);
       else setPerk(n, old.Perk, old.PerkDuration, old.PerkMultiplier, old.PerkDurability);
@@ -2147,6 +2291,16 @@
       if (st.SourceSpell != null) return;
       const pk = PERKS()[st.ResultPerk]; if (!pk || pk.spell == null) return;
       B.add(ev('PlayedSpellOn', { Owner: st.Owner, Spell: pk.spell, TargetId: st.Source, SourceId: st.Target, Shop: false, Disabled: false }));
+    },
+    /** TriggerPlaySpellOnSystem (Done<PlayedSpellOn>): unless the spell is NonFood, PlayedSpellOn(owner, spell, target, Shop) */
+    TriggerPlaySpellOnSystem(B, e) {
+      const d = e.Event; const tpl = d.Spell && (D.spells || {})[d.Spell.Enum]; if (!tpl || tpl.NonFood) return;
+      B.add(ev('PlayedSpellOn', { Owner: d.Owner, Spell: d.Spell.Enum, TargetId: d.TargetId, SourceId: null, Shop: true, Disabled: false }));
+    },
+    /** TriggerPlaySpellSystem (Done<PlaySpell>): unless the spell is NonFood, PlaySpell(owner, spell, target) */
+    TriggerPlaySpellSystem(B, e) {
+      const d = e.Event; const tpl = d.Spell && (D.spells || {})[d.Spell.Enum]; if (!tpl || tpl.NonFood) return;
+      B.add(ev('PlaySpell', { Owner: d.Owner, Spell: d.Spell.Enum, TargetId: d.Target || null }));
     },
     TriggerPerkGainedSystem(B, e) {
       const g = e.Event; if (g.Perk == null) return;

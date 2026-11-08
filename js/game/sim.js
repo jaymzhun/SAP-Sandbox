@@ -217,7 +217,8 @@
       }
       if (c.IsSplash) { const n = A.PerkMultiplier - 1; if (0 < n) c.BaseMultiplier += n; }
       if (!c.IsAbility) {
-        for (const ref of (hooks.findAuras ? hooks.findAuras(B, am, 0) : [])) { c.Multiplier += ref.value; c.CriticalHit = true; }
+        // aura 9 (Monty: AuraDistance 0, so its own attacks); the aura number is the call's R8D (Ghidra drops it from the decompile)
+        for (const ref of (hooks.findAuras ? hooks.findAuras(B, am, 9) : [])) { c.Multiplier += ref.value; c.CriticalHit = true; }
         if (perkIs(A, 6)) c.FlatBonus += A.PerkMultiplier * 3;
         if (A.InitialPerk === 110) { c.FlatBonus += A.InitialPerkMultiplier * 5; if (perkIs(A, 110)) dmRemove(A); }
         else if (perkIs(A, 110)) { c.FlatBonus += A.PerkMultiplier * 5; dmRemove(A); }
@@ -417,7 +418,8 @@
     });
     sys('MinionAbilityDestroySystem', (e) => isW(e, 'Try', 'MinionAbilityDestroy'), (e) => hooks.abilityDestroy && hooks.abilityDestroy(B, e));
     stub('TriggerBeforeRollSystem');
-    sys('PlayedSpellOnMutator', (e) => isDone(e, 'PlayedSpellOn'), () => {});
+    // PlayedSpellOnMutator (Done<PlayedSpellOn>): the target's SpellCountsThisTurn (MinionModel +0x110) goes up
+    sys('PlayedSpellOnMutator', (e) => isDone(e, 'PlayedSpellOn'), (e) => { const m = board.findMinion(e.Event.TargetId); if (m) m.SpellCountsThisTurn = (m.SpellCountsThisTurn || 0) + 1; });
     sys('ForceActivateAbilitySystem', (e) => e.cls === 'ForceActivateAbility', (e) => hooks.forceActivateAbility && hooks.forceActivateAbility(B, e));
     sys('ForceActivatePerkSystem', (e) => e.cls === 'ForceActivatePerk', (e) => hooks.forceActivatePerk && hooks.forceActivatePerk(B, e));
     // 35..100: mutators reached only through abilities; each is provided by the abilities module (hooks.mutators[name]).
