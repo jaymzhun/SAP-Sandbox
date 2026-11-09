@@ -307,7 +307,7 @@ body.battle .tname { pointer-events: none; }
 .b-fx { z-index: 30; }
 
 /* pets */
-.bpet { position: absolute; width: 120px; height: 230px; transition: left .32s cubic-bezier(.3,.7,.3,1), top .32s; z-index: 5; }
+.bpet { position: absolute; width: 120px; height: 230px; transition: left .4s cubic-bezier(.455,.03,.515,.955), top .4s cubic-bezier(.455,.03,.515,.955); z-index: 5; }
 .bpet .bp-lvl { position: absolute; top: 0; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; }
 .bpet .bp-lvl > span { display: inline; }
 .bp-lvl { line-height: 1; }
@@ -505,3 +505,11 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .ctx-row > span { flex: 1; }
 .ctx-pic { width: 42px; height: 42px; object-fit: contain; }
 .ctx-pet { max-width: 260px; }
+
+/* game FX: FxGain stat icon (BoardView.GainStat) and the ability highlight outline (MinionView.Highlight) */
+.b-gain { position: absolute; width: 64px; height: 60px; display: grid; place-items: center; background: center / contain no-repeat; pointer-events: none; z-index: 41; }
+.b-gain.atk { background-image: url('../img/ui/Fist.webp'); }
+.b-gain.hp { background-image: url('../img/ui/Heart_1.webp'); }
+.b-gain span { font-family: 'Lapsus'; font-size: 34px; color: #fff; -webkit-text-stroke: 0.18em #1d1a17; paint-order: stroke fill; text-shadow: 0 0.08em 0 #1d1a17; margin-top: 2px; }
+.bpet.active .bp-sprite { filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 2px #fff) drop-shadow(0 0 4px #fff); }
+.bp-stat span, .bp-mana span { display: inline-block; }

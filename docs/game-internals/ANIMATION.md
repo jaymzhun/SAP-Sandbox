@@ -62,8 +62,37 @@ bully multiplier 1.3, MinimumMouseMoveDistance 5.
   type-tree generator (LibCpp2IL) can't read metadata v39. That reader handles flat settings objects (verified to the byte). Complex prefabs
   (MinionView layouts, particle hosts) need more work.
 
-## Not yet done (Phase 3 work)
-- Pull every tween's parameters per renderer (summon, faint puff, damage numbers, perk pickup, level-up, swallow, jump) into a table.
-- Intro: 9 entrance styles exist (`MinionEnterStandard`, `RocketLanding`, `BusDelivery`, `MeteorRain`, `Portal`, `Teleporter`,
-  `RandomRoll`, `PixelPets`, `ShinyPets`, plus `SuperFast`). Which one the sandbox mimics is your call.
-- Reference footage comparison (needs recordings from your game).
+## Per-effect tweens (Phase 3, read from the decompiles)
+
+Field offsets of `RenderingTimings` follow the table above from +0x18 (ShowAbilityCards) on. Checks: +0x40 = MinionAttackWindupDuration in `TradeAnimation`, and +0x9c = DestroyMinionPuffDelay in `DestroyMinionRenderer`.
+
+The `Vector3` statics are zero +0x00, one +0x0c, left +0x30 and right +0x3c. DOTween `Ease`: 1 Linear, 5 InQuad, 6 OutQuad, 7 InOutQuad, 14 InQuint, 27 OutBack.
+
+| Effect | Code | Tweens |
+|---|---|---|
+| Geometry | level3 scene, `BoardView.GetWorldPosition` | camera ortho 3 at (4.5, 0.28); BattleBoardView world (0, −0.351); slot = location x (1 unit), ±0.2 for x < 5 / ≥ 5 |
+| Punch | `MinionView.DOPunchScale(s)` | DOPunchScale(one·0.2s, 0.5s, vibrato 10, elasticity 1) |
+| Hit shake | `MinionView.DODamage` | DOShakePosition(0.5, one·0.2, 100, 90, fadeOut) |
+| Land | `MinionView.DOLand` | DOScale((1.2, 0.8, 1), 0.1) OutQuad and DOLocalMoveY(−0.05, 0.1), each yoyo ×2 |
+| Stat text | `DOBuffAttack/Health`, `DOMana`, `DOLoseAttack/Health` | pet punch 1 (loss 0.7); TMP text DOPunchScale(one·2 or one·0.7, 0.3, 3, 1) |
+| Fumble | `MinionView.DOFumble` | colour red → white 0.5 s; DOPunchPosition(right·0.2, 0.5, 20, 1) |
+| Attack | `TradeAggregator.<TradeAnimation>` | wind-up DOLocalMoveX(−0.15·gap) and DOLocalRotate(±15°), both 200 ms InQuint, relative; release DOLocalMoveX(+0.5·gap, or 0.75) and rotate to 0, 100 ms InQuint; await the hits; back DOLocalMoveX 70 ms Linear |
+| Damage number | `BoardView.DamageMinion` | FxText amount += damage; DOJump(rel (0, 0.5), power 0.2, 1 jump, 0.5 s); lifetime 1 s; hit particles; sounds |
+| Projectile | `BoardView.<PlayProjectileAsync>d__29`, `FxBase.Jump` | source DOPunchScale 1; sprite scale 0 → 0.75 in 0.1 s; DOJump(target, 1.5 ± 0.1, 1, ProjectileDuration) Linear; optional DORotate 360·duration (LocalAxisAdd) |
+| Stat gain | `BoardView.GainStat` | FxGain amount += n (scale 0.6); Sequence: DOMove rel (∓0.25, +1) 0.25 s OutBack, interval 0.5 s, DOScale 0 in 0.2 s InQuad |
+| Buff | `GiveMinionBuffRenderer` | projectile, then `BuffAfterFX` (splash, set stat, GainStat, DOBuffAttack / Health), then GiveMinionBuffDelay |
+| Perk | `GiveMinionPerkRenderer`, `BoardView.GiveMinionPerk` | projectile, splash, SetPerk, DOLaunchProjectile (= punch 1), GiveMinionBuffDelay |
+| Faint | `DestroyMinionRenderer`, `BoardView.DestroyPunch` | kind 0: DOJump to the camera viewport edge ±1 unit, power DestroyPunchJumpPower, duration \|dx\|·0.025 / DestroyPunchSpeedFactor (default ease), trail particles on the same jump, camera Shake 0.5, mascot pose 3; other kinds: `TryDestroyPuff` (puff particles, hide); then DestroyMinionPuffDelay |
+| Faint group | `DestroyAggregator.Run` | each destroy delayed Random.Range(50, 200) ms (0 for kind 0), all awaited together |
+| Summon | `SummonMinionRenderer`, `SummonMinionAsync` | normal: place + DOLaunchProjectile + sound; kind 0: start outside the camera, DOMoveX 0.7 s Linear, DOMoveY +2 in 0.35 s OutQuad then back in 0.35 s InQuad, DOLand; then SummonMinionDelay |
+| Move | `BoardView.<MoveMinion>d__42` | DOMove(slot, duration) InOutQuad; sprite DORotate(dx·8°, 0.7·duration) InOutQuad relative, then (−angle, 0.3·duration) OutBack overshoot \|angle/5\| |
+| Exp | `BoardView.GiveMinionExp` | particles (exp, or level-up), DOExp (punch 1), sound; GiveMinionExpDelay |
+| Mana | `BoardView.GiveMinionMana` | particles, SetMana, DOMana, sound |
+| Ability | `AbilityAggregator.Minion.Run` | MinionView.Highlight (AllOneShader.DOHighlight 0.02 / 0.035), CardController.BounceAbilityCard / BouncePerkCard, events, HideCard; AbilityHighlightDelay between |
+| Jump attack | `BoardView.<ThrowMinion>d__74` | DOLocalJump(dest + DestinationOffset, JumpHeight, 1, InitialThrowDuration) with RotationEase; DOLocalRotate(RotationAmount, LocalAxisAdd) |
+| Swallow | `BoardView.Swallow`, `GetSwallowDuration` | FireMouth / CloseMouth; duration 0.3 + \|dx\|·0.2 / 5 |
+| Intro rocket | `UIBattleIntro.<MinionEnterRocketLanding>d__5` | rocket sprite + particles (scale 2); DOMove 0.75 s OutQuad; rocket DOScale 0.25 s then DOJump(power 1.5, 0.5 s, Linear); shake position (1 s, 0.1, 10, 90) and rotation (1 s, 15, 2, 90); DOLand; sounds |
+
+## Still open
+The tweens are in the table above, and js/battle.js uses them. Everything that still differs from the game, including the
+reference footage comparison and the choice among the 9 intro styles (the site uses RocketLanding), is listed in ANIMATION-DIFFS.md.
