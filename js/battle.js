@@ -83,6 +83,8 @@
 
     let root = null, gen = 0;
     const state = { speed: 1, playing: true, log: null, meta: null, i: 0, els: new Map(), names: new Map(), nums: new Map(), gains: new Map(), lastSnap: null };
+    // the game's particle effects (js/fx.js), on a canvas between the pets and the numbers
+    const PFX = window.SAPFx ? window.SAPFx.create(() => state.speed) : null;
 
     // ------------------------------------------------------------ DOM
     function build(meta) {
@@ -131,6 +133,7 @@
         </div>
         <div class="b-fade"></div>`;
       stage.append(root);
+      if (PFX) { PFX.attach(root, root.querySelector('.b-fx')); PFX.preload(); }
       const q = s => root.querySelector(s);
       q('.b-half.left .b-bg').style.backgroundImage = `url('img/bg/${meta.teams[0].bg}.webp')`;
       q('.b-half.right .b-bg').style.backgroundImage = `url('img/bg/${meta.teams[1].bg}.webp')`;
@@ -241,7 +244,7 @@
           $r('.b-arena').append(e); state.els.set(d.u, e);
           if (opts.pop !== false) punch(d.u, 1);
         } else {
-          if (e.dataset.id !== d.id) { puff(cx(side, i), SPRITE_CY, 3); punch(d.u, 1); }
+          if (e.dataset.id !== d.id) { fx('Smoke', d.u); punch(d.u, 1); }   // BoardView.TransformMinion: SmokeFX
           const x0 = parseFloat(e.style.left);
           update(e, d); e._d = d; place(e, side, d.s != null ? d.s : i);
           const dxu = (parseFloat(e.style.left) - x0) / U;
@@ -265,18 +268,21 @@
     }
     const posOf = u => { const e = state.els.get(u); return e ? [parseFloat(e.style.left) + PET_W / 2, SPRITE_CY] : null; };
     const sideOf = u => (state.names.get(u) || {}).side;
+    // live centre of an element in stage pixels (includes running tweens)
+    function centreOf(n) {
+      if (!n || !n.isConnected || !root) return null;
+      const r = n.getBoundingClientRect(), R = root.getBoundingClientRect(), k = R.width / 1280 || 1;
+      return [(r.left + r.width / 2 - R.left) / k, (r.top + r.height / 2 - R.top) / k];
+    }
+    // BoardView.SpawnParticles: the effect plays at the pet's position
+    function fx(name, u, opts) { const q = posOf(u); return PFX && q ? PFX.spawn(name, q[0], q[1], opts) : null; }
+    // BoardView.DamageMinion: StickerBlastFX at the pet, turned 180° about y when the pet is the player's
+    const hitFx = u => fx('StickerBlast', u, { flip: sideOf(u) === 0 });
+    // BoardView.PlaySplash: Buff for stat buffs (BuffAfterFX) and positive perks, Debuff for ailments (GiveMinionPerk, PerkTemplate.Positive)
+    const splash = (u, type) => fx(type, u);
 
     // ------------------------------------------------------------ effects
     function fxEl(cls, x, y, html) { const f = el('div', cls, html); f.style.left = x + 'px'; f.style.top = y + 'px'; $r('.b-fx').append(f); return f; }
-    function puff(x, y, n = 4, spread = 40) {
-      for (let k = 0; k < n; k++) {
-        const p = fxEl('b-puff', x + (Math.random() - .5) * spread, y + (Math.random() - .5) * spread * .6);
-        p.style.backgroundImage = `url('${FX('hard' + (k % 4))}')`;
-        const s = .5 + Math.random() * .5;
-        p.animate([{ transform: `translate(-50%,-50%) scale(${s * .4})`, opacity: 1 }, { transform: `translate(-50%,-50%) translate(${(Math.random() - .5) * 50}px,${-20 - Math.random() * 30}px) scale(${s})`, opacity: 0 }],
-          { duration: 650 / Math.sqrt(state.speed), easing: 'ease-out' }).finished.then(() => p.remove(), () => p.remove());
-      }
-    }
     const ms = n => n / state.speed;
     const bodyOf = u => { const e = state.els.get(u); return e ? e.querySelector('.bp-body') : null; };
     // MinionView.DOPunchScale(s): punch Vector3.one·0.2s over 0.5s seconds, vibrato 10, elasticity 1
@@ -365,13 +371,10 @@
       e.querySelector('.bp-body').append(rocket);
       const dur = ms(750);
       const x0 = parseFloat(e.style.left) + PET_W / 2;
-      const t0 = performance.now();
-      const trail = setInterval(() => {
-        const k = EASE.outQuad(Math.min(1, (performance.now() - t0) / dur));
-        if (root) puff(x0 + dx * (1 - k), SPRITE_CY + 30 + dy * (1 - k), 1, 16);
-      }, 45);
+      // UIBattleIntro: SmokeTrailFX follows the rocket (Follow offset y −0.5) and is destroyed after 2 s (AutoDestroy)
+      const rocketAt = () => { const c = centreOf(rocket); return c && [c[0], c[1] + 0.5 * U]; };
+      if (PFX) PFX.spawn('SmokeTrail', x0 + dx, SPRITE_CY + 13 + dy + 0.5 * U, { follow: rocketAt, life: 2 });
       await tween(e, dur, k => ({ transform: `translate(${dx * (1 - k)}px,${dy * (1 - k)}px)` }), EASE.outQuad);
-      clearInterval(trail);
       const rx = (side === 0 ? -1 : 1) * 2 * U;
       const rb = side ? 'rotate(-135deg) scaleX(-1)' : 'rotate(135deg)';
       tween(rocket, ms(750), (k, t) => t < 1 / 3 ? { transform: `${rb} scale(${1 - .5 * EASE.outQuad(t * 3)})` }
@@ -388,7 +391,12 @@
       const stageW = stage.clientWidth || 1280, stageX = (1280 - stageW) / 2;
       const xEnd = side === 0 ? stageX - U : stageX + stageW + U, dx = xEnd - x0;
       const dur = ms(Math.abs(dx / U) * 0.025 / T.punchSpeed * 1000);
+      // DestroyPunch: SmokeTrailFX rides along with the jump; SmashFX at the end point
+      const body = e.querySelector('.bp-body');
+      const trail = PFX && PFX.spawn('SmokeTrail', x0, SPRITE_CY, { follow: () => centreOf(body) });
       await tween(e, dur, k => ({ transform: `translate(${dx * k}px,${-jumpY(k, T.punchJump * U)}px)` }), EASE.outQuad);
+      if (trail) trail.stop();
+      if (PFX) PFX.spawn('Smash', xEnd, SPRITE_CY);
       e.remove();
     }
 
@@ -472,12 +480,13 @@
       render(grp[grp.length - 1].snap);
       for (const t of tgts) {
         const mine = grp.filter(st => st.tgt === t);
-        if (kind === 'hit') { shake(t); const n = mine.reduce((a, st) => a + (st.kind === 'damage' ? st.n : -(st.dh || 0)), 0); if (n) { bigNumber(t, n); statPunch(t, 'hp', 0.7); } }
-        else if (kind === 'buff') buffFx(t, mine.reduce((a, st) => a + (st.da || 0), 0), mine.reduce((a, st) => a + (st.dh || 0), 0));
-        else if (kind === 'perk') punch(t, 1);
+        if (kind === 'hit') { hitFx(t); shake(t); const n = mine.reduce((a, st) => a + (st.kind === 'damage' ? st.n : -(st.dh || 0)), 0); if (n) { bigNumber(t, n); statPunch(t, 'hp', 0.7); } }
+        else if (kind === 'buff') { splash(t, 'Buff'); buffFx(t, mine.reduce((a, st) => a + (st.da || 0), 0), mine.reduce((a, st) => a + (st.dh || 0), 0)); }
+        else if (kind === 'perk') { const pk = (mine.find(st => st.perk) || {}).perk; if (pk) splash(t, perkSplash(pk)); punch(t, 1); }
       }
       await W(kind === 'hit' ? 130 : T.buffDelay);
     }
+    const perkSplash = pk => (ctx.perkPositive ? ctx.perkPositive(pk) : true) ? 'Buff' : 'Debuff';
     // BoardView.BuffAfterFX: the stat changes, its FxGain icon rises, the pet punches (1, or 0.7 for a loss) and so does the stat text
     function buffFx(u, da, dh) {
       if (da) { gainIcon(u, 'atk', da); statPunch(u, 'atk', da > 0 ? 2 : 0.7); }
@@ -538,24 +547,24 @@
         }
         case 'damage': {
           if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX(st.mana ? 'ManaRock' : 'Rock'));
-          shake(st.tgt); bigNumber(st.tgt, st.n); statPunch(st.tgt, 'hp', 0.7);
+          hitFx(st.tgt); shake(st.tgt); bigNumber(st.tgt, st.n); statPunch(st.tgt, 'hp', 0.7);
           render(st.snap); await W(st.dk === 'attack' ? 120 : 130); break;
         }
         case 'remove': {
           if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX('Rock'));
-          shake(st.tgt); if (st.dh) { bigNumber(st.tgt, -st.dh); statPunch(st.tgt, 'hp', 0.7); }
+          hitFx(st.tgt); shake(st.tgt); if (st.dh) { bigNumber(st.tgt, -st.dh); statPunch(st.tgt, 'hp', 0.7); }
           render(st.snap); await W(130); break;
         }
         case 'block': floatText(st.tgt, 'Blocked!', 'block'); render(st.snap); await W(220); break;
         case 'buff': {
           if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'heal');
-          render(st.snap); buffFx(st.tgt, st.da || 0, st.dh || 0);
+          render(st.snap); splash(st.tgt, 'Buff'); buffFx(st.tgt, st.da || 0, st.dh || 0);
           await W(T.buffDelay); break;
         }
         case 'perk':
           // GiveMinionPerkRenderer: the perk flies over as a projectile, the pet gets it and punches (1), then 100 ms
           if (st.perk && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, '', foodImg(st.perk));
-          render(st.snap); if (st.perk) punch(st.tgt, 1); await W(T.buffDelay); break;
+          render(st.snap); if (st.perk) { splash(st.tgt, perkSplash(st.perk)); punch(st.tgt, 1); } await W(T.buffDelay); break;
         case 'perkfx': { const e = state.els.get(st.src); if (e) flash(e.querySelector('.bp-perk')); punch(st.src, 1); render(st.snap); await W(T.abilityHighlight); break; }
         // DestroyMinionRenderer: DestroyPunch, then DestroyMinionPuffDelay 300 ms
         case 'faint': await faintOut(st.tgt); render(st.snap); await W(T.puffDelay); break;
@@ -570,15 +579,15 @@
             e.classList.add('gone'); state.els.delete(st.tgt);
             const dx = q[0] - parseFloat(e.style.left) - PET_W / 2;
             await tween(e, ms((0.3 + Math.abs(dx / U) * 0.04) * 1000), k => ({ transform: `translateX(${dx * k}px) scale(${1 - .9 * k})`, opacity: 1 - k }), EASE.inQuad);
-            e.remove(); punch(st.src, 1);
+            e.remove(); punch(st.src, 1); fx('Swallow', st.src);   // CloseMouth: SwallowFX
           }
           render(st.snap); break;
         }
         case 'transform': render(st.snap); await W(340); break;
         // BoardView.GiveMinionExp: DOExp (punch 1) and the exp / level-up particles, then GiveMinionExpDelay 200 ms
-        case 'xp': punch(st.tgt, 1); floatText(st.tgt, st.lvlup ? 'Level up!' : `+${st.n} xp`, 'xp'); render(st.snap); await W(T.expDelay); break;
+        case 'xp': fx('Exp', st.tgt); fx(st.lvlup ? 'Level' : 'Exp', st.tgt); punch(st.tgt, 1); render(st.snap); await W(T.expDelay); break;
         // BoardView.GiveMinionMana: DOMana (punch 1 and the mana text punch 2)
-        case 'mana': render(st.snap); punch(st.tgt, 1); statPunch(st.tgt, 'mana', 2); await W(110); break;
+        case 'mana': fx('Mana', st.tgt); render(st.snap); punch(st.tgt, 1); statPunch(st.tgt, 'mana', 2); await W(110); break;
         case 'trumpet': render(st.snap); await W(150); break;
         case 'note': if (st.tgt) floatText(st.tgt, st.text, 'note'); await W(200); break;
         case 'end': render(st.snap); await W(700); if (my === gen) await result(st.result); break;
@@ -636,7 +645,7 @@
       root.classList.remove('intro'); root.classList.add('live');
       $r('.b-fade').classList.add('out'); $r('.b-intro').classList.add('out');
       root.querySelectorAll('.b-mascot').forEach(m => m.classList.add('in'));
-      $r('.b-arena').innerHTML = ''; $r('.b-fx').innerHTML = '';
+      $r('.b-arena').innerHTML = ''; $r('.b-fx').innerHTML = ''; if (PFX) PFX.clear();
       state.els = new Map(); state.names = new Map(); state.nums = new Map(); state.gains = new Map(); state.pendingBack = null;
       const L = $r('.b-log ol'); L.innerHTML = '';
       for (const st of state.log) { if (st.snap) st.snap.t.forEach((t, s) => t.forEach(d => state.names.set(d.u, { id: d.id, side: s }))); const h = describe(st); if (h) L.append(el('li', '', h)); }
@@ -652,7 +661,7 @@
       if (!e.isConnected || e.classList.contains('gone')) { state.hold = null; if (root) root.classList.remove('held'); ctx.hideTip && ctx.hideTip(); return false; }
       return true;
     }
-    function stop() { gen++; state.hold = null; ctx.hideTip && ctx.hideTip(); if (root) { root.remove(); root = null; } }
+    function stop() { gen++; state.hold = null; ctx.hideTip && ctx.hideTip(); if (PFX) PFX.clear(); if (root) { root.remove(); root = null; } }
     return { play, stop, skip, get speed() { return state.speed; } };
   }
 

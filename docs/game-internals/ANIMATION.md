@@ -48,7 +48,9 @@ MinionMargin 0.3, AbilityPerkStackPadding −0.1, PopupMoveEase 1, PopupScaleEas
 PopupScaleDuration 0.4, PopupScaleOvershoot 1, PopupStartScale 0.9, BounceStrength 0.1, BounceDuration 0.2, CardBaseScale 1,
 bully multiplier 1.3, MinimumMouseMoveDistance 5.
 
-## Extracted assets (local only, in `%USERPROFILE%\rea-work\sap\assets\export`, NOT in the repo)
+## Extracted assets (in `%USERPROFILE%\rea-work\sap\assets\export`)
+Most of these stay local. The repo has only what the site uses: `fonts/LapsusPro-Bold.ttf`, the battle FX textures and sprites in `img/fx/game/`, and the particle data in `js/fx-data.js`. You approved publishing these. Sounds and other extras stay local.
+
 | Kind | Count | Notes |
 |---|---|---|
 | Sprites (PNG) | 3,073 | pets (+ `_2x`), foods, backgrounds (`*Battle`, `*Build`, `*Night*`), mascots, FX: `ManaRock`, `Bandage`, hearts, arrows, `ExpBar`… |
@@ -57,7 +59,7 @@ bully multiplier 1.3, MinimumMouseMoveDistance 5.
 | AnimationClips (JSON) | 771 | pet sprite-frame curves |
 | ParticleSystems (JSON) | 301 | full emitter/module parameters |
 
-- The repo's `fonts/lapsus.ttf` (45,024 B, sha256 `d19c564a…`) is **not** the game's LapsusPro-Bold (sha256 `556084d3…`).
+- The site now uses the game's `LapsusPro-Bold.ttf` (sha256 `556084d3…`). It replaced the old `fonts/lapsus.ttf` (sha256 `d19c564a…`), which was a different file.
 - Serialized MonoBehaviour fields were decoded with a custom reader from the metadata field order. The stock
   type-tree generator (LibCpp2IL) can't read metadata v39. That reader handles flat settings objects (verified to the byte). Complex prefabs
   (MinionView layouts, particle hosts) need more work.
@@ -92,6 +94,34 @@ The `Vector3` statics are zero +0x00, one +0x0c, left +0x30 and right +0x3c. DOT
 | Jump attack | `BoardView.<ThrowMinion>d__74` | DOLocalJump(dest + DestinationOffset, JumpHeight, 1, InitialThrowDuration) with RotationEase; DOLocalRotate(RotationAmount, LocalAxisAdd) |
 | Swallow | `BoardView.Swallow`, `GetSwallowDuration` | FireMouth / CloseMouth; duration 0.3 + \|dx\|·0.2 / 5 |
 | Intro rocket | `UIBattleIntro.<MinionEnterRocketLanding>d__5` | rocket sprite + particles (scale 2); DOMove 0.75 s OutQuad; rocket DOScale 0.25 s then DOJump(power 1.5, 0.5 s, Linear); shake position (1 s, 0.1, 10, 90) and rotation (1 s, 15, 2, 90); DOLand; sounds |
+
+## Particles
+
+`BoardView` holds its effects as prefab references (`SpawnParticles` puts one at a pet's position). The splashes come from the `ParticlesLibrary` singleton (`PlaySplash(type)`). `tools/fx-particles.py` reads these prefabs from the game install with UnityPy. It walks each prefab's hierarchy and writes every particle system's modules to `js/fx-data.js`, and the textures and sprites to `img/fx/game/`. `js/fx.js` plays them on a canvas over the pets.
+
+| Effect | Prefab (file, path id) | Where the game plays it | Site step |
+|---|---|---|---|
+| StickerBlast | `StickerBlastFX` + Glow (sharedassets2 1065) | `DamageMinion`, at the pet; turned 180° about y for a player pet | damage, remove, ability hits |
+| Smoke | `SmokeFX` + Glow (1098, root scale 2) | `TryDestroyPuff`, `TransformMinion` | transform |
+| SmokeTrail | `SmokeTrailFX` (1102; world space, 3 particles per unit moved) | `DestroyPunch` (rides the jump); `UIBattleIntro` rocket (Follow offset y −0.5, AutoDestroy 2 s) | faint, intro |
+| Smash | `SmashFX` + StarBurst + Glow (1088) | `DestroyPunch`, at the end point past the screen edge | faint |
+| Mana | `ManaFX` + MagicDust + CenterGlow (1097) | `GiveMinionMana` | mana |
+| Exp / Level | `ExpFX` (1089), `LevelFX` + 4 children (1068) | `GiveMinionExp`: Exp, then Level on a level-up or Exp again | xp |
+| Swallow | `SwallowFX` + Paper (1067) | `CloseMouth` | swallow |
+| Buff | `BuffFX` + Glow (sharedassets1 13293) | `PlaySplash(1)`: `BuffAfterFX`, positive `GiveMinionPerk` | buff, perk |
+| Debuff | `BuffNegativeFX` + Glow (sharedassets1 13286) | `PlaySplash(2)`: `GiveMinionPerk` for a perk whose `PerkTemplate.Positive` is false | perk (ailment) |
+
+`PlaySplash` types: 0 Eats, 1 Buff, 2 Debuff, 3 Ability, 4 PermanentBuff, 5 Gas, 6 SmallBuff. The ParticlesLibrary fields are in that order from +0x20 (sharedassets1 28430). `PerkTemplate.Positive` is at +0x4c, the byte `GiveMinionPerk` tests.
+
+The stat-gain icons (`StickerGainAttack` / `StickerGainHealth`, BoardView +0x100 / +0xf8) use the `StickerFist` / `StickerHeart` sprites. The rocket and rock projectiles were already game sprites.
+
+Renderer notes (Unity runtime behaviour, not game code):
+- Curves are Hermite. Curve modes: 0 Constant, 1 Curve, 2 TwoCurves, 3 TwoConstants.
+- Limit-velocity dampen is applied per frame, normalised to 30 fps.
+- Stretched billboards lead with the texture's left edge.
+- Max particle size is a fraction of the 720 px view height.
+- Sprite-mode particles keep the sprite's aspect.
+- The arc modes Loop and PingPong are drawn as Random. None of the ported effects use them.
 
 ## Still open
 The tweens are in the table above, and js/battle.js uses them. Everything that still differs from the game, including the

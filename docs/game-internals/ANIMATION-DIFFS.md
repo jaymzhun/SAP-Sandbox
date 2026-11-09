@@ -28,10 +28,22 @@ This file lists every place where the site still differs from the game, and why.
 | Ability | The pet's outline is highlighted, then AbilityHighlightDelay 100 ms (`AbilityAggregator`, `MinionView.Highlight`). |
 | Intro (RocketLanding) | Each pet rides its rocket to the slot (0.75 s, OutQuad). The rocket shrinks and jumps away (0.25 s + 0.5 s, jump power 1.5). The pet lands with `DOLand`: scale (1.2, 0.8) and dip 0.05 units over 0.1 s OutQuad, then back. |
 | Landing squash | `DOLand` as above. |
+| Font | The game's own `LapsusPro-Bold.ttf`. |
+| Particles | The game's own particle prefabs, played by `js/fx.js`. Each one comes from the call shown in ANIMATION.md, "Particles": hits (StickerBlast, sprayed away from the attacker), buff and perk splashes (Buff, or Debuff for an ailment), exp and level-up, mana, the faint smoke trail and smash, the transform smoke puff, the swallow mouth, and the intro rocket's smoke trail. |
+| Stat-gain icons | The game's `StickerFist` / `StickerHeart` sprites (`StickerGainAttack` / `StickerGainHealth`). |
 
 ## Still different (needs your decision or more data)
 
-1. **Fonts, sprites and particles.** The site still uses its own `fonts/lapsus.ttf`, which is not the game's LapsusPro-Bold (sha256 differs). It also uses its own FX images: rock, puff, rocket and the stat icons, which reuse the editor's Fist / Heart. The game draws hits, splashes, puffs, level-ups and exp with its own particle systems (301 extracted) and FX sprites. Matching these means publishing newly extracted game files on the public site, so I haven't added them. **Needs your OK.**
+1. **Particles: what is still approximate or not hooked up.**
+   - **Unity runtime details.** `js/fx.js` re-implements Shuriken from Unity's documented behaviour, not from engine code. The details I couldn't read are listed in ANIMATION.md, "Particles": dampen timing, stretched-billboard orientation, sprite aspect and max size.
+   - **Draw order.** The particles draw above the pets. The game's sorting layers for pets and particles weren't compared.
+   - **Stat losses.** `buff` steps with negative numbers play the Buff splash, as `BuffAfterFX` does. Some stat losses in the game go through `SetMinionStats`, which plays the Gas splash (type 5), or through `DamageMinion`. I haven't traced which engine events take which path. `remove` steps use the hit effect.
+   - **Rocket trail offset.** The trail follows the rocket 0.5 units below it. The x offset is −0.125 × a value from the intro object that isn't decoded, so the site uses 0.
+   - **Not hooked up yet.**
+     - CriticalHitFX: the engine log has no critical-hit flag.
+     - The Ability splash (`GenericAbility`) and the summon's SoundFX notes: when these play isn't traced.
+     - Eats (sticker pieces), when a perk comes from food.
+     - The game's reduced-effects setting, which turns the Buff splash into Eats.
 2. **Ability card bounce.** When an ability fires, the game also pops the pet's ability card (or perk card) beside it (`CardController.BounceAbilityCard` / `BouncePerkCard`; TweenSettings.Cards: scale 0.9 → 1 over 0.4 s OutBack, bounce 0.1 / 0.2 s). The site only highlights the pet. Doing this would reuse the hover card, which also pauses the fight on hover. **Needs your call** on whether the card should pop during play.
 3. **Screen shake on a punched faint.** `BoardView.Shake(camera, 0.5)` calls `BestCamera.ShakeStart` with a preset that isn't in the decompiles; the Ghidra daemon is down, so I can't decompile more. The site doesn't shake.
 4. **Mascot reaction.** On a faint the game sets the owner's mascot pose 3 (`MascotView.AddPose`). The site's mascots don't react during the fight yet: the pose name for 3 isn't mapped, and the art is the mascot set the site already has.
@@ -50,8 +62,12 @@ This file lists every place where the site still differs from the game, and why.
     - transform: 340 ms;
     - trumpets: 150 ms;
     - end: 700 ms.
-13. **Transform, trumpets, summon fail, perk activation.** `TransformMinionRenderer`, `PlayerBoardView.AddTrumpets`, `SummonMinionFailAsync` (1000 ms, jump power 1) and `ForceActivatePerkRenderer` are not read in detail. The site keeps a puff plus a punch for transform, a flash for trumpets, nothing for a failed summon, and a perk flash plus punch for a perk activating.
-14. **Text pop-ups.** "Blocked!", "+N xp" / "Level up!" and notes are site text. In the game these show as particle effects (see 1).
+13. **Transform, trumpets, summon fail, perk activation.** `TransformMinionRenderer`, `PlayerBoardView.AddTrumpets`, `SummonMinionFailAsync` (1000 ms, jump power 1) and `ForceActivatePerkRenderer` are not read in detail.
+    - Transform: the game's smoke puff (`TransformMinion` → SmokeFX) plus a punch.
+    - Trumpets: a flash.
+    - Failed summon: nothing.
+    - Perk activating: a perk flash plus a punch.
+14. **Text pop-ups.** "Blocked!" and notes are still site text. The game shows these differently, and that path hasn't been read. "+N xp" and "Level up!" are gone: experience now plays the game's Exp / Level particles.
 15. **Result screen.** Not rebuilt: the game's end-of-battle UI is a separate canvas prefab that hasn't been decoded.
 16. **Fast mode.** The game has DefaultTimings and FastTimings slots but ships only one asset, and how its fast mode scales time is unread. The site divides every duration by its speed setting (×2 / ×4).
 

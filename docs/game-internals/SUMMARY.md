@@ -78,5 +78,5 @@ Your other confirmed rules don't conflict with anything read so far:
 ## Questions for you
 1. **Decisions** on rows 1–11 above, especially 11: should the code win over your earlier confirmed "perk before own ability" rule, once I've confirmed the tie-break?
 2. **Publishing.** Is it OK to commit these docs to the public repo? They contain numbers, names and short decompiled-structure notes, no raw decompiled code.
-3. **Publishing assets.** Phase 3 would add files the repo doesn't have yet: the real `LapsusPro-Bold.ttf` (the repo's `fonts/lapsus.ttf` differs) and possibly FX sprites and sounds. Which of these may be published on the Pages site?
+3. **Publishing assets.** Answered: the font, FX sprites and particles are approved and now on the site (`fonts/LapsusPro-Bold.ttf`, `img/fx/game/`, `js/fx-data.js`). Sounds and other extracted files are not approved and stay local.
 4. **Git push.** HTTPS to GitHub fails on this machine because AVG's HTTPS scanning re-signs certificates. For pushing I'd set this repo only to use the Windows certificate store (`git config http.sslBackend schannel`). OK?

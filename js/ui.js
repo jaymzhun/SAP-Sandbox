@@ -730,6 +730,8 @@
   function simulate(seed) { return window.SAPGame.adapter.run(battleTeams(), S.settings, seed); }
   const scene = window.SAPBattle.create({
     stage, D, petImg, foodImg, perkName, esc,
+    // PerkTemplate.Positive picks the splash a perk gain plays (Buff, or Debuff for an ailment)
+    perkPositive: pk => { const G = window.SAPGame && SAPGame.data, p = G && G.perks[G.enums.perk[pk]]; return p ? !!p.positive : true; },
     trigLabel: t => TRIG_LABEL[t] || (t && t.startsWith('Count:') ? 'Counter' : t),
     onBack: () => backToEdit(),
     onAgain: () => startBattle(),

@@ -1,4 +1,4 @@
-@font-face { font-family: 'Lapsus'; src: url('../fonts/lapsus.ttf') format('truetype'); font-display: block; }
+@font-face { font-family: 'Lapsus'; src: url('../fonts/LapsusPro-Bold.ttf') format('truetype'); font-display: block; }
 [hidden] { display: none !important; }
 @font-face { font-family: 'Pangolin'; src: url('../fonts/pangolin.ttf') format('truetype'); }
 
@@ -305,6 +305,7 @@ body.battle .tname { pointer-events: none; }
 .b-mascot.right.in { opacity: 1; transform: scaleX(-1); }
 .b-arena, .b-fx { position: absolute; inset: 0; pointer-events: none; }
 .b-fx { z-index: 30; }
+.b-pfx { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; pointer-events: none; z-index: 20; }
 
 /* pets */
 .bpet { position: absolute; width: 120px; height: 230px; transition: left .4s cubic-bezier(.455,.03,.515,.955), top .4s cubic-bezier(.455,.03,.515,.955); z-index: 5; }
@@ -347,7 +348,6 @@ body.battle .tname { pointer-events: none; }
 .bpet.pop { animation: pop .4s; }
 
 /* effects */
-.b-puff { position: absolute; width: 70px; height: 70px; background: center / contain no-repeat; pointer-events: none; }
 .b-num { position: absolute; font-family: 'Lapsus'; font-size: 64px; line-height: 1; color: #ff2a1f; -webkit-text-stroke: 0.14em #1d1a17; paint-order: stroke fill; text-shadow: 0 0.06em 0 #1d1a17; z-index: 40; pointer-events: none; }
 .b-float { position: absolute; font-family: 'Lapsus'; font-size: 30px; color: #fff; -webkit-text-stroke: 0.18em #1d1a17; paint-order: stroke fill; white-space: nowrap; pointer-events: none; z-index: 40; }
 .b-float.both, .b-float.hp { color: #6dff5c; } .b-float.atk { color: #ffd23f; } .b-float.neg { color: #ff5a4a; }
@@ -508,8 +508,8 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 
 /* game FX: FxGain stat icon (BoardView.GainStat) and the ability highlight outline (MinionView.Highlight) */
 .b-gain { position: absolute; width: 64px; height: 60px; display: grid; place-items: center; background: center / contain no-repeat; pointer-events: none; z-index: 41; }
-.b-gain.atk { background-image: url('../img/ui/Fist.webp'); }
-.b-gain.hp { background-image: url('../img/ui/Heart_1.webp'); }
+.b-gain.atk { background-image: url('../img/fx/game/StickerFist.webp'); }
+.b-gain.hp { background-image: url('../img/fx/game/StickerHeart.webp'); }
 .b-gain span { font-family: 'Lapsus'; font-size: 34px; color: #fff; -webkit-text-stroke: 0.18em #1d1a17; paint-order: stroke fill; text-shadow: 0 0.08em 0 #1d1a17; margin-top: 2px; }
 .bpet.active .bp-sprite { filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 2px #fff) drop-shadow(0 0 4px #fff); }
 .bp-stat span, .bp-mana span { display: inline-block; }
