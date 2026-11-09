@@ -1,0 +1,2597 @@
+/*
+ * Ability interpreter, ported from the game's Spacewood.Core.Models.Abilities (Ability, TriggerBase and the Trigger*
+ * classes, ConditionBase and the Condition* classes, ParameterInt, MinionFinder, Targets*, Effect*) and the resolver
+ * systems that drive them (TryTriggerMinion, ActivateAbilityTry/Do, AbilityEffect*, the mutators the effects feed).
+ * The ability definitions themselves are the game's own objects (js/game/data.js). Rules: docs/game-internals/RESOLVER-NOTES.md.
+ *
+ * Anything not ported yet throws `Unported: <class>` so a gap can never pass silently as a wrong result.
+ */
+(function (root) {
+  'use strict';
+  const isNode = typeof module !== 'undefined' && module.exports;
+  const D = isNode ? require('./data.js') : root.SAPGame.data;
+  const S = isNode ? require('./sim.js') : root.SAPGame.sim;
+  const M = isNode ? require('./model.js') : root.SAPGame.model;
+  const { ev, wrap, sourceOf, targetOf } = S;
+  const { idEq, getFrontDistance } = M;
+
+  const unported = (what) => { const e = new Error('Unported: ' + what); e.unported = what; throw e; };
+  const T = (o) => (o && o.$type) || '';
+  const short = (t) => t.replace(/^(Triggers|Effects|Conditions|Parameters|Catalogue)\./, '');
+
+  // ---------------------------------------------------------------- object graph ($id / $ref) from data.js
+  const refCache = new Map();
+  function resolveRefs(root) {
+    if (refCache.has(root)) return refCache.get(root);
+    const byId = new Map();
+    const collect = (o) => { if (Array.isArray(o)) return o.forEach(collect); if (o && typeof o === 'object') { if (o.$id !== undefined && !byId.has(o.$id)) byId.set(o.$id, o); for (const v of Object.values(o)) collect(v); } };
+    collect(root);
+    const fix = (o) => {
+      if (Array.isArray(o)) { for (let i = 0; i < o.length; i++) { const v = o[i]; if (v && v.$ref !== undefined && byId.has(v.$ref)) o[i] = byId.get(v.$ref); else fix(v); } return; }
+      if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) { if (v && typeof v === 'object' && v.$ref !== undefined && byId.has(v.$ref)) o[k] = byId.get(v.$ref); else fix(v); }
+    };
+    fix(root); refCache.set(root, root); return root;
+  }
+  /** AbilityConstants.GetAbility(enum, level) */
+  function getAbility(e, level) {
+    const a = D.abilities[e]; if (!a) return null;
+    const x = a[level] || a[1]; return x ? resolveRefs(x) : null;
+  }
+
+  // ---------------------------------------------------------------- System.Decimal (Op3_Multiplier) and helpers
+  const decimal = (d) => { if (d == null) return null; const scale = (d.flags >> 16) & 0xff; const neg = (d.flags >>> 31) === 1; let v = Number(BigInt(d.ulomidLE ?? d.lo)) + (d.hi ? d.hi * 2 ** 64 : 0); v /= 10 ** scale; return neg ? -v : v; };
+  const opCheck = (op, a, b) => op === 0 ? a === b : op === 1 ? a < b : op === 2 ? a <= b : op === 3 ? b < a : op === 4 ? b <= a : false; // OperatorUtility.Check
+  const tdiv = (a, b) => (a / b) < 0 ? Math.ceil(a / b) : Math.floor(a / b);
+
+  /**
+   * System.Decimal arithmetic for the values the game computes in decimal (Calculator, ParameterInt.Op3). Values are BigInt
+   * fixed-point at scale 10^28 (a decimal below 7.9 keeps 28 fractional digits); products and quotients round half to even
+   * at the last digit, as decimal does.
+   */
+  const Dec = (() => {
+    const S = 10n ** 28n;
+    const divRound = (n, d) => { if (d < 0n) { n = -n; d = -d; } let q = n / d; const r = n - q * d; const twice = 2n * (r < 0n ? -r : r);
+      if (twice > d || (twice === d && (q % 2n !== 0n))) q += r < 0n ? -1n : 1n; return q; };
+    const floorDiv = (n) => { let q = n / S; if (n < 0n && q * S !== n) q -= 1n; return q * S; };
+    return {
+      int: (v) => BigInt(Math.trunc(v)) * S,
+      from(d) { const scale = (d.flags >> 16) & 0xff; let m = BigInt(d.ulomidLE ?? d.lo) + (BigInt(d.hi || 0) << 64n); if (d.flags >>> 31) m = -m; return m * 10n ** BigInt(28 - scale); },
+      add: (a, b) => a + b, sub: (a, b) => a - b,
+      mul: (a, b) => divRound(a * b, S),
+      div: (a, b) => { if (b === 0n) throw new Error('DivideByZeroException'); return divRound(a * S, b); },
+      mod: (a, b) => { if (b === 0n) throw new Error('DivideByZeroException'); return a % b; },
+      floor: floorDiv,
+      ceil: (n) => -floorDiv(-n),
+      round: (n) => divRound(n, S) * S, // Decimal.Round(d): to even
+      toInt: (n) => Number(n / S), // (int) truncates toward zero
+    };
+  })();
+  /** Calculator.Sum(start): each item applies its operation (0 +, 1 -, 2 *, 3 /, 4 min, 5 max, 6 %) and its rounding, then the calculator's rounding, then (int). */
+  function calculatorSum(c, start) {
+    const rounding = (r, x) => (r === 1 ? Dec.ceil(x) : r === 2 ? Dec.floor(x) : r === 3 ? Dec.round(x) : x);
+    let v = Dec.int(start);
+    for (const it of c.Items || []) {
+      const x = Dec.from(it.Value);
+      switch (it.Operation) {
+        case 0: v = Dec.add(v, x); break;
+        case 1: v = Dec.sub(v, x); break;
+        case 2: v = Dec.mul(v, x); break;
+        case 3: v = Dec.div(v, x); break;
+        case 4: if (v > x) v = x; break;
+        case 5: if (v < x) v = x; break;
+        case 6: v = Dec.mod(v, x); break;
+        default: break;
+      }
+      v = rounding(it.Rounding || 0, v);
+    }
+    return Dec.toInt(rounding(c.Rounding || 0, v));
+  }
+
+  // ---------------------------------------------------------------- Parameters (ParameterInt.GetValue)
+  /** pa: ParameterArgs {B, TargetId, SourceId, TriggerTargetId, TriggerSourceId, AimId, Random, TriggerEvent, Owner} */
+  function paramValue(p, pa) {
+    if (p == null) return null;
+    let v = paramBase(p, pa);
+    if (p.Calculator) v = calculatorSum(p.Calculator, v);
+    if (p.Op1_Invert) v = -v;
+    if (p.Op2_Addition != null) v += p.Op2_Addition;
+    if (p.Op3_Multiplier != null) { const x = Dec.mul(Dec.int(v), Dec.from(p.Op3_Multiplier)); v = Dec.toInt(p.RoundUp ? Dec.ceil(x) : Dec.floor(x)); }
+    if (p.Op4_Divider != null && p.Op4_Divider !== 0) v = tdiv(v, p.Op4_Divider);
+    if (p.Op5_Addition != null) v += p.Op5_Addition;
+    if (p.Op6_Addition) v += paramValue(p.Op6_Addition, pa);
+    if (p.Op7_Min) { const mn = paramValue(p.Op7_Min, pa); if (v < mn) v = mn; }
+    if (p.Op8_Max) { const mx = paramValue(p.Op8_Max, pa); if (mx < v) v = mx; }
+    if (p.Tracker != null && p.TrackerLimit != null) {
+      const src = pa.SourceId && pa.B.board.findMinion(pa.SourceId);
+      if (src) { const pow = src.Power[p.Tracker] || 0; if (p.TrackerLimit - pow < v) v = p.TrackerLimit - pow; }
+    }
+    return v;
+  }
+  const isForce = (e) => !!e && (e.cls === 'Force' || e.cls === 'WithSource'); // TriggerEvent+Force and its subclass Force+WithSource
+  function paramMinion(p, pa) {
+    const id = [pa.SourceId, pa.TargetId, pa.TriggerSourceId, pa.TriggerTargetId, pa.AimId][p.Origin ?? 0];
+    if (id) { const m = pa.B.board.findMinion(id); if (!m) throw new Error('Tried to get a minion, but no minion was found'); return m; }
+    if (pa.TriggerEvent && isForce(pa.TriggerEvent)) return null;
+    throw new Error('Tried to get a minion, but no point was given');
+  }
+  function paramBase(p, pa) {
+    const t = short(T(p));
+    switch (t) {
+      case 'ParameterFlat': return p.Value;
+      case 'ParameterShopTier': return pa.B.board.Tier ?? 0; // BoardModel.Tier (+0x90)
+      case 'ParameterPerMinion': { // count of MinionFinder.FindMinions(board, source, no aim, random)
+        if (!p.MinionFinder) return 0; const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
+        return findMinions(p.MinionFinder, pa.B, src, null, pa.Random).length;
+      }
+      case 'ParameterWhenValue': { // ParameterWhenValue.GetBaseValue: TrueValue when Check(TestOperator, TestValue1, TestValue2), else FalseValue
+        if (!p.TestValue1 || !p.TestValue2) return unported('ParameterWhenValue without test values');
+        const v = opCheck(p.TestOperator || 0, paramValue(p.TestValue1, pa), paramValue(p.TestValue2, pa)) ? p.TrueValue : p.FalseValue;
+        return v ? paramValue(v, pa) : unported('ParameterWhenValue without a result value');
+      }
+      case 'ParameterWhenTarget': { // TrueValue when the Origin pet passes MinionFinder, else FalseValue (0 when it is null)
+        const id = [pa.SourceId, pa.TargetId, pa.TriggerSourceId, pa.TriggerTargetId][p.Origin ?? 0] || null;
+        const m = id ? pa.B.board.findMinion(id) : null;
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
+        const v = p.MinionFinder && predicate(p.MinionFinder, pa.B, m, src) ? p.TrueValue : p.FalseValue;
+        return v ? paramValue(v, pa) : 0;
+      }
+      case 'ParameterTransformations': case 'ParameterSummons': { // BuildExtensions.CountTransformations / CountSummons for the source's side
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!src) return 0; const b = pa.B.board;
+        if (t === 'ParameterTransformations') return src.Owner === 1 ? b.TransformationsThisTurn || 0 : src.Owner === 2 ? b.OpponentTransformations || 0 : 0;
+        return src.Owner === 1 ? b.MinionsSummonedThisTurn || 0 : src.Owner === 2 ? b.OpponentSummons || 0 : 0;
+      }
+      case 'ParameterSoldFinalLevel': { // BuildExtensions.CountFinalLevelSold for the Origin pet's side
+        const m = paramMinion(p, pa); if (!m) return 1; const b = pa.B.board;
+        return m.Owner === 1 ? b.MaxLevelMinionsSold || 0 : m.Owner === 2 ? b.OpponentMatchMinionsSoldFinalLevel || 0 : 0;
+      }
+      case 'ParameterWhenBattle': { const v = pa.B.board.IsBattle ? p.TrueValue : p.FalseValue; return v ? paramValue(v, pa) : 0; }
+      case 'ParameterTriggerValue`1': {
+        // the Fetcher is a C# lambda (not in the data). The only use in this build is ability 439 on Hurt, whose lambda
+        // (AbilityConstants <CreatePack6Danger>b__20_65) returns TriggerEvent+Hurt.Amount (+0x70)
+        if (pa.TriggerEvent && pa.TriggerEvent.cls === 'Hurt') return pa.TriggerEvent.Amount;
+        return unported('ParameterTriggerValue on ' + (pa.TriggerEvent ? pa.TriggerEvent.cls : 'no event'));
+      }
+      case 'ParameterGoldSpent': { // BuildExtensions.CountGoldSpent for the source's side (the other side with Opponent)
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!src) return 0;
+        let o = src.Owner; if (p.Opponent) o = o === 1 ? 2 : o === 2 ? 1 : 0;
+        return o === 1 ? pa.B.board.GoldSpent || 0 : o === 2 ? pa.B.board.OpponentGoldSpent || 0 : 0;
+      }
+      case 'ParameterMinionActivationCount': { const m = paramMinion(p, pa); if (!m) return 1; const a = m.Abilities.find((x) => x.Enum === p.Ability); return a ? a.ActivatedCount || 0 : 0; } // MinionAbilityModel +0x24
+      case 'ParameterMinionSpellCount': { const m = paramMinion(p, pa); return m ? m.SpellCountsThisTurn || 0 : 1; } // MinionModel +0x110
+      case 'ParameterAttacks': return pa.B.board.Attacks || 0; // BoardModel.Attacks (+0x1dc)
+      case 'ParameterSubstract': return paramValue(p.Value1, pa) - paramValue(p.Value2, pa);
+      case 'ParameterDistance': { // |target x - source x| (0 without both)
+        const tm = pa.TargetId ? pa.B.board.findMinion(pa.TargetId) : null, sm = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null;
+        return tm && sm ? Math.abs(tm.Point.x - sm.Point.x) : 0;
+      }
+      case 'ParameterTurn': return pa.B.board.Turn ?? 0; // BoardModel.Turn (+0x5c)
+      case 'ParameterMinionTier': { const m = paramMinion(p, pa); return m ? ((D.minions[m.Enum] || {}).tier ?? 0) : 1; } // MinionModel.Tier = template tier
+      case 'ParameterMinionPower': { const m = paramMinion(p, pa); return m ? (m.Power[p.Ability] || 0) : 1; } // MinionExtensions.GetPower (null -> 0)
+      case 'ParameterLevelSum': { // BoardExtensions.SumLevels: levels of grid pets passing MinionFinder, owner = the Origin pet
+        const m = paramMinion(p, pa); if (!m) return 1; if (!p.MinionFinder) return 0;
+        let n = 0; for (const x of pa.B.board.cells) if (x && predicate(p.MinionFinder, pa.B, x, m)) n += x.Level; return n;
+      }
+      case 'ParameterSharedPower': { // BuildExtensions.GetSharedPower(board, source owner, Ability): SharedPowers / OpponentSharedPowers
+        const src = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!src) return 0;
+        const d = src.Owner === 1 ? pa.B.board.SharedPowers : src.Owner === 2 ? pa.B.board.OpponentSharedPowers : null;
+        return (d && d[p.Ability]) || 0;
+      }
+      case 'ParameterEmptySpaces': {
+        // ParameterEmptySpaces.GetMinionValue: empty grid cells; with Owner set, cells 0-4 when Owner is the Origin pet's owner, else 5-9
+        const m = paramMinion(p, pa); if (!m) return 1;
+        const cells = pa.B.board.cells; let n = 0;
+        for (let i = 0; i < cells.length; i++) {
+          if (p.Owner != null && (p.Owner === m.Owner ? i >= 5 : i < 5)) continue;
+          if (!cells[i]) n++;
+        }
+        return n;
+      }
+      case 'ParameterMinionAttack': { const m = paramMinion(p, pa); return m ? m.Attack.Total : 1; }
+      // ParameterCondition.GetMinionValue: Condition checked with the Origin pet as owner (TriggerPhase 1, the args' Owner);
+      // no condition or true -> TrueValue, else FalseValue (read with the same args)
+      case 'ParameterCondition': {
+        const m = paramMinion(p, pa); if (!m) return 1;
+        const ok = !p.Condition || conditionCheck(p.Condition, { B: pa.B, TriggerEvent: pa.TriggerEvent ?? null, Random: pa.Random ?? null, OwnerId: m.Id, TriggerPhase: 1, Reversed: false, Owner: pa.Owner ?? null });
+        const v = ok ? p.TrueValue : p.FalseValue; if (!v) throw new Error('ParameterCondition without a value');
+        return paramValue(v, pa);
+      }
+      case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
+      case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
+      case 'ParameterMinionMana': { const m = paramMinion(p, pa); return m ? m.Mana : 1; }
+      case 'ParameterRolls': { const m = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; if (!m) return 0; return m.Owner === 1 ? pa.B.board.RollsThisTurn || 0 : m.Owner === 2 ? pa.B.board.OpponentRolls || 0 : 0; } // BuildExtensions.CountRolls
+      case 'ParameterTrumpets': { const m = pa.SourceId ? pa.B.board.findMinion(pa.SourceId) : null; return m ? getTrumpets(pa.B.board, m.Owner) : 0; }
+      default: return unported(t);
+    }
+  }
+
+  // ---------------------------------------------------------------- MinionFinder
+  const PERKS = () => D.perks || {};
+  const perkPositive = (perk) => { const p = PERKS()[perk]; if (!p) unported('PerkConstants.IsPositive(' + perk + ')'); return !!p.positive; };
+  /** MinionFinder.Predicate(board, candidate, owner) */
+  function predicate(f, B, cand, owner, aim) {
+    if (!f) return true;
+    if (f.FinderRequired && !owner) return false;
+    if (f.Alive != null && !f.IncludeDead && cand.IsAlive !== f.Alive) return false;
+    if (f.Other != null) { if (!owner) return false; if (f.Other === false && !idEq(owner.Id, cand.Id)) return false; if (f.Other === true && idEq(owner.Id, cand.Id)) return false; }
+    if (f.Team != null && owner) { if (cand.Owner === owner.Owner ? f.Team === 1 : f.Team === 0) return false; }
+    if (f.Perk != null && cand.Perk !== f.Perk) return false;
+    if (f.WithoutPerk != null && cand.Perk != null && cand.Perk === f.WithoutPerk) { if (f.WithoutPerkAndDurability == null) return false; if (f.WithoutPerkAndDurability === cand.PerkDurability) return false; }
+    // WithoutPerkPara (+0x138): a ParameterMinionPerk read with target = candidate, source = owner; same rule as WithoutPerk
+    if (f.WithoutPerkPara) {
+      const pp = f.WithoutPerkPara; if (short(T(pp)) !== 'ParameterMinionPerk' || (pp.Origin ?? 0) > 1) unported('MinionFinder.WithoutPerkPara ' + short(T(pp)) + ' origin ' + pp.Origin);
+      const id = (pp.Origin ?? 0) === 0 ? (owner ? owner.Id : null) : cand.Id; const pm = id ? B.board.findMinion(id) : null; const perk = pm ? pm.Perk ?? null : null;
+      if (perk != null && cand.Perk === perk) { if (f.WithoutPerkAndDurability == null) return false; if (f.WithoutPerkAndDurability === cand.PerkDurability) return false; }
+    }
+    const pa = { B, TargetId: cand.Id, SourceId: owner ? owner.Id : null };
+    if (f.AttackEven != null) { const r = cand.Attack.Total % 2; if ((r === 0 && f.AttackEven === false) || (r !== 0 && f.AttackEven === true)) return false; }
+    if (f.AttackMax != null && cand.Attack.IsMax !== f.AttackMax) return false;
+    if (f.Attack) { const v = paramValue(f.Attack, pa); const s = f.AttackDuration == null ? cand.Attack.Total : f.AttackDuration === 0 ? cand.Attack.Permanent : f.AttackDuration === 1 ? cand.Attack.Temporary : cand.Attack.Total; if (!opCheck(f.AttackOperator, s, v)) return false; }
+    if (f.AttackCountThisTurn != null && !opCheck(f.AttackCountThisTurnOperator, cand.AttackCountsThisTurn, f.AttackCountThisTurn)) return false;
+    if (f.JumpCountThisTurn != null && !opCheck(f.JumpCountThisTurnOperator, cand.JumpsThisBattle, f.JumpCountThisTurn)) return false;
+    if (f.HealthEven != null) { const r = cand.Health.Total % 2; if ((r === 0 && f.HealthEven === false) || (r !== 0 && f.HealthEven === true)) return false; }
+    if (f.HealthMax != null && cand.Health.IsMax !== f.HealthMax) return false;
+    if (f.Health) { const v = paramValue(f.Health, pa); const s = f.HealthDuration == null ? cand.Health.Total : f.HealthDuration === 0 ? cand.Health.Permanent : f.HealthDuration === 1 ? cand.Health.Temporary : cand.Health.Total; if (!opCheck(f.HealthOperator, s, v)) return false; }
+    if (f.TriggerCount || f.ActivationCount) unported('MinionFinder.TriggerCount/ActivationCount');
+    if (f.StatsMax != null && (cand.Attack.IsMax && cand.Health.IsMax) !== f.StatsMax) return false;
+    if (f.Mana) { const v = paramValue(f.Mana, pa); if (!opCheck(f.ManaOperator, cand.Mana, v)) return false; }
+    if (f.Level != null && !opCheck(f.LevelOperator, cand.Level, f.Level)) return false;
+    // Power / Charge (each with its ability): GetPower / GetCharge of the candidate against the parameter (target = candidate, source = owner)
+    const fpa = () => ({ B, TargetId: cand.Id, SourceId: owner ? owner.Id : null, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: null, TriggerEvent: null, Owner: owner ? owner.Owner : 0 });
+    if (f.Power && f.PowerAbility != null && !opCheck(f.PowerOperator || 0, cand.Power[f.PowerAbility] || 0, paramValue(f.Power, fpa()))) return false;
+    if (f.Charge && f.ChargeAbility != null) {
+      // MinionExtensions.GetCharge reads the ability model's Charges, but only once the pet has a power dictionary (+0xd8),
+      // which the game creates on the first AddPower
+      const hasDict = cand._powerDict || Object.keys(cand.Power).length > 0;
+      const a = hasDict ? cand.Abilities.find((x) => x.Enum === f.ChargeAbility) : null;
+      if (!opCheck(f.ChargeOperator || 0, (a && a.Charges) || 0, paramValue(f.Charge, fpa()))) return false;
+    }
+    if (f.LevelMax != null && (cand.Level > 2) !== f.LevelMax) return false;
+    if (f.Countdown != null) unported('MinionFinder.Countdown');
+    if (f.Tier) { const v = paramValue(f.Tier, pa); const tier = (D.minions[cand.Enum] || {}).tier; if (!opCheck(f.TierOperator, tier, v)) return false; }
+    // ActiveAbility (+0x6a): has an ability not DisabledTemp; SameAbility (+0x199, needs an owner): shares an ability enum with the owner;
+    // SellValue (+0x248, operator +0x250): MinionExtensions.GetGoldValue
+    if (f.ActiveAbility != null && cand.Abilities.some((a) => !a.DisabledTemp) !== f.ActiveAbility) return false;
+    if (f.SameAbility != null && owner && (cand.Abilities.find((a) => owner.Abilities.some((b) => b.Enum === a.Enum)) != null) !== f.SameAbility) return false;
+    if (f.SellValue != null && !opCheck(f.SellValueOperator || 0, getGoldValue(B, cand), f.SellValue)) return false;
+    if (f.Minion != null && cand.Enum !== f.Minion) return false;
+    if (f.ExcludeDifficulty && (D.minions[cand.Enum] || {}).relicType === 1) return false; // MinionTemplate.RelicType (+0x100) == 1
+    if (f.Types && f.Types.length) { const tt = (D.minions[cand.Enum] || {}).type ?? 0; if (!f.Types.includes(tt)) return false; }
+    if (f.SameTribe != null && owner) { const same = owner.Tribe != null && cand.Tribe != null && owner.Tribe === cand.Tribe; if (same !== f.SameTribe) return false; }
+    if (f.Direction != null) {
+      if (!owner) return false;
+      if (!(f.DirectionIncludeSelf != null && idEq(cand.Id, owner.Id))) {
+        let ahead, behind;
+        if (owner.Owner === 1) { ahead = owner.Point.x < cand.Point.x; behind = cand.Point.x < owner.Point.x; } else { ahead = cand.Point.x < owner.Point.x; behind = owner.Point.x < cand.Point.x; }
+        if (f.Direction === 0 && !ahead) return false;
+        if (f.Direction === 1 && !behind) return false;
+      }
+    }
+    if (f.Distance != null) { const d = getDistance(B.board, cand, owner, f.DistanceEmptySpaces, f.DistanceSkipDead); if (!opCheck(f.DistanceOperator, d, f.Distance)) return false; }
+    if (f.FrontDistance != null) { const d = getFrontDistance(B.board, cand, !!f.FrontDistanceConsiderEmptySpaces); if (!opCheck(f.FrontDistanceOperator, d, f.FrontDistance)) return false; }
+    if (f.BackDistance != null) unported('MinionFinder.BackDistance');
+    // PerkTier / WithRollablePerk test the spell behind the candidate's perk (PerkTemplate.Spell); no perk or spell fails
+    const perkSpell = () => { if (cand.Perk == null) return null; const pk = PERKS()[cand.Perk]; if (!pk || pk.spell == null) return null;
+      const sp = ((D.lists || {}).releasedSpells || []).find((x) => x.e === pk.spell); if (!sp) unported('MinionFinder perk spell not released'); return sp; };
+    if (f.PerkTier) {
+      const sp = perkSpell(); if (!sp) return false;
+      const want = paramValue(f.PerkTier, { B, TargetId: cand.Id, SourceId: owner ? owner.Id : null, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: null, TriggerEvent: null, Owner: owner ? owner.Owner : 0 });
+      if (!opCheck(f.PerkTierOperator ?? 2, sp.tier, want)) return false;
+    }
+    if (f.WithRollablePerk != null) { const sp = perkSpell(); if (!sp) return false; if (sp.rollable !== f.WithRollablePerk) return false; }
+    if (f.HasAim != null) { const has = !!aim && idEq(aim, cand.Id); if (has !== f.HasAim) return false; }
+    if (f.HasPerk != null && (cand.Perk != null) !== f.HasPerk) return false;
+    // HasMidBattlePerk / HasUniversalPerk: "has a perk" must equal the flag, then the perk's MidBattle / Universal must too
+    if (f.HasMidBattlePerk != null) { const has = cand.Perk != null; if (has !== f.HasMidBattlePerk) return false; if (has) { const pk = PERKS()[cand.Perk]; if (!pk || pk.midBattle !== f.HasMidBattlePerk) return false; } }
+    if (f.HasUniversalPerk != null) { const has = cand.Perk != null; if (has !== f.HasUniversalPerk) return false; if (has) { const pk = PERKS()[cand.Perk]; if (!pk || pk.universal !== f.HasUniversalPerk) return false; } }
+    if (f.HasPositivePerk != null) { const has = cand.Perk != null; if (has !== f.HasPositivePerk) return false; if (has && perkPositive(cand.Perk) !== f.HasPositivePerk) return false; }
+    if (f.HasNegativePerk != null) { const has = cand.Perk != null; if (has !== f.HasNegativePerk) return false; if (has && !perkPositive(cand.Perk) !== f.HasNegativePerk) return false; }
+    if (f.HasNoPositivePerk != null && cand.Perk != null && !perkPositive(cand.Perk) !== f.HasNoPositivePerk) return false;
+    if (f.HasNoNegativePerk != null && cand.Perk != null && perkPositive(cand.Perk) !== f.HasNoNegativePerk) return false;
+    if (f.HasTempStats != null) { const has = cand.Attack.Temporary > 0 || cand.Health.Temporary > 0; if (has !== f.HasTempStats) return false; }
+    // Has*Trigger: any one set field that matches is enough (HasBeforeDeathTrigger tests the death effect against HasDeathTrigger's value)
+    if (f.HasPlayTrigger != null || f.HasSellTrigger != null || f.HasDeathTrigger != null || f.HasBeforeDeathTrigger != null || f.HasHurtTrigger != null ||
+      f.HasStartBattleTrigger != null || f.HasStartTurnTrigger != null || f.HasEndTurnTrigger != null) {
+      let ok = false;
+      if (f.HasPlayTrigger != null) ok = hasPlayEffect(cand) === f.HasPlayTrigger;
+      if (f.HasSellTrigger != null && hasSellEffect(cand) === f.HasSellTrigger) ok = true;
+      if (f.HasHurtTrigger != null && hasHurtEffect(cand) === f.HasHurtTrigger) ok = true;
+      if ((f.HasDeathTrigger != null || f.HasBeforeDeathTrigger != null) && hasDeathEffect(cand) === !!f.HasDeathTrigger) ok = true;
+      if (f.HasStartBattleTrigger != null && hasTrigger(cand, ['TriggerStartBattle'], false) === f.HasStartBattleTrigger) ok = true;
+      if (f.HasStartTurnTrigger != null && hasTrigger(cand, ['TriggerStartTurn'], false) === f.HasStartTurnTrigger) ok = true;
+      if (f.HasEndTurnTrigger != null && hasTrigger(cand, ['TriggerEndTurn'], false) === f.HasEndTurnTrigger) ok = true;
+      if (!ok) return false;
+    }
+    if (f.HasDamageEffect != null && cand.Abilities.some((a) => hasEffect(a, 'EffectDamage')) !== f.HasDamageEffect) return false;
+    if (f.ExcludeTypeSelf && owner && owner.Enum === cand.Enum) return false;
+    if (f.ExcludeType != null && f.ExcludeType === cand.Enum) return false;
+    if (f.ExcludeTypes && f.ExcludeTypes.values && f.ExcludeTypes.values.includes(cand.Enum)) return false;
+    if (f.IncludeTypes && f.IncludeTypes.values && !f.IncludeTypes.values.includes(cand.Enum)) return false;
+    if (f.IsPlayerMinion != null && cand.Owner !== 1) return false;
+    if (f.HasSibling != null || f.AllowUniques != null) unported('MinionFinder.HasSibling/AllowUniques');
+    if (f.DamageTaken != null && cand.DamageTaken !== f.DamageTaken) return false;
+    if (f.DamageDealt != null && (cand.DamageDealtThisBattle > 0) !== f.DamageDealt) return false;
+    if (f.FoodEaten != null && !opCheck(f.FoodEatenOperator || 0, cand.SpellCountsThisTurn || 0, f.FoodEaten)) return false;
+    if (f.LastTargetThisTurn != null) { if (!owner) return false; if ((owner.LastTargetsThisTurn || []).some((x) => idEq(x, cand.Id)) !== f.LastTargetThisTurn) return false; }
+    if (f.OldTargetsThisTurn != null) { if (!owner) return false; if ((owner.OldTargetsThisTurn || []).some((x) => idEq(x, cand.Id)) !== f.OldTargetsThisTurn) return false; }
+    if (f.InPack != null) { // the side's custom deck, else the template's packs
+      const pack = cand.Owner === 1 ? (B.board.Pack ?? 0) : (B.board.OpponentPack ?? 0); if (isCustomPack(pack)) unported('MinionFinder.InPack custom deck');
+      if (((D.minions[cand.Enum] || {}).packs || []).includes(pack) !== f.InPack) return false;
+    }
+    // BoardModel.PreviousSurvivors (+0xf8) and WackyMinionParameter (+0x1a0) are shop history the recordings do not carry; the
+    // harness boards leave them empty (battles #171/#254 match with that)
+    if (f.IsPreviousSurvivor != null && (B.board.PreviousSurvivors || []).some((h) => idEq(h.Id, cand.Id)) !== f.IsPreviousSurvivor) return false;
+    if (f.InWackyParameters != null && (((B.board.WackyMinionParameter || []).includes(cand.Enum)) !== !!B.board.WackyMinionParameterInverted) !== f.InWackyParameters) return false;
+    if (f.WithoutMemoryAbility != null) unported('MinionFinder.WithoutMemoryAbility');
+    if (f.IsEnemyCheck && cand.Owner !== 2) return false;
+    return true;
+  }
+  /** MinionExtensions.GetDistance */
+  function getDistance(board, a, b, emptySpaces, skipDead) {
+    if (!a || !b) return 0;
+    if (emptySpaces) return Math.abs(a.Point.x - b.Point.x);
+    // walk from a to b counting occupied cells (dead pets too unless skipDead); arriving at b counts as one more
+    let x = a.Point.x, n = 0;
+    while (x !== b.Point.x) {
+      x += b.Point.x <= a.Point.x ? -1 : 1;
+      if (x === b.Point.x) return n + 1;
+      const c = board.get({ x, y: 0 }); if (c && (!skipDead || !c.Dead)) n++;
+    }
+    return n;
+  }
+  /** MinionExtensions.GetRelativeDirection(from, to): null on the same cell; 0 Forward / 1 Backward from `from`'s side. */
+  function getRelativeDirection(from, to) {
+    if (!from || !to || from.Point.x === to.Point.x) return null;
+    if (from.Owner === 1) return to.Point.x <= from.Point.x ? 1 : 0;
+    if (from.Owner === 2) return from.Point.x <= to.Point.x ? 1 : 0;
+    return null;
+  }
+
+  // ---------------------------------------------------------------- auras (BoardExtensions.FindAuras / FindAuraAbilities / CheckAura)
+  const minionType = (m) => (D.minions[m.Enum] || {}).type || 0;
+  const minionTier = (m) => (D.minions[m.Enum] || {}).tier;
+  /** abilities of `holder` with this AuraEnum whose AuraType is the target's MinionType */
+  function findAuraAbilities(target, aura, holder) {
+    const out = [];
+    for (const a of holder.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab || ab.AuraEnum == null) continue; if (aura != null && ab.AuraEnum !== aura) continue; if ((ab.AuraType || 0) === minionType(target)) out.push(a); }
+    return out;
+  }
+  function checkAura(B, target, model, holder) {
+    if (!model) return false;
+    const ab = getAbility(model.Enum, model.Level); if (!ab) return false;
+    if (ab.AuraExcludeSelf && idEq(target.Id, holder.Id)) return false;
+    if (canAbilityCountLimit(B, model, ab) && !(model.TriggerCount < ab.TriggerLimit)) return false;
+    if (ab.AuraDirection != null) { const rd = getRelativeDirection(holder, target); if (rd == null || rd !== ab.AuraDirection) return false; }
+    if (ab.AuraDistance != null) {
+      if (ab.AuraDistance === 0 && !idEq(target.Id, holder.Id)) return false;
+      if (ab.AuraDistance < getDistance(B.board, holder, target, false, false)) return false;
+    }
+    if (ab.AuraTierMin != null && minionTier(target) < ab.AuraTierMin) return false;
+    if (ab.AuraTierMax != null && ab.AuraTierMax < minionTier(target)) return false;
+    return true;
+  }
+  /**
+   * BoardExtensions.FindAura(board, m, aura) -> the first aura ability model: none for RelicType 1; a dead pet (not perk 55)
+   * checks its own aura first; then the grid, forwards for the player and backwards otherwise, over same-side pets that are
+   * not destroyed and not perk 55
+   */
+  function findAura(B, m, aura) {
+    if (!m || (D.minions[m.Enum] || {}).relicType === 1) return null;
+    if (!m.IsAlive && m.Perk !== 55) { const a = findAuraAbilities(m, aura, m)[0]; if (a && checkAura(B, m, a, m)) return a; }
+    const cells = B.board.cells; const n = cells.length;
+    for (let i = 0; i < n; i++) {
+      const x = cells[m.Owner !== 1 ? n - i - 1 : i];
+      if (!x || x.Destroyed || x.Perk === 55 || x.Owner !== m.Owner) continue;
+      const a = findAuraAbilities(m, aura, x)[0];
+      if (a && checkAura(B, m, a, x)) return a;
+    }
+    return null;
+  }
+  /** FindAuras(board, m, aura) -> [{Minion, Ability, value, ceil}]; value = the aura ability's MagicVariable; ceil = no TriggerLimit. */
+  function findAuras(B, m, aura) {
+    if (!m) return [];
+    if ((D.minions[m.Enum] || {}).relicType === 1) return [];
+    const ref = (holder, a) => { const ab = getAbility(a.Enum, a.Level); return { Minion: holder, Ability: a, value: ab.MagicVariable || 0, ceil: ab.TriggerLimit == null, Template: ab }; };
+    // a fainted pet: its own aura when it has one that passes CheckAura; otherwise the grid scan as for a live pet
+    if (!m.IsAlive) { const a = findAuraAbilities(m, aura, m)[0]; if (a && checkAura(B, m, a, m)) return [ref(m, a)]; }
+    const out = []; const cells = B.board.cells;
+    for (let i = 0; i < cells.length; i++) {
+      const x = cells[m.Owner !== 1 ? cells.length - i - 1 : i];
+      if (!x || x.Destroyed || x.Perk === 55 || x.Owner !== m.Owner) continue;
+      for (const a of findAuraAbilities(m, aura, x)) if (checkAura(B, m, a, x)) out.push(ref(x, a));
+    }
+    return out;
+  }
+  /** BoardExtensions.GetAdjacent(m, dir, dist): dir 0 = towards the enemy, 1 = behind (from m's side). */
+  function getAdjacent(board, m, dir, dist) {
+    let d = m.Owner !== 1 ? 3 : 1; if (dir === 1) d = d === 1 ? 3 : 1;
+    const x = m.Point.x + (d === 1 ? 1 : -1) * dist;
+    return x < 0 || x >= board.Width ? null : board.get({ x, y: m.Point.y });
+  }
+  /**
+   * DamageAttemptMutator.TryAttackAdjacent (attacks only): Chili (5) hits 1 pet behind for 5, perk 123 1 pet for 4, perk 26 2 pets for 3,
+   * and an event SplashDamage hits 1 pet each side. Each looks up to 5 cells out for live pets of the target's team.
+   */
+  function tryAttackAdjacent(B, source, target, out, e, tryDamage) {
+    if (!source || e.DamageType !== 0) return;
+    const jobs = [];
+    if (source.Perk === 5) jobs.push([1, 5, [1]]);
+    else if (source.Perk === 123) jobs.push([1, 4, [1]]);
+    else if (source.Perk === 26) jobs.push([2, 3, [1]]);
+    if (e.SplashDamage != null && e.SplashDamage > 0) jobs.push([1, e.SplashDamage, [1, 0]]);
+    for (const [count, amount, dirs] of jobs) {
+      for (const dir of dirs) {
+        let hit = 0;
+        for (let i = 0; i < 5; i++) {
+          const adj = getAdjacent(B.board, target, dir, i + 1);
+          if (!adj || adj.Destroyed || adj.Dead || adj.Owner !== target.Owner) continue;
+          const saved = [e.AttackerInitialPerk, e.AttackerInitialPerkMultiplier, e.DefenderInitialPerk, e.DefenderInitialPerkMultiplier];
+          e.SourcePerk = source.Perk; e.AttackerInitialPerk = null; e.AttackerInitialPerkMultiplier = 1; e.DefenderInitialPerk = null; e.DefenderInitialPerkMultiplier = 1;
+          const r = tryDamage(adj, source, e, amount);
+          e.SourcePerk = null; [e.AttackerInitialPerk, e.AttackerInitialPerkMultiplier, e.DefenderInitialPerk, e.DefenderInitialPerkMultiplier] = saved;
+          out.push(...r);
+          if (++hit === count) break;
+        }
+      }
+    }
+  }
+  /** DamageCalculationMinion.TryIncreaseAbilityTriggerCount: count the use; an aura at its limit goes to Exhausted. */
+  function countAura(B, calc, r) {
+    if (r.Template.TriggerLimit == null || !canAbilityCountLimit(B, r.Ability, r.Template)) return;
+    r.Ability.TriggerCount++;
+    if (r.Ability.TriggerCount < r.Template.TriggerLimit) return;
+    (calc.Exhausted = calc.Exhausted || []).push({ Minion: r.Minion, Ability: r.Ability });
+  }
+  /** ListExtensions.FastShuffle: Fisher-Yates from the end with Next(0, n). */
+  function fastShuffle(list, rand) { for (let n = list.length; n >= 2; n--) { const k = rand.next(0, n); const t = list[k]; list[k] = list[n - 1]; list[n - 1] = t; } return list; }
+  const ORDER_KEYS = {
+    0: [(m) => m.Health.Total, true], 1: [(m) => m.Health.Total, false], 4: [(m) => (D.minions[m.Enum] || {}).tier, true], 5: [(m) => (D.minions[m.Enum] || {}).tier, false],
+    6: [(m) => m.Attack.Total, true], 7: [(m) => m.Attack.Total, false], 8: [(m) => m.Attack.Total + m.Health.Total, true], 9: [(m) => m.Attack.Total + m.Health.Total, false],
+    10: [(m) => (m.Owner !== 1 ? m.Point.x : -m.Point.x), false], 11: [(m) => (m.Owner !== 1 ? -m.Point.x : m.Point.x), true],
+    12: [(m) => (m.Attack.IsMax ? 1 : 0), false], 13: [(m) => (m.Health.IsMax ? 1 : 0), false], 14: [(m) => (m.Attack.IsMax && m.Health.IsMax ? 1 : 0), false],
+    15: [(m) => (m.Level > 2 ? 1 : 0), false], 19: [(m) => m.Level, true], 20: [(m) => m.Level, false], 22: [(m) => m.Exp, true], 23: [(m) => m.Exp, false],
+    21: [(m) => (m.Perk == null ? -1 : perkPositive(m.Perk) ? -1 : 1), true], 24: [(m) => (m.Perk != null && perkPositive(m.Perk) ? 1 : -1), true],
+    25: [(m) => (m.Perk != null && perkPositive(m.Perk) ? -1 : 1), true],
+  };
+  /** MinionFinder.FindMinions(board, owner, aim, rand) */
+  function findMinions(f, B, owner, aim, rand) {
+    const board = B.board; let list = [];
+    const types = f.Types;
+    if (!types || !types.length || types.includes(0)) list = list.concat(f.IncludeDead ? board.findMinions(true, false) : board.findLiveMinions());
+    if (!types || !types.length || types.includes(1)) list = list.concat(board.Relics.filter(Boolean));
+    if (!list.length) return list;
+    let out = list.filter((m) => predicate(f, B, m, owner, aim));
+    if (f.Duplicates != null) {
+      // GroupBy(Enum) in first-seen order, groups of at least Duplicates pets, flattened, then alive only
+      const groups = new Map(); for (const m of out) { if (!groups.has(m.Enum)) groups.set(m.Enum, []); groups.get(m.Enum).push(m); }
+      out = [...groups.values()].filter((g) => f.Duplicates <= g.length).flat().filter((m) => m.IsAlive);
+    }
+    if (f.Randomize || f.Limit != null) fastShuffle(out, rand);
+    if (!f.ForceUnordered) {
+      const keys = [];
+      for (const o of f.Orders || []) {
+        if (o === 2 || o === 3) { if (!owner) continue; keys.push([(m) => Math.abs(owner.Point.x - m.Point.x), o === 2]); continue; }
+        if (o === 18) { keys.push([(m) => (hasDeathEffect(m) ? 1 : 0), true]); continue; } // OrderMinions 18: OrderByDescending(HasDeathEffect) (FUN_180f855f0, the same sort as the perk 28/36 keys)
+        // OrderMinions 16/17 (<>c.<OrderMinions>b__133_13 / _14): the tier of the food behind the pet's perk, -1 without a perk or a perk without a food;
+        // 16 OrderByDescending (FUN_180f855f0), 17 OrderBy (FUN_180f85870)
+        if (o === 16 || o === 17) { keys.push([(m) => { if (m.Perk == null) return -1; const pk = PERKS()[m.Perk]; if (!pk) unported('perk ' + m.Perk + ' (not in the data)'); if (pk.spell == null) return -1; const sp = (D.spells || {})[pk.spell]; if (!sp) unported('spell ' + pk.spell + ' (not in the data)'); return sp.Tier; }, o === 16]); continue; }
+        const k = ORDER_KEYS[o]; if (!k) unported('MinionFinder order ' + o); keys.push(k);
+      }
+      if (f.Limit != null && owner) {
+        if (owner.Owner === 2) keys.push([(m) => ((m.Owner === 1 && m.Perk === 28) || (m.Owner === 2 && m.Perk === 36) ? 1 : 0), true]);
+        else if (owner.Owner === 1) keys.push([(m) => ((m.Owner === 2 && m.Perk === 28) || (m.Owner === 1 && m.Perk === 36) ? 1 : 0), true]);
+      }
+      if (keys.length) {
+        const idx = out.map((m, i) => ({ m, i, k: keys.map(([fn]) => fn(m)) }));
+        idx.sort((a, b) => { for (let j = 0; j < keys.length; j++) { const d = keys[j][1] ? b.k[j] - a.k[j] : a.k[j] - b.k[j]; if (d) return d; } return a.i - b.i; });
+        out = idx.map((x) => x.m);
+      }
+    }
+    // UniqueLevels / UniqueTiers / UniqueAilments: the first pet per level, per template tier, per negative perk (pets without one are dropped)
+    const firstPer = (key) => { const seen = new Map(); for (const m of out) { const k = key(m); if (k === undefined) continue; if (!seen.has(k)) seen.set(k, m); } return [...seen.values()]; };
+    if (f.UniqueLevels) out = firstPer((m) => m.Level);
+    if (f.UniqueTiers) out = firstPer((m) => (D.minions[m.Enum] || {}).tier);
+    if (f.UniqueAilments) out = firstPer((m) => { if (m.Perk == null) return undefined; const pk = PERKS()[m.Perk]; return pk && !pk.positive ? m.Perk : undefined; });
+    if (f.Limit != null) out = out.slice(0, f.Limit);
+    if (f.Reverse) out.reverse();
+    return out;
+  }
+
+  // ---------------------------------------------------------------- Targets (TargetsBase.GetTargets)
+  /** MinionExtensions.IsSilly: in battle, perk 75, unless the pet has ability 839 at level 1 or 3 */
+  const isSilly = (B, m) => !!m && B.board.IsBattle !== false && m.Perk === 75 && !m.Abilities.some((a) => a.Enum === 839 && (a.Level === 1 || a.Level === 3));
+  /** ta: TargetsArgs {B, TriggerEvent, OwnerMinion, Aim, Random, Reversed} -> ItemId[] | null */
+  function getTargets(t, ta) {
+    const B = ta.B, board = B.board, owner = ta.OwnerMinion;
+    if (t.Condition) { if (!owner) return null; const ca = { B, TriggerEvent: ta.TriggerEvent, Random: ta.Random, OwnerId: owner.Id, Reversed: ta.Reversed }; if (!conditionCheck(t.Condition, ca)) return null; }
+    let out = getTargetsRaw(t, ta);
+    if (!out) return null;
+    if (owner && !t.ImmuneToSilly && isSilly(B, owner)) {
+      // TargetsBase.GetTargets: a Silly owner retargets at random. Count = ITargetAmount's value (TargetsFind.Limit,
+      // TargetsRelative/TargetsScan.Amount), else TargetsRelative's Position/Distance, else the raw count; then shuffle every
+      // pet (FindMinions(true,true), Fisher-Yates from the end), take that many, keep those with IMinionFiltering's finder Perk
+      const tn = short(T(t)); let n = out.length;
+      const amt = tn === 'TargetsFind' ? t.Limit : tn === 'TargetsRelative' || tn === 'TargetsScan' ? t.Amount : null;
+      if (amt) n = paramValue(amt, paramArgs(ta));
+      else if (tn === 'TargetsRelative') { const d = t.Distance ? paramValue(t.Distance, paramArgs(ta)) : null; n = t.Position === 2 ? (d != null ? d * 2 : 2) : (d != null ? d : 1); }
+      const filtering = ['TargetsAbsolute', 'TargetsFind', 'TargetsMirror', 'TargetsRelative', 'TargetsScan', 'TargetsSelf', 'TargetsTriggerSource'].includes(tn);
+      const perk = filtering && t.MinionFinder ? t.MinionFinder.Perk ?? null : null;
+      let all = fastShuffle(board.findMinions(true, true), ta.Random).slice(0, Math.max(0, n));
+      if (perk != null) all = all.filter((m) => m.Perk === perk);
+      out = all.map((m) => m.Id);
+    }
+    if (t.RemoveRelics) out = out.filter((id) => { const m = board.findMinion(id); const ty = m ? (D.minions[m.Enum] || {}).type : 0; return !(ty !== 0 && ty !== 2); });
+    // TargetsBase.GetTargets: when the owner has persisted targets this turn (MinionModel +0x140), RemoveAll of those (<>c__DisplayClass3_0.b__0)
+    if (owner && owner.CurrentTargetsThisTurn && owner.CurrentTargetsThisTurn.length) { const cur = owner.CurrentTargetsThisTurn; out = out.filter((id) => !cur.some((x) => idEq(x, id))); }
+    return out;
+  }
+  function getTargetsRaw(t, ta) {
+    const B = ta.B, board = B.board, owner = ta.OwnerMinion; const tn = short(T(t));
+    switch (tn) {
+      case 'TargetsEmpty': return [];
+      case 'TargetsSelf': {
+        if (!owner) return null;
+        if (t.Alive && !owner.IsAlive) return null;
+        if (t.ExcludeType != null && owner.Enum === t.ExcludeType) return [];
+        if (!t.MinionFinder || predicate(t.MinionFinder, B, owner, null)) return [owner.Id];
+        return null;
+      }
+      case 'TargetsTriggerSource': {
+        // a forced activation (TriggerEvent+Force, Force+WithSource included) targets one random live pet (list[Next(0, count)])
+        if (isForce(ta.TriggerEvent)) { const live = board.findLiveMinions(); return [live[ta.Random.next(0, live.length)].Id]; }
+        const s = sourceOf(ta.TriggerEvent); if (!s) return [];
+        if (t.MinionFinder) { const m = board.findMinion(s); if (!m || !predicate(t.MinionFinder, B, m, owner)) return []; }
+        return [s];
+      }
+      case 'TargetsTriggerTarget': {
+        // Silly: one random live pet (list[Next(0, count)])
+        if (!t.ImmuneToSilly && owner && isSilly(B, owner)) { const live = board.findLiveMinions(); return [live[ta.Random.next(0, live.length)].Id]; }
+        const x = targetOf(ta.TriggerEvent); if (x !== undefined) return x ? [x] : [];
+        return owner ? (owner.LastTargetsThisTurn || []).slice() : []; // no ITriggerTarget: the owner's LastTargetsThisTurn (+0x148)
+      }
+      case 'TargetsAim': { // TargetsAim.GetTargetsRaw: the aim, if any (Left / Right add its neighbours)
+        if (!ta.Aim) return [];
+        if (t.Left || t.Right) unported('TargetsAim Left/Right');
+        return [ta.Aim];
+      }
+      case 'TargetsLastSummoned': return owner ? (owner.LastSummoned || []).slice() : [];
+      case 'TargetsSilly': { const sub = owner && owner.Perk === 75 ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // perk 75 (Silly)
+      case 'TargetsReversed': { const sub = ta.Reversed ? t.TrueTargets : t.FalseTargets; return sub ? getTargets(sub, ta) : null; } // TargetsArgs.Reversed
+      case 'TargetsUntil': { for (const sub of t.Targets || []) { const r = getTargets(sub, ta); if (r && r.length) return r; } return []; } // first non-empty
+      case 'TargetsMiddle': {
+        // the middle of the live pets on the owner's side (Friendly) or the other side, in grid order; an even count picks left of
+        // centre for the opponent
+        if (!owner) return null;
+        const list = board.cells.filter((m) => m && m.IsAlive && (t.Friendly ? m.Owner === owner.Owner : m.Owner !== owner.Owner));
+        if (!list.length) return [];
+        let i = Math.trunc(list.length / 2); if (owner.Owner === 2 && list.length % 2 === 0) i -= 1;
+        i = Math.max(0, Math.min(i, list.length - 1));
+        return [list[i].Id];
+      }
+      case 'TargetsMiddleSpace': {
+        // cell 2 (Friendly) or 7, mirrored for the opponent
+        let x = t.Friendly ? 2 : 7; if (owner && owner.Owner === 2) x = 9 - x;
+        if (board.Width <= x) return [];
+        const m = board.get({ x, y: 0 }); return m ? [m.Id] : [];
+      }
+      case 'TargetsMirror': {
+        // the first live enemy (passing MinionFinder) in a breadth-first walk of the grid from the mirrored cell;
+        // neighbours go right then left for the player, left then right for the opponent (rows above/below are off the grid)
+        if (!owner) return null;
+        const W = board.Width; const start = W - owner.Point.x - 1;
+        const ok = (m) => !!m && m.IsAlive && m.Owner !== owner.Owner && (!t.MinionFinder || predicate(t.MinionFinder, B, m, owner));
+        const seen = new Set(); const q = [start]; const dirs = owner.Owner === 1 ? [1, -1] : [-1, 1];
+        while (q.length) {
+          const x = q.shift(); const m = board.get({ x, y: 0 });
+          if (ok(m)) return [m.Id];
+          seen.add(x);
+          for (const d of dirs) { const nx = x + d; if (nx >= 0 && nx < W && !seen.has(nx)) q.push(nx); }
+        }
+        return null;
+      }
+      case 'TargetsFind': {
+        const f = t.MinionFinder; const limit = t.Limit ? paramValue(t.Limit, paramArgs(ta)) : null;
+        if (f.Duplicates == null) f.Alive = true; // the game sets this on the shared finder
+        f.Limit = limit;
+        let origin = owner;
+        if (t.RelativeOrigin != null) { origin = null; const ev2 = ta.TriggerEvent; if (t.RelativeOrigin === 2 && sourceOf(ev2)) origin = board.findMinion(sourceOf(ev2)); else if (t.RelativeOrigin === 3 && targetOf(ev2)) origin = board.findMinion(targetOf(ev2)); }
+        let list = findMinions(f, B, origin, ta.Aim, ta.Random);
+        if (t.SecondaryMinionFinder) unported('TargetsFind.SecondaryMinionFinder');
+        // Silly: as many random live pets as were found (shuffle from the end, take)
+        if (!t.ImmuneToSilly && owner && isSilly(B, owner)) return fastShuffle(board.findLiveMinions(), ta.Random).slice(0, list.length).map((m) => m.Id);
+        return list.map((m) => m.Id);
+      }
+      case 'TargetsRelative': {
+        let origin = owner;
+        if (t.RelativeToSource && sourceOf(ta.TriggerEvent)) origin = board.findMinion(sourceOf(ta.TriggerEvent));
+        if (!origin) return null;
+        const out = [];
+        if (t.IncludeSelf && (!t.MinionFinder || predicate(t.MinionFinder, B, origin, origin))) out.push(origin.Id);
+        const pa = paramArgs(ta);
+        const scan = (dir) => {
+          let n = paramValue(t.Distance, pa);
+          for (let i = 0; i < n; i++) {
+            const p = { x: origin.Point.x + dir * (i + 1), y: origin.Point.y };
+            if (p.x < 0 || p.x >= board.Width) break;
+            const m = board.get(p);
+            if (!t.IncludeDead && !(m && m.IsAlive)) { n++; continue; }
+            if (!t.MinionFinder || predicate(t.MinionFinder, B, m, origin)) out.push(m.Id);
+            else if (t.KeepFinding) n++;
+          }
+        };
+        const ahead = origin.Owner === 1 ? 1 : -1; // Position 0 = ahead, 1 = behind, 2 = both (behind is scanned first)
+        if (t.Position === 1 || t.Position === 2) scan(-ahead);
+        if (t.Position === 0 || t.Position === 2) scan(ahead);
+        if (t.Amount) { const a = paramValue(t.Amount, pa); if (a < out.length) unported('TargetsRelative.Amount random take'); }
+        return out;
+      }
+      case 'TargetsAbsolute': {
+        if (!owner) return null;
+        let team = t.Team; if (owner.Owner === 2) team = team === 0 ? 1 : 0;
+        let x = 0, step = 0;
+        if (team === 0) step = 1; else if (team === 1) { x = 9; step = -1; }
+        let nth = null;
+        if (t.Position === 2 || t.Position === 3) { x += step * 4; nth = 1; step = -step; }
+        if (t.Position === 1 || t.Position === 3) nth = 2;
+        if (t.Position === 4) nth = 3;
+        const out = []; let found = 0, last = null; let end = t.Offset - 1;
+        for (let i = 0; i <= end && i <= 9; i++, x += step) {
+          const m = board.get({ x, y: owner.Point.y });
+          if (!m || (!t.IncludeDead && m.Dead) || m.Destroyed) { end++; continue; }
+          if (!t.MinionFinder || predicate(t.MinionFinder, B, m, owner)) { found++; last = m; if (nth != null && nth !== found) { end++; continue; } out.push(m.Id); }
+          else if (t.KeepFinding) end++;
+        }
+        if (!out.length && last) out.push(last.Id);
+        return out;
+      }
+      case 'TargetsScan': {
+        if (!owner) return null;
+        const out = [];
+        if (!t.MinionFinder) return out;
+        t.MinionFinder.ForceUnordered = true; // the game sets this on the shared finder
+        let list = findMinions(t.MinionFinder, B, owner, ta.Aim, ta.Random);
+        if (!list.length) return out;
+        if (board.ReverseMinionAccess) list = list.slice().reverse();
+        const move = owner.Owner === 1 ? 1 : 3; // MinionExtensions.GetMoveDirection
+        const dir = t.Direction ? (move === 1 ? 3 : move === 3 ? 1 : move === 0 ? 2 : 0) : move; // DirectionUtility.Relative
+        if (!t.Amount) return out;
+        const amount = paramValue(t.Amount, paramArgs(ta));
+        for (let i = 0; i < amount; i++) {
+          const idx = dir === 3 ? list.length - i - 1 : i;
+          let m;
+          if (!t.Wrap) { m = idx >= 0 && idx < list.length ? list[idx] : null; if (!m) return out; }
+          else { m = list[((idx % list.length) + list.length) % list.length]; if (!m) break; }
+          out.push(m.Id);
+        }
+        return out;
+      }
+      default: return unported(tn);
+    }
+  }
+  const paramArgs = (ta, targetId) => ({ B: ta.B, TargetId: targetId || null, SourceId: ta.OwnerMinion ? ta.OwnerMinion.Id : null,
+    TriggerSourceId: sourceOf(ta.TriggerEvent) || null, TriggerTargetId: targetOf(ta.TriggerEvent) || null, AimId: ta.Aim || null, Random: ta.Random, TriggerEvent: ta.TriggerEvent });
+
+  // ---------------------------------------------------------------- Conditions
+  /** ConditionBase.Check(ConditionArgs {B, TriggerEvent, Random, OwnerId, Reversed}) */
+  function conditionCheck(c, ca) {
+    const owner = ca.OwnerId ? ca.B.board.findMinion(ca.OwnerId) : null;
+    if (c.TrueWhenSilly && owner && owner.Perk === 75) return true;
+    let r = conditionBase(c, ca, owner);
+    if (c.Invert) r = !r;
+    return r;
+  }
+  function conditionBase(c, ca, owner) {
+    const B = ca.B; const t = short(T(c));
+    // ParameterArgs(ConditionArgs): Source and Target are both the owner
+    const pa = { B, SourceId: ca.OwnerId, TargetId: ca.OwnerId, TriggerSourceId: sourceOf(ca.TriggerEvent) || null, TriggerTargetId: targetOf(ca.TriggerEvent) || null, Random: ca.Random, TriggerEvent: ca.TriggerEvent };
+    switch (t) {
+      case 'ConditionBattle': return !!B.board.IsBattle;
+      case 'ConditionAll': return (c.Conditions || []).every((x) => conditionCheck(x, ca));
+      case 'ConditionAny': return (c.Conditions || []).some((x) => conditionCheck(x, ca));
+      case 'ConditionInt': { const v = paramValue(c.Parameter, pa); if (c.Min != null && v < c.Min) return false; if (c.Max != null && c.Max < v) return false; return true; }
+      case 'ConditionIsPositive': { const v = paramValue(c.Parameter, pa); return c.IncludeZero ? v > -1 : v > 0; }
+      case 'ConditionHasMinion': { const n = c.MinionFinder ? findMinions(c.MinionFinder, B, owner, null, ca.Random).length : B.board.cells.filter((m) => m && m.IsAlive).length; return c.MustHave <= n; }
+      case 'ConditionCountMinions': { const n = c.MinionFinder ? findMinions(c.MinionFinder, B, owner, null, ca.Random).length : B.board.cells.filter((m) => m && m.IsAlive).length; return !(c.Maximum != null && c.Maximum < n) && !(c.Minimum != null && n < c.Minimum); }
+      case 'ConditionMinion': {
+        const ids = getTargets(c.Target, { B, TriggerEvent: ca.TriggerEvent, OwnerMinion: owner, Aim: null, Random: ca.Random });
+        if (!ids) return false;
+        for (const id of ids) {
+          const m = B.board.findMinion(id); if (!m) return false;
+          if (!predicate(c.MinionFinder, B, m, owner)) return false;
+          if (c.HasEventPerk) { const e = ca.TriggerEvent; if (!(e && e.cls === 'PerkLost' && e.Perk === m.Perk)) return false; }
+        }
+        return true;
+      }
+      case 'ConditionIsTrumpetNotDone': { if (!owner) return false; return owner.Owner === 1 ? !B.board.TrumpetsDone : !B.board.OpponentTrumpetsDone; }
+      case 'ConditionIsReversed': return !!ca.Reversed; // ConditionArgs.Reversed (+0x40)
+      case 'ConditionIsDivisible': { if (!c.Parameter) return false; const v = paramValue(c.Parameter, pa); return v !== 0 && v % c.Divisor === 0; } // 0 is not divisible here
+      case 'ConditionIsOdd': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 1; } // negative odd numbers give -1: false
+      case 'ConditionPack': if (owner && (owner.Owner === 1 ? B.board.Deck : B.board.OpponentDeck)) unported('ConditionPack with a custom deck'); return false; // no custom deck: false
+      case 'ConditionIsEven': { if (!c.Parameter) return false; return paramValue(c.Parameter, pa) % 2 === 0; }
+      case 'ConditionBuild': return !B.board.IsBattle; // BoardExtensions.IsBuild: the value byte of Nullable IsBattle (+0x28) is false
+      case 'ConditionMinionsLessThan': { // LessOf count < MoreOf count (each a CompareTeam with a MinionFinder)
+        const cnt = (side) => (side && side.MinionFinder ? findMinions(side.MinionFinder, B, owner, null, ca.Random).length : null);
+        const a = cnt(c.LessOf), b = cnt(c.MoreOf); return a != null && b != null && a < b;
+      }
+      case 'ConditionIsStartOfBattle': return (B.board.BattlePhase || 0) === 0; // BoardModel.BattlePhase (+0x25c) == StartBattle
+      case 'ConditionHighestTier': case 'ConditionLowestTier': {
+        // every other candidate (finder, else every grid pet) must have a strictly lower (higher) tier than the owner
+        if (!owner) return false;
+        const list = c.MinionFinder ? findMinions(c.MinionFinder, B, owner, null, ca.Random) : B.board.cells.filter(Boolean);
+        const hi = t === 'ConditionHighestTier';
+        for (const m of list) { if (idEq(m.Id, owner.Id)) continue; const a = minionTier(m), o = minionTier(owner); if (hi ? !(a < o) : !(o < a)) return false; }
+        return true;
+      }
+      case 'ConditionHasTrumpets': { if (!owner) return false; const v = getTrumpets(B.board, owner.Owner); if (c.Min != null && v < c.Min) return false; if (c.Max != null && c.Max < v) return false; return true; }
+      case 'ConditionHasRelic': return B.board.Relics.some((m) => m && owner && m.Owner === owner.Owner && (D.minions[m.Enum] || {}).relicType !== 1 /* MinionTemplate.RelicType (+0x100) */ && (!c.MinionFinder || predicate(c.MinionFinder, B, m, owner)));
+      default: return unported(t);
+    }
+  }
+
+  // ---------------------------------------------------------------- Triggers (TriggerBase.IsTriggered)
+  const TRIGGER_EVENT = { TriggerStartBattle: 'StartBattle', TriggerBeforeStartBattle: 'BeforeStartBattle', TriggerBeforeStartBattleEnded: 'StartBattleEnded',
+    TriggerAttack: 'Attack', TriggerBeforeAttack: 'BeforeAttack', TriggerBeforeAttackEarly: 'BeforeAttackEarly', TriggerBeforeDeath: 'BeforeDeath', TriggerDeath: 'Death',
+    TriggerDeathEarly: 'DeathEarly', TriggerHurt: 'Hurt', TriggerHurtEarly: 'HurtEarly', TriggerKill: 'Kill', TriggerSummon: 'Summon', TriggerInfront: 'Infront',
+    TriggerPerkGained: 'PerkGained', TriggerPerkLost: 'PerkLost', TriggerCharged: 'Charged', TriggerPushed: 'Pushed', TriggerTransform: 'Transform', TriggerBeforeTransform: 'BeforeTransform',
+    TriggerLevelup: 'Levelup', TriggerExpGained: 'GiveExperience', TriggerManaGained: 'ManaGained', TriggerFlung: 'Flung', TriggerPetActivated: 'PetActivated',
+    TriggerHealthGained: 'HealthGained', TriggerLostAttack: 'LostAttack', TriggerBuffGained: 'BuffGained', TriggerPlayedSpellOn: 'PlayedSpellOn',
+    TriggerSell: 'Sell', TriggerBeforeSell: 'BeforeSell', TriggerPlayMinion: 'Play', TriggerSpendAttack: 'SpendAttack', TriggerSpendHealth: 'SpendHealth' };
+  const SHOP_ONLY = new Set(['TriggerEndTurn', 'TriggerStartTurn', 'TriggerRoll', 'TriggerBeforeRoll', 'TriggerGoldSpent', 'TriggerUpgradeShopTier', 'TriggerPlaySpell', 'TriggerSell', 'TriggerBeforeSell', 'TriggerPlayMinion', 'TriggerStockMinions']);
+  /** returns { Status: 0 ok | 1 not triggered | 2 condition failed, Loud } */
+  function isTriggered(tr, args) {
+    if (!args.Force && !isTriggeredRaw(tr, args)) return { Status: 1, Loud: false };
+    if (args.TriggerPhase !== 0) return checkConditions(tr, args);
+    return { Status: 0, Loud: false };
+  }
+  function checkConditions(tr, args) {
+    if (!tr.Conditions || !tr.Conditions.length) return { Status: 0, Loud: false };
+    const ca = { B: args.B, TriggerEvent: args.TriggerEvent, Random: args.Random, OwnerId: args.OwnerId, Reversed: args.Reversed };
+    for (const c of tr.Conditions) if (conditionCheck(c, ca) === !!tr.Invert) return { Status: 2, Loud: !!c.Fumble };
+    return { Status: 0, Loud: false };
+  }
+  /**
+   * SpellFilter.Predicate(board, spell, targetId, ownerId). Battle PlayedSpellOn events carry the perk's spell as a conjured
+   * SpellModel (Stolen null, Buffed false), as recorded from the game.
+   */
+  function spellFilter(f, e, ownerId) {
+    if (f.Tier != null) { const sp = ((D.lists || {}).releasedSpells || []).find((x) => x.e === e.Spell); if (!sp) unported('SpellFilter tier of an unreleased spell'); if (!opCheck(f.TierOperator || 0, sp.tier, f.Tier)) return false; }
+    if (f.Other != null) { if (!ownerId) return false; if (f.Other === false && !idEq(e.TargetId, ownerId)) return false; if (f.Other === true && idEq(e.TargetId, ownerId)) return false; }
+    if (f.Stolen != null && f.Stolen !== false) return false;
+    if (f.Conjured != null && f.Conjured !== true) return false;
+    if (f.Buffed != null && f.Buffed !== false) return false;
+    const vals = (h) => (h ? h.values || h : null);
+    if (f.Includes && !vals(f.Includes).includes(e.Spell)) return false;
+    if (f.Excludes && vals(f.Excludes).includes(e.Spell)) return false;
+    return true;
+  }
+  function isTriggeredRaw(tr, args) {
+    const e = args.TriggerEvent; const t = short(T(tr)); const B = args.B;
+    const owner = args.OwnerId ? B.board.findMinion(args.OwnerId) : null;
+    if (SHOP_ONLY.has(t)) return false;
+    switch (t) {
+      case 'TriggerStartBattle': return !!e && e.cls === 'StartBattle';
+      case 'TriggerBeforeStartBattle': return !!e && e.cls === 'BeforeStartBattle';
+      case 'TriggerBeforeStartBattleEnded': return !!e && e.cls === 'StartBattleEnded';
+      case 'TriggerAllEnemiesFaint': return !!e && e.cls === 'AllFaint' && !!owner && e.Owner === (owner.Owner === 1 ? 2 : owner.Owner === 2 ? 1 : 0);
+      case 'TriggerAllFriendsFaint': return !!e && e.cls === 'AllFaint' && !!owner && e.Owner === owner.Owner;
+      case 'TriggerEmptyFriendlyFront': return !!e && e.cls === 'EmptyFront' && !!owner && e.Owner === owner.Owner;
+      case 'TriggerComposite': return (tr.Triggers || []).some((x) => isTriggered(x, args).Status === 0);
+      case 'TriggerAura': return false;
+      default: break;
+    }
+    const want = TRIGGER_EVENT[t]; if (!want) return unported(t);
+    if (!e || e.cls !== want) return false;
+    if (!byEvent(t, tr, e, args)) return false;
+    // the pet a trigger is about: TargetId for ExpGained and PlayedSpellOn (whose SourceId is nullable, so it is not the trigger source;
+    // battle #93 of corpus2 triggers on the fed pet), else the event's source
+    const id = t === 'TriggerExpGained' || t === 'TriggerPlayedSpellOn' ? e.TargetId : sourceOf(e);
+    // TriggerFlung.GetMinion: the flung pet is off the board; the event carries it (TriggerEvent+Flung.Minion)
+    const m = t === 'TriggerFlung' ? e.Minion : id ? B.board.findMinion(id) : null;
+    if (tr.MinionFinder && !predicate(tr.MinionFinder, B, m, owner)) return false;
+    return true;
+  }
+  function byEvent(t, tr, e, args = {}) {
+    switch (t) {
+      case 'TriggerHurt': if (!tr.IncludeZero && e.Amount === 0) return false; if (tr.CanRestore && e.Amount - (e.Restored || 0) < 1) return false; return true;
+      case 'TriggerHurtEarly': return !!tr.IncludeZero || e.Amount !== 0;
+      case 'TriggerKill': return !idEq(e.SourceId, e.TargetId);
+      case 'TriggerAttack': return tr.OnlyAttackType == null || (e.AttackType || 0) === tr.OnlyAttackType;
+      case 'TriggerBeforeAttack': if (tr.AttackType != null && (e.AttackType || 0) !== tr.AttackType) return false; if (tr.FirstAttack != null && !!e.IsFirstAttack !== tr.FirstAttack) return false; return true;
+      case 'TriggerPlayedSpellOn': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.SpellFilter && !spellFilter(tr.SpellFilter, e, args.OwnerId)) return false; return true;
+      case 'TriggerCharged': return e.Ability === tr.Ability;
+      case 'TriggerPetActivated': return tr.Ability == null || e.AbilityEnum === tr.Ability;
+      case 'TriggerPerkGained': if (e.Disabled && !tr.AllowDisabledTrigger) return false; if (tr.Perk != null && e.Perk !== tr.Perk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; return true;
+      case 'TriggerPerkLost': if (tr.LostPerk != null && e.Perk !== tr.LostPerk) return false; if (tr.Positive != null && perkPositive(e.Perk) !== tr.Positive) return false; if (tr.ExcludeReplaced && e.ReplacedBy != null) { if (tr.ExcludeReplacedPositive == null) return false; if (perkPositive(e.ReplacedBy) === tr.ExcludeReplacedPositive) return false; } return true;
+      case 'TriggerBuffGained': if (tr.Health && !(e.HealthValue > 0)) return false; if (tr.Attack && !(e.AttackValue > 0)) return false; return true;
+      case 'TriggerPushed': return (e.Type || 0) === (tr.Type || 0); // TriggerPushed.IsTriggeredByEvent: same PushType
+      // TriggerTransform.IsTriggeredByEvent: IgnoreBack (+0x40) skips a transform back (+0x5c), IgnoreStacking (+0x41) a stacking one (+0x5d)
+      case 'TriggerTransform': if (tr.IgnoreBack && e.Back) return false; if (tr.IgnoreStacking && e.Stacking) return false; return true;
+      default: return true;
+    }
+  }
+
+  // ---------------------------------------------------------------- Ability.Triggered / limits
+  const canAbilityCountLimit = (B, model, ab) => { if (!model || !ab || ab.TriggerLimit == null) return false; const ty = ab.TriggerLimitType || 0; return ty === 0 || (ty === 1 && B.board.IsBattle) || (ty === 2 && !B.board.IsBattle); };
+  const canMinionAbilityTrigger = (B, model, ab) => !canAbilityCountLimit(B, model, ab) || model.TriggerCount < ab.TriggerLimit;
+  /** Ability.Triggered -> {Status, Loud} (0 Success, 1 NotTriggered, 2 Fail, 3 limit) */
+  function abilityTriggered(ab, model, trig, force, B, rand, ownerId) {
+    if (!ab || !ab.Trigger || (model && (model.Disabled || model.DisabledTemp))) return { Status: 1, Loud: false };
+    const owner = B.board.findMinion(ownerId);
+    if (owner) {
+      if (owner.Location === 6) return { Status: 1, Loud: false };
+      if (ab.Perk == null) { if (ab.Enum !== 686 && !owner.Abilities.some((a) => a.Enum === ab.Enum)) return { Status: 1, Loud: false }; }
+      else if (owner.Perk !== ab.Perk && ab.Perk !== 89) return { Status: 1, Loud: false };
+    }
+    const r = isTriggered(ab.Trigger, { B, TriggerEvent: trig, Force: force, Random: rand, OwnerId: ownerId, TriggerPhase: 1, Reversed: false });
+    if (r.Status !== 0) return r;
+    if (!model || canMinionAbilityTrigger(B, model, ab)) return { Status: 0, Loud: false };
+    return { Status: 3, Loud: true };
+  }
+
+  // ---------------------------------------------------------------- BoardExtensions.TryTriggerMinion
+  function tryTriggerMinion(B, minion, trig, rand) {
+    const out = [];
+    if (!minion.Abilities) return out;
+    for (const model of minion.Abilities) {
+      const ab = getAbility(model.Enum, model.Level);
+      // Ability.PowerTriggered -> Try<AddMinionPower>(1)
+      if (ab && ab.PowerTrigger && isTriggered(ab.PowerTrigger, { B, TriggerEvent: trig, Force: false, Random: rand, OwnerId: minion.Id, TriggerPhase: 1 }).Status === 0 && ab.PowerAbility != null)
+        out.push(wrap('Try', ev('AddMinionPower', { Owner: 0, TargetId: minion.Id, Amount: 1, Ability: ab.PowerAbility, ResultCurrent: null })));
+      if (minion.Perk === 55 && model.Enum !== 686 && model.Enum !== 806) continue; // Deaf
+      // Ability.ChargeTriggered -> Try<AddMinionCharge>(trigger value or 1)
+      if (ab && ab.Charges != null && ab.Charges !== 0 && ab.ChargeTrigger && !(ab.ChargesMax != null && ab.ChargesMax <= (model.Charges || 0)) &&
+        isTriggered(ab.ChargeTrigger, { B, TriggerEvent: trig, Force: false, Random: rand, OwnerId: minion.Id, TriggerPhase: 1 }).Status === 0)
+        out.push(wrap('Try', ev('AddMinionCharge', { Owner: 0, TargetId: minion.Id, Ability: model.Enum, Amount: trig.Value !== undefined ? trig.Value : 1 })));
+      const r = abilityTriggered(ab, model, trig, false, B, rand, minion.Id);
+      if (r.Status === 1 || r.Status === 3) continue;
+      const at = ev('AbilityTriggered', { Owner: minion.Owner, Ability: model.Enum, Level: model.Level, MinionId: minion.Id, Aim: null, TriggerEvent: trig, UpdateLevel: true, Type: 0,
+        Force: false, FailCause: r, PerkSource: null, RemovePerk: null, EffectMultiplier: null });
+      if (model.AlwaysIgnoreMinionLevel) at.UpdateLevel = false;
+      if (ab && ab.TriggerLevel && trig.TriggerLevel != null) { at.UpdateLevel = false; at.Level = trig.TriggerLevel; }
+      out.push(r.Status === 2 ? wrap('Fail', at) : wrap('Do', at));
+    }
+    if (minion.Perk != null) {
+      const pk = (D.perks || {})[minion.Perk]; // PerkConstants.GetPerk returns null for some perks (e.g. Date, Sticky): no perk abilities
+      for (const e of (pk && pk.abilities) || []) {
+        const ab = getAbility(e, 1);
+        const r = abilityTriggered(ab, null, trig, false, B, rand, minion.Id);
+        if (r.Status !== 0) continue;
+        const at = ev('AbilityTriggered', { Owner: minion.Owner, Ability: e, Level: 1, MinionId: minion.Id, Aim: null, TriggerEvent: trig, UpdateLevel: false, Type: pk.positive ? 1 : 2,
+          Force: false, FailCause: r, PerkSource: minion.Perk, RemovePerk: null, EffectMultiplier: null });
+        out.push(wrap('Do', at));
+      }
+    }
+    for (const x of out) x.Depth = trig.Depth + 1;
+    return out;
+  }
+
+  // ---------------------------------------------------------------- ActivateAbilityTrySystem / ActivateAbilityDoSystem
+  function activateAbilityTry(B, e) {
+    const t = e.Event; const board = B.board;
+    const minion = board.findMinion(t.MinionId); if (!minion) return;
+    if (t.UpdateLevel) t.Level = minion.Level;
+    const model = minion.Abilities.find((a) => a.Enum === t.Ability) || null;
+    const rand = B.randomizer(t.Owner);
+    const ab = getAbility(t.Ability, t.Level);
+    if (!ab) return;
+    if (abilityTriggered(ab, model, t.TriggerEvent, t.Force, B, rand, t.MinionId).Status !== 0) return;
+    const acts = buildRepeatActivations(B, e, minion, model, ab, rand);
+    // Jump attacks are run once ahead (Ability.Activate, consuming RNG) to fire BeforeAttack for both pets of each jump, and the
+    // activation keeps those results (PrecomputedEvents). Same skip-every-other indexing as the transform pass below.
+    if (ab.Enum === 928 || hasEffect(model, 'EffectJumpAttack')) {
+      for (let i = 0; i < acts.length; i++) {
+        const a = acts[i];
+        const r = activate(B, ab, model, a.TriggerEvent, a.Force, a.MinionId, a.Aim, B.randomizer(a.Owner), a.EffectMultiplier, false, false);
+        if (!r || !r.length) return;
+        for (const res of r) {
+          const jumps = flattenEvents([res]).filter((x) => x.cls === 'Try' && x.Event && x.Event.cls === 'MinionJumpAttack');
+          if (!jumps.length) continue;
+          for (const x of jumps) {
+            const id = ++B.jumpAttackCounter; // ActivateAbilityTrySystem static counter
+            const j = x.Event; const thrower = B.board.findMinion(j.TargetToThrow), target = B.board.findMinion(j.TargetToThrowAt);
+            const b1 = ev('BeforeAttack', { AttackerId: j.TargetToThrow, DefenderId: j.TargetToThrowAt, IsFirstAttack: thrower.AttackCountsThisBattle === 0, AttackType: 1, JumpAttacker: j.TargetToThrow, JumpAttackId: id });
+            const b2 = ev('BeforeAttack', { AttackerId: j.TargetToThrowAt, DefenderId: j.TargetToThrow, IsFirstAttack: target.AttackCountsThisBattle === 0, AttackType: 1, JumpAttacker: j.TargetToThrow, JumpAttackId: id });
+            tryActivate(B, b1); tryActivate(B, b2);
+          }
+          a.PrecomputedEvents = r; B.add(wrap('Try', a)); acts.splice(i, 1);
+        }
+      }
+    }
+    // Transforms are run once ahead (Ability.Activate, consuming RNG) to fire BeforeTransform on the pets about to change.
+    // Only every other activation gets this pass: each one handled is removed from the list while the index still advances.
+    if (ab.Enum === 941 || ab.Enum === 931 || hasEffect(model, 'EffectTransform')) {
+      const perkOnly = !minion.Abilities.some((x) => hasEffect(x, 'EffectTransform')) && (minion.Perk === 94 || minion.Perk === 103);
+      for (let i = 0; i < acts.length; i++) {
+        const a = acts[i];
+        const r = activate(B, ab, model, a.TriggerEvent, a.Force, a.MinionId, a.Aim, B.randomizer(a.Owner), a.EffectMultiplier, perkOnly, a.Reversed);
+        if (!r || !r.length) return;
+        for (const x of flattenEvents(r)) if (x.cls === 'Try' && x.Event && x.Event.cls === 'TransformMinion') tryActivate(B, ev('BeforeTransform', { SourceId: x.Event.Target }));
+        B.add(wrap('Try', a)); acts.splice(i, 1);
+      }
+    }
+    for (const a of acts) B.add(wrap('Try', a));
+    B.add(wrap('Done', t));
+    if (t.RemovePerk != null) unported('AbilityTriggered.RemovePerk');
+  }
+  /**
+   * BoardExtensions.GetPerkMultiplier(m): PerkMultiplier (default 1); times the level of an own ability whose PerkMultiplier names
+   * this perk, otherwise (in battle) times the pet's aura-2 value.
+   */
+  /** MinionExtensions.GetGoldValue(m): 1 (2 at level 2, 3 at level 3), plus twice the perk multiplier for perk 43, plus SellValue; at most 300 */
+  function getGoldValue(B, m) {
+    let v = m.Level === 3 ? 3 : m.Level === 2 ? 2 : 1;
+    if (m.Perk === 43) v += getPerkMultiplier(B, m) * 2;
+    v += m.SellValue ?? 0;
+    return Math.min(v, 300);
+  }
+  function getPerkMultiplier(B, m) {
+    if (!m || m.Perk == null) return 1;
+    const mult = m.PerkMultiplier ?? 1;
+    const a = m.Abilities.find((x) => { const ab = getAbility(x.Enum, x.Level); return ab && ab.PerkMultiplier != null; });
+    if (a && getAbility(a.Enum, a.Level).PerkMultiplier === m.Perk) return mult * a.Level;
+    if (B.board.IsBattle) { const v = getAuraValue(m, 2); if (v != null) return v * mult; }
+    return mult;
+  }
+  /** BoardExtensions.GetAuraValue(m, aura): sum of the MagicVariable of the pet's own abilities with that AuraEnum (null if none). */
+  function getAuraValue(m, aura) {
+    if (!m || (D.minions[m.Enum] || {}).relicType === 1 || m.Perk === 55) return null;
+    let v = null;
+    for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (ab && ab.AuraEnum === aura) v = (v ?? 0) + (ab.MagicVariable || 0); }
+    return v;
+  }
+  /** BoardExtensions.GetNegativePerkMultiplier(m): 1 (pet 748: its level), plus the MagicVariable of ability 388 on non-deaf enemies, times PerkMultiplier. */
+  function getNegativePerkMultiplier(B, m) {
+    if (!m) return 1;
+    let v = m.Enum === 748 ? m.Level : 1;
+    for (const x of B.board.cells) {
+      if (!x || x.Owner === m.Owner || x.Perk === 55) continue;
+      for (const a of x.Abilities) if (a.Enum === 388) { const ab = getAbility(a.Enum, a.Level); v += (ab && ab.MagicVariable) || 0; }
+    }
+    return m.PerkMultiplier != null ? v * m.PerkMultiplier : v;
+  }
+  /** MinionExtensions.HasEffect<T>(model): a visible ability with a pair whose effect is T, looking inside EffectComposite. */
+  function hasEffect(model, type) {
+    if (!model) return false; const ab = getAbility(model.Enum, model.Level); if (!ab || ab.HiddenTriggersAndEffects) return false;
+    const has = (e) => !!e && (short(T(e)) === type || (short(T(e)) === 'EffectComposite' && (e.Effects || []).some(has)));
+    return (ab.Pairs || []).some((p) => has(p.Effect));
+  }
+  /**
+   * MinionExtensions.HasTrigger<T>(m, filter): a visible ability whose (non-hidden) trigger is one of the types, looking inside
+   * TriggerComposite. ownOnly is the filter the Has*Effect helpers pass: the trigger's MinionFinder has Other == false.
+   */
+  function trigHas(t, types, ownOnly) {
+    if (!t || t.Hidden) return false;
+    if (types.includes(short(T(t))) && (!ownOnly || (t.MinionFinder && t.MinionFinder.Other === false))) return true;
+    return short(T(t)) === 'TriggerComposite' && (t.Triggers || []).some((x) => trigHas(x, types, ownOnly));
+  }
+  function hasTrigger(m, types, ownOnly) {
+    return m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects && trigHas(ab.Trigger, types, ownOnly); });
+  }
+  const hasPlayEffect = (m) => hasTrigger(m, ['TriggerPlayMinion'], true);
+  const hasSellEffect = (m) => hasTrigger(m, ['TriggerSell'], true) || hasTrigger(m, ['TriggerBeforeSell'], true);
+  const hasHurtEffect = (m) => hasTrigger(m, ['TriggerHurt'], true);
+  const hasDeathEffect = (m) => hasTrigger(m, ['TriggerDeath'], true) || hasTrigger(m, ['TriggerBeforeDeath'], true);
+  /** All events inside CastEffects wrappers, depth first. */
+  function flattenEvents(list) {
+    const out = [];
+    const walk = (e) => { if (!e) return; if (e.cls === 'CastEffectsSequentially' || e.cls === 'CastEffectsParallel') e.CastEffects.forEach(walk); else if (e.cls === 'CastEffect') e.EffectResult.Events.forEach(walk); else out.push(e); };
+    list.forEach(walk); return out;
+  }
+  /** ActivateAbilityTrySystem.TryActivate(trigger): triggers resolved at once, without tie-breaks; only Do<AbilityTriggered> results are kept, as their activations. */
+  function tryActivate(B, trig) {
+    for (const m of B.board.findMinions(false, false)) {
+      const res = tryTriggerMinion(B, m, trig, B.randomizer(m.Owner)) || [];
+      for (const r of res) {
+        if (!(r.cls === 'Do' && r.Event && r.Event.cls === 'AbilityTriggered')) continue;
+        const t = r.Event; const mm = B.board.findMinion(t.MinionId); if (!mm) continue;
+        const model = mm.Abilities.find((x) => x.Enum === t.Ability) || null;
+        for (const a of buildRepeatActivations(B, r, mm, model, getAbility(t.Ability, t.Level), B.randomizer(t.Owner))) B.add(wrap('Try', a));
+      }
+    }
+  }
+  function newActivate(t, n) {
+    return ev('AbilityActivate', { Owner: t.Owner, Ability: t.Ability, MinionId: t.MinionId, Level: t.Level, Aim: t.Aim, TriggerEvent: t.TriggerEvent, Type: t.Type, Reversed: false,
+      Force: t.Force, RepeatIndex: 0, RepeatMax: 0, DisableAfterTemp: t.DisableAfterTemp || false, FailCause: { Status: 0, Loud: false }, MinionActivationNumber: n,
+      EffectMultiplier: t.EffectMultiplier, PrecomputedEvents: null });
+  }
+  function buildRepeatActivations(B, e, minion, model, ab, rand) {
+    const t = e.Event; const list = [];
+    let reps = ab.Repeat ?? 1;
+    if (ab.RepeatParameter) reps = paramValue(ab.RepeatParameter, { B, TargetId: minion.Id, SourceId: minion.Id, TriggerSourceId: sourceOf(t.TriggerEvent) || null, TriggerTargetId: targetOf(t.TriggerEvent) || null, Random: rand, TriggerEvent: t.TriggerEvent });
+    const base = ab.Repeat ?? 1;
+    for (let i = 0; i < reps; i++) list.push(newActivate(t, ++minion.AbilityActivations));
+    if (t.Type === 1) { const extra = getPerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; list.push(a); } }
+    if (t.Type === 2) { const extra = getNegativePerkMultiplier(B, minion) - 1; for (let i = 0; i < extra; i++) for (let j = 0; j < base; j++) { const a = newActivate(t, ++minion.AbilityActivations); a.Force = true; a.Level = 1; a.Reversed = minion.Abilities.some((x) => x.Enum === 839); list.push(a); } }
+    // aura repeats (BuildRepeatActivations): each adds GetAbilityRepeats(aura level) activations at that level
+    const repeatsAt = (level) => {
+      const ab2 = getAbility(t.Ability, level ?? t.Level); if (!ab2) return 0;
+      if (!ab2.RepeatParameter) return ab2.Repeat ?? 1;
+      return paramValue(ab2.RepeatParameter, { B, TargetId: minion.Id, SourceId: minion.Id, TriggerSourceId: sourceOf(t.TriggerEvent) || null, TriggerTargetId: targetOf(t.TriggerEvent) || null,
+        AimId: null, Random: B.randomizer(t.Owner), TriggerEvent: t.TriggerEvent, Owner: t.Owner });
+    };
+    const addAt = (level) => { const n = repeatsAt(level); for (let i = 0; i < n; i++) { const a = newActivate(t, ++minion.AbilityActivations); a.Level = level; list.push(a); } };
+    if (t.Type === 0 && !(ab.RepeatFromAuraDisabled || t.RepeatFromAuraDisabled)) {
+      const first = minion.Abilities.find((x) => { const xa = getAbility(x.Enum, x.Level); return xa && !xa.RepeatFromAuraDisabled; });
+      if (first && first.Enum === ab.Enum && B.board.IsBattle) { const a = findAura(B, minion, 0); if (a) addAt(a.Level); }
+      for (const ref of findAuras(B, minion, 5)) addAt(ref.Ability.Level);
+      if (model && hasTrigger({ Abilities: [model] }, ['TriggerSpendAttack', 'TriggerSpendHealth'], false) && findAuras(B, minion, 13).length) unported('BuildRepeatActivations aura 13');
+    }
+    if (model && hasDeathEffect({ Abilities: [model] })) {
+      const a = findAura(B, minion, 4);
+      if (a) { if (a.AlwaysIgnoreMinionLevel) list.push(newActivate(t, ++minion.AbilityActivations)); addAt(a.Level); }
+    }
+    return list;
+  }
+  function activateAbilityDo(B, e) {
+    const a = e.Event; const board = B.board;
+    const minion = board.findMinion(a.MinionId);
+    const model = minion ? minion.Abilities.find((x) => x.Enum === a.Ability) || null : null;
+    const ab = getAbility(a.Ability, a.Level);
+    if (model && !canMinionAbilityTrigger(B, model, ab)) return;
+    const rand = B.randomizer(e.Owner);
+    const events = a.PrecomputedEvents && a.PrecomputedEvents.length ? a.PrecomputedEvents : activate(B, ab, model, a.TriggerEvent, a.Force, a.MinionId, a.Aim, rand, a.EffectMultiplier, false, a.Reversed);
+    if (!events || !events.length) return;
+    B.add(events);
+    B.add(wrap('Done', a));
+    if (ab && ab.ManaSpender) {
+      // ProcessAbilityActivateTry: a mana spender then spends ManaSpenderAmount (all mana when null), or its excess mana with ManaSpenderExcess
+      const sm = ev('SpendMinionMana', { Owner: a.Owner, TargetId: a.MinionId, Spend: ab.ManaSpenderAmount ?? null, ResultTargetManaOld: 0, ResultTargetManaNew: 0 });
+      if (ab.ManaSpenderExcess) sm.Spend = getExcessMana(board.findMinion(a.MinionId));
+      B.add(wrap('Try', sm));
+    }
+    if (model) { if (canAbilityCountLimit(B, model, ab)) model.TriggerCount++; if (a.DisableAfterTemp) model.DisabledTemp = true; }
+  }
+
+  // ---------------------------------------------------------------- Ability.Activate
+  function activate(B, ab, model, trig, force, ownerId, aim, rand, effectMultiplier, perkOnly, reversed) {
+    if (!ab || !ab.Trigger) return null; // an ability without Pairs (dropped as empty by the data build) still activates, with no effects
+    const board = B.board; const owner = board.findMinion(ownerId);
+    if (!owner || owner.Location === 6) return null;
+    if (!reversed && ab.Perk != null) { const pk = (D.perks || {})[ab.Perk]; if (pk && !pk.positive && B.hooks.ailmentReversed) reversed = B.hooks.ailmentReversed(B, owner); }
+    const targs = { B, TriggerEvent: trig, Force: force, Random: rand, OwnerId: ownerId, TriggerPhase: 1, Reversed: reversed };
+    if (isTriggered(ab.Trigger, targs).Status !== 0) return [];
+    if (checkConditions(ab.Trigger, targs).Status !== 0) return [];
+    if (model) model.ActivatedCount++;
+    const outer = [];
+    if (ab.Trigger.TypeLimit != null) {
+      trig.Exhausted = trig.Exhausted || {};
+      const n = trig.Exhausted[owner.Enum] || 0; if (ab.Trigger.TypeLimit <= n) return [];
+      trig.Exhausted[owner.Enum] = n + 1;
+    }
+    owner.LastSummoned = [];
+    const parallel = !!ab.ForceParallelEffectsRenderings;
+    const wrapList = (list) => ev(parallel ? 'CastEffectsParallel' : 'CastEffectsSequentially', { CastEffects: list });
+    for (const pair of ab.Pairs || []) {
+      if (perkOnly && !(pair.Effect && pair.Effect.PerkSource != null)) continue;
+      const ta = { B, TriggerEvent: trig, OwnerMinion: owner, Aim: aim, Random: rand, Reversed: reversed };
+      const targets = getTargets(pair.Targets, ta);
+      const ga = { B, Level: ab.Level, Owner: owner.Owner, TargetIds: targets, SourceId: owner.Id, TriggerEvent: trig, Random: rand, EffectMultiplier: effectMultiplier, Reversed: reversed, AimId: aim };
+      const effects = short(T(pair.Effect)) === 'EffectComposite' ? null : [pair.Effect];
+      if (effects) { const r = effectGlobal(pair.Effect, ga); if (r && r.length) outer.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: pair.Effect } })); }
+      else { const inner = []; for (const sub of pair.Effect.Effects || []) { const r = effectGlobal(sub, ga); if (r && r.length) inner.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: sub } })); } if (inner.length) outer.push(wrapList(inner)); }
+      if (!pair.Global && (!targets || !targets.length)) { if ((ab.Interuptor || 0) === 0) return outer; continue; } // returned unwrapped (may be empty)
+      const perTarget = [];
+      for (const tid of targets || []) {
+        const sa = { B, Level: ab.Level, Owner: owner.Owner, TargetId: tid, SourceId: owner.Id, TriggerEvent: trig, Random: rand, EffectMultiplier: effectMultiplier, Reversed: reversed };
+        if (effects) { const r = effectSingle(pair.Effect, sa); if (r && r.length) perTarget.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: pair.Effect } })); }
+        else { const sub = []; for (const x of pair.Effect.Effects || []) { const r = effectSingle(x, sa); if (r && r.length) sub.push(ev('CastEffect', { Owner: owner.Owner, EffectResult: { Events: r, Effect: x } })); } if (sub.length) outer.push(wrapList(sub)); } // a composite target's wrapper goes straight to the outer list
+      }
+      if (perTarget.length) outer.push(ev('CastEffectsParallel', { CastEffects: perTarget }));
+      if (ab.PersistTargets) { owner.CurrentTargetsThisTurn = (owner.CurrentTargetsThisTurn || []).concat(targets || []); owner.LastTargetsThisTurn = targets; } // MinionModel +0x140 / +0x148
+      if ((ab.Interuptor || 0) === 1) return outer; // returned unwrapped
+    }
+    return [wrapList(outer)];
+  }
+
+  // ---------------------------------------------------------------- Spells
+  /** a new SpellModel (SpellModel(ItemId, SpellEnum)); BoardExtensions.GenerateItemId takes the board's next unique number */
+  function newSpell(B, e) {
+    const tpl = (D.spells || {})[e]; if (!tpl) unported('spell ' + e + ' (not in the data)');
+    return { cls: 'SpellModel', Id: M.itemId('M', B.board.nextUnique()), Enum: e, Price: tpl.Price, Frozen: false, Power: null, Stolen: null, Conjured: null, Relic: null, Buffed: false, Links: null };
+  }
+  /** SpellCatalogueBase.GetSpells: the catalogue's spells, then Price (a cap), Discount, Frozen and Power */
+  function spellCatalogue(c, ca) {
+    const t = short(T(c)); let out;
+    switch (t) {
+      case 'SpellCatalogueList': {
+        // SpellCatalogueList.GetSpellsBase: Spells within TierMin / TierMax (and unlocked or not, TierUnlocked), then Amount picks
+        // list[Next(0, count)]; without AllowDuplicates a picked spell leaves the list
+        const cand = [];
+        for (const e of c.Spells || []) {
+          const tpl = (D.spells || {})[e]; if (!tpl) unported('spell ' + e + ' (not in the data)');
+          if (c.TierMin != null && tpl.Tier < c.TierMin) continue;
+          if (c.TierMax != null && c.TierMax < tpl.Tier) continue;
+          if (c.TierUnlocked != null && c.TierUnlocked !== (tpl.Tier <= (ca.B.board.Tier || 0))) continue;
+          cand.push(e);
+        }
+        out = [];
+        for (let i = 0; i < ca.Amount; i++) {
+          if (!cand.length) unported('SpellCatalogueList with nothing to pick');
+          const e = cand[ca.Random.next(0, cand.length)];
+          out.push(newSpell(ca.B, e));
+          if (!c.AllowDuplicates) cand.splice(cand.indexOf(e), 1);
+        }
+        break;
+      }
+      default: return unported(t);
+    }
+    for (const sp of out) {
+      if (c.Price != null && c.Price < sp.Price) sp.Price = c.Price;
+      if (c.Discount != null) sp.Price -= c.Discount;
+      if (c.Frozen != null) sp.Frozen = c.Frozen;
+      if (c.Power != null) sp.Power = c.Power;
+    }
+    return out;
+  }
+  /** BoardPartExtensions.CanAimSpellAt: the spell's Aim (no owner pet, Owner 1, no random) includes the target; no Aim is false */
+  function canAimSpellAt(B, sp, id) {
+    const tpl = (D.spells || {})[sp.Enum]; if (!tpl || !tpl.Aim) return false;
+    const r = getTargets(tpl.Aim, { B, TriggerEvent: null, OwnerMinion: null, OwnerSpell: sp, Owner: 1, Aim: id, Random: null, Reversed: false });
+    return !!r && r.some((x) => idEq(x, id));
+  }
+  /** BoardExtensions.GetSpellMultiplier: 1, plus (no source) the level of every pet ability 89 that can trigger */
+  function spellMultiplier(B, sourceId) {
+    let m = 1; if (sourceId) return m;
+    for (const pet of B.board.cells) {
+      if (!pet) continue;
+      for (const model of pet.Abilities || []) if (model.Enum === 89 && canMinionAbilityTrigger(B, model, getAbility(89, model.Level))) m += model.Level;
+    }
+    return m;
+  }
+  /**
+   * Spell.Activate(board, owner, spell, source, aim, random): per pair, targets from TargetsArgs (no trigger, no owner pet, the spell,
+   * the owner, the aim); effect args are Level 1 and Owner 1 (as in the game) with the source, the aim and the spell. The global
+   * result is a CastEffect; the per-target results go in one CastEffectsParallel (added even when empty); the first pair then adds
+   * Done<PlayedSpellOn> per target. A pair without targets ends the activation unless AlwaysActivateAllPairs.
+   * (MinionModel.SpellMemory is set for a target whose template has a RememberSpells ability; none does in this build.)
+   */
+  function activateSpell(B, tpl, owner, sp, sourceId, aimId, rand) {
+    const result = []; const pairs = tpl.Pairs || [];
+    const cast = (r, eff) => ev('CastEffect', { Owner: owner, EffectResult: { Events: r, Effect: eff } });
+    for (let i = 0; i < pairs.length; i++) {
+      const pair = pairs[i];
+      if (short(T(pair.Effect)) === 'EffectComposite') unported('spell with EffectComposite');
+      const targets = getTargets(pair.Targets, { B, TriggerEvent: null, OwnerMinion: null, OwnerSpell: sp, Owner: owner, Aim: aimId, Random: rand, Reversed: false });
+      const ga = { B, Level: 1, Owner: 1, TargetIds: targets, SourceId: sourceId, TriggerEvent: null, Random: rand, EffectMultiplier: null, Reversed: false, AimId: aimId, Spell: sp };
+      const r = effectGlobal(pair.Effect, ga); if (r && r.length) result.push(cast(r, pair.Effect));
+      if (!targets || !targets.length) { if (!tpl.AlwaysActivateAllPairs) return result; continue; }
+      const per = [];
+      for (const tid of targets) {
+        const sa = { B, Level: 1, Owner: 1, TargetId: tid, SourceId: sourceId, TriggerEvent: null, Random: rand, EffectMultiplier: null, Reversed: false, Spell: sp };
+        const r2 = effectSingle(pair.Effect, sa); if (r2 && r2.length) per.push(cast(r2, pair.Effect));
+      }
+      result.push(ev('CastEffectsParallel', { CastEffects: per }));
+      if (i === 0) for (const tid of targets) result.push(wrap('Done', ev('PlayedSpellOn', { Owner: owner, TargetId: tid, Spell: sp })));
+    }
+    return result;
+  }
+
+  // ---------------------------------------------------------------- Effects (OnGlobal / OnSingle)
+  const singleParamArgs = (sa) => ({ B: sa.B, TargetId: sa.TargetId, SourceId: sa.SourceId, TriggerSourceId: sourceOf(sa.TriggerEvent) || null, TriggerTargetId: targetOf(sa.TriggerEvent) || null,
+    AimId: null, Random: sa.Random, TriggerEvent: sa.TriggerEvent, Owner: sa.Owner });
+  /** Effect classes that override EffectBase.OnGlobal (from the metadata; the base returns null). */
+  const GLOBAL_EFFECTS = new Set(['EffectAddSharedPower','EffectAddShopMinion','EffectAddShopSpell','EffectBalance','EffectBuffShopMinions','EffectBuffShopPermanent','EffectChangeVictoryMax','EffectChooseMinion','EffectChooseSpell','EffectComposite','EffectCondition','EffectDiscountMinion','EffectDiscountSpell','EffectExchangeStats','EffectFreezeShop','EffectFumble','EffectGainGold','EffectGainLives','EffectGainRolls','EffectGainTrumpets','EffectRandom','EffectRepeat','EffectReplaceMinionShop','EffectReplaceSpellShop','EffectRollShop','EffectSetGold','EffectSetPrice','EffectShuffle','EffectSort','EffectSpendGold','EffectStealMinion','EffectSummonGlobal','EffectSummonRetriever','EffectSwallowShop']);
+  /** ParameterArgs built from EffectGlobalArgs: no target. */
+  const globalParamArgs = (ga) => ({ B: ga.B, SourceId: ga.SourceId, TargetId: null, TriggerSourceId: sourceOf(ga.TriggerEvent) || null, TriggerTargetId: targetOf(ga.TriggerEvent) || null,
+    AimId: ga.AimId ?? null, Random: ga.Random, TriggerEvent: ga.TriggerEvent, Owner: ga.Owner });
+  /** EffectBase.ActivateGlobal -> OnGlobal. A Silly source (not ImmuneToSilly) first flips a coin for the effect's owner. */
+  function effectGlobal(eff, ga) { return withSpellSource(eff, effectGlobalRaw(eff, ga)); }
+  /**
+   * EffectBase.ActivateSingle / ActivateGlobal, after OnSingle / OnGlobal: every resulting event (and a wrapper's inner event)
+   * that has a SourceSpell (ISourceSpell) gets the effect's SpellSource, null included.
+   */
+  const SPELL_SOURCE_EVENTS = new Set(['BuffMinion', 'ChangeMinionMana', 'ExchangeStats', 'ForceActivateAbility', 'GiveMinionPerk', 'SetMinionStats', 'StealMinionPerk', 'SwapStats']);
+  function withSpellSource(eff, r) {
+    if (!r || !r.length) return r;
+    for (const e of r) for (const x of [e, e && e.Event]) if (x && SPELL_SOURCE_EVENTS.has(x.cls)) x.SourceSpell = eff.SpellSource ?? null;
+    return r;
+  }
+  function effectGlobalRaw(eff, ga) {
+    const t = short(T(eff));
+    // EffectBase.ActivateGlobal: a Silly source flips a coin (Randomizer.FiftyFifty: Next(2) == 1); on tails the effect's owner
+    // becomes the other side (the args object is changed in place)
+    if (!eff.ImmuneToSilly) {
+      const sm = ga.SourceId ? ga.B.board.findMinion(ga.SourceId) : null;
+      if (isSilly(ga.B, sm) && ga.Random.next(2) !== 1) ga.Owner = ga.Owner === 1 ? 2 : ga.Owner === 2 ? 1 : 0;
+    }
+    if (!GLOBAL_EFFECTS.has(t)) return null;
+    switch (t) {
+      case 'EffectGainGold': {
+        // EffectGainGold.OnGlobal
+        if (!eff.Parameter) return null;
+        const g = ev('GainGold', { Owner: ga.Owner, Amount: paramValue(eff.Parameter, globalParamArgs(ga)), SourceId: ga.SourceId || null, Future: !!eff.Future, ResultGained: null, ResultNewValue: null });
+        return [wrap('Try', g)];
+      }
+      case 'EffectGainRolls': {
+        // EffectGainRolls.OnGlobal
+        if (!eff.Rolls) return null;
+        const g = ev('GainRolls', { Owner: ga.Owner, Rolls: paramValue(eff.Rolls, globalParamArgs(ga)), Future: !!eff.Future, SourceId: ga.SourceId || null, Shower: eff.Shower ?? null });
+        return [wrap('Try', g)];
+      }
+      case 'EffectAddSharedPower': { // BuildExtensions.AddSharedPower: no events
+        if (!eff.Amount) return null; const v = paramValue(eff.Amount, globalParamArgs(ga)); const b = ga.B.board;
+        const d = ga.Owner === 1 ? (b.SharedPowers = b.SharedPowers || {}) : (b.OpponentSharedPowers = b.OpponentSharedPowers || {});
+        d[eff.Ability] = (d[eff.Ability] || 0) + v; return null;
+      }
+      case 'EffectShuffle': // EffectShuffle.OnGlobal: Try<ShuffleMinions>(targets, source)
+        return [wrap('Try', ev('ShuffleMinions', { Owner: ga.Owner, TargetIds: (ga.TargetIds || []).slice(), SourceId: ga.SourceId || null, ResultItems: null }))];
+      case 'EffectSummonRetriever': return [wrap('Try', ev('ForceTrumpets', { Owner: ga.Owner }))]; // EffectSummonRetriever.OnGlobal
+      case 'EffectBalance': {
+        // EffectBalance.OnGlobal (Single false): all targets; MixStats is not copied here
+        if (eff.Single) return null;
+        return [wrap('Try', ev('BalanceStats', { Owner: ga.Owner, Source: ga.SourceId || null, Targets: (ga.TargetIds || []).slice(), Results: null, Percent: eff.Percent ?? 0, MixStats: false }))];
+      }
+      case 'EffectCondition': {
+        // EffectCondition.OnGlobal: check against the source as owner, then run TrueEffect or FalseEffect globally
+        if (!ga.SourceId) return null;
+        const ok = conditionCheck(eff.Condition, { B: ga.B, TriggerEvent: ga.TriggerEvent, Random: ga.Random, OwnerId: ga.SourceId, TriggerPhase: 1, Reversed: false });
+        const next = ok ? eff.TrueEffect : eff.FalseEffect;
+        return next ? effectGlobal(next, ga) : null;
+      }
+      case 'EffectSummonGlobal': {
+        // EffectSummonGlobal.OnGlobal / GetSummonEvents / GetSummonEvent: summon to the back (or front with UpFront) of a side
+        const B = ga.B, board = B.board; const pa = globalParamArgs(ga);
+        const level = eff.Level ? paramValue(eff.Level, pa) : 1;
+        const ca = { B, Level: level, Amount: 1, TargetId: null, SourceId: ga.SourceId, AimId: ga.AimId ?? null, Random: ga.Random, Owner: ga.Owner, TriggerEvent: ga.TriggerEvent };
+        let forEnemy = !!eff.ForEnemy; if (ga.Reversed) forEnemy = !forEnemy;
+        let x = eff.UpFront ? 4 : 0; if (forEnemy === (ga.Owner === 1)) x = 9 - x;
+        const point = { x, y: 0 };
+        const source = ga.SourceId ? board.findMinion(ga.SourceId) : null;
+        const make = (m) => {
+          if (!m) { m = catalogueMinions(eff.Catalogue, ca)[0]; if (!m) return null; }
+          for (const pr of eff.Processors || []) summonProcess(pr, { B, SummonPoint: point, Minion: m, Parent: source, Reversed: ga.Reversed });
+          if ((D.minions[m.Enum] || {}).type === 1) unported('EffectSummonGlobal relic'); // MinionTemplate.Type (+0xfc)
+          return wrap('Try', ev('SummonMinion', { Owner: m.Owner, Minion: m, Type: 1, SubType: 0, Jumped: false, TriggerDisabled: !!eff.TriggerDisabled, TargetPoint: { x: point.x, y: point.y },
+            FailCause: 0, SourceId: source ? source.Id : null, Projectile: !!eff.Projectile, ForceActivateAbility: false, PushDirection: null }));
+        };
+        const out = [];
+        if (eff.SinglePass) { for (const m of catalogueMinions(eff.Catalogue, ca)) out.push(make(m)); }
+        else { const n = eff.Amount ? paramValue(eff.Amount, pa) : 1; for (let i = 0; i < n; i++) { const r = make(null); if (r) out.push(r); } }
+        return out.length ? out : null;
+      }
+      case 'EffectGainTrumpets': {
+        // EffectGainTrumpets.OnGlobal
+        if (!eff.Points) return null;
+        const points = paramValue(eff.Points, { B: ga.B, SourceId: ga.SourceId, TargetId: null, TriggerSourceId: sourceOf(ga.TriggerEvent) || null, TriggerTargetId: targetOf(ga.TriggerEvent) || null,
+          Random: ga.Random, TriggerEvent: ga.TriggerEvent, Owner: ga.Owner });
+        const g = ev('GainTrumpets', { Owner: ga.Owner, Points: points, SourceId: ga.SourceId, SetPower: eff.Power ?? null, Perk: null, PerkInherit: !!eff.PerkInherit, PerkMultiplier: eff.PerkMultiplier ?? null });
+        if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
+        return [wrap('Try', g)];
+      }
+      default: return unported(t + '.OnGlobal');
+    }
+  }
+  // ---------------------------------------------------------------- trumpets (BuildExtensions *Trumpets*, GainTrumpets/ChangeTrumpets/TrumpetsMutator)
+  const getTrumpets = (board, o) => (o === 1 ? board.Trumpets : o === 2 ? board.OpponentTrumpets : 0);
+  const areTrumpetsDone = (board, o) => (o === 1 ? !!board.TrumpetsDone : o === 2 ? !!board.OpponentTrumpetsDone : false);
+  const getTrumpetsPerk = (board, o) => (o === 1 ? board.TrumpetsPerk ?? null : o === 2 ? board.OpponentTrumpetsPerk ?? null : null);
+  function setTrumpets(board, o, v) { v = Math.max(0, Math.min(50, v)); if (o === 1) board.Trumpets = v; else if (o === 2) board.OpponentTrumpets = v; return v; }
+  /** BuildExtensions.GainTrumpets: only in battle and while not done; clamps to 0..50; returns the change (null when not allowed). */
+  function gainTrumpets(board, o, n) {
+    if (!board.IsBattle) return null;
+    if (o === 1 || o === 2) { if (areTrumpetsDone(board, o)) return null; }
+    const before = getTrumpets(board, o); const after = Math.max(0, Math.min(50, before + n));
+    if (o === 1) board.Trumpets = after; else if (o === 2) board.OpponentTrumpets = after;
+    return after - before;
+  }
+  /** TrumpetsMutator.SummonTrumpetMinion(owner, max): with trumpets left and fewer than `max` live pets, summon pet 188 at the front, once per battle. */
+  function summonTrumpetMinion(B, o, max) {
+    const board = B.board;
+    if (areTrumpetsDone(board, o) || getTrumpets(board, o) < 1) return;
+    if (board.findLiveMinions().filter((m) => m.Owner === o).length >= max) return;
+    const n = getTrumpets(board, o); const perk = getTrumpetsPerk(board, o);
+    const m = generateMinion(B, 188, 1, o);
+    setAttack(m, n);
+    m.Health.Set(Math.min(m.Health.Max, n), false); m.Health.Set(0, true);
+    setPerk(m, perk);
+    if (o === 1) board.TrumpetsDone = true; else board.OpponentTrumpetsDone = true;
+    const p = { x: o === 1 ? 4 : 5, y: 0 };
+    B.add(wrap('Try', ev('SummonMinion', { Owner: o, Minion: m, Type: 2, SubType: 0, Jumped: false, TriggerDisabled: false, TargetPoint: p, FailCause: 0, SourceId: null, Projectile: false,
+      ForceActivateAbility: false, PushDirection: null })));
+    B.add(wrap('Do', ev('ChangeTrumpets', { Owner: o, SourceId: M.itemId('M', 0), OldTrumpets: n, NewTrumpets: 0, DeltaTrumpets: -n, NewPerk: null, Finale: true })));
+  }
+  function effectSingle(eff, sa) { return withSpellSource(eff, effectSingleRaw(eff, sa)); }
+  function effectSingleRaw(eff, sa) {
+    const t = short(T(eff)); const pa = singleParamArgs(sa);
+    switch (t) {
+      case 'EffectRememberMinion': { // EffectRememberMinion.OnSingle: the source remembers the target
+        return [wrap('Try', ev('RememberMinion', { Owner: sa.Owner, Ability: eff.Ability, Target: sa.TargetId, Source: sa.SourceId || null,
+          KeepEnum: !!eff.KeepEnum, KeepAttack: !!eff.KeepAttack, KeepHealth: !!eff.KeepHealth, KeepMana: !!eff.KeepMana, KeepPerk: !!eff.KeepPerk, KeepLevel: !!eff.KeepLevel,
+          KeepExperience: !!eff.KeepExperience, KeepPower: !!eff.KeepPower, KeepMany: !!eff.KeepMany, Duration: eff.Duration ?? null, UniqueEnum: !!eff.UniqueEnum,
+          Level: eff.KeepLevelFromEffect ? sa.Level : null, Render: !!eff.Render }))];
+      }
+      case 'EffectStealPerk': { // EffectStealPerk.OnSingle: the source takes the target's perk
+        if (!sa.SourceId) return null;
+        return [wrap('Try', ev('StealMinionPerk', { Owner: sa.Owner, Source: sa.SourceId, Target: sa.TargetId, TargetPerkStays: !!eff.TargetPerkStays, IncludeDestroyed: !!eff.IncludeDestroyed,
+          IncludeDead: !!eff.IncludeDead, MustBeNew: !!eff.MustBeNew, Result: null, ResultPerk: null, SourceSpell: null }))];
+      }
+      case 'EffectShuffle': return null; // no OnSingle override (EffectBase.OnSingle)
+      case 'EffectGainTrumpets': return null; // only OnGlobal
+      case 'EffectShuffleStats': return [wrap('Try', ev('ShuffleStats', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null }))];
+      case 'EffectSwapStats': return [wrap('Try', ev('SwapStats', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, SourceSpell: null }))];
+      case 'EffectRemoveMinion': // EffectRemoveMinion.OnSingle: Try<RemoveMinion>(target) from the source, with the effect's Projectile
+        return [wrap('Try', ev('RemoveMinion', { Owner: sa.Owner, MinionId: sa.TargetId, SourceId: sa.SourceId || null, RemoveType: 0, Projectile: eff.Projectile || null }))];
+      case 'EffectPlaySpell': {
+        // EffectPlaySpell.OnSingle: the catalogue's spells, each conjured (with SpellPower as its Power) and played by the source at
+        // the target: Try<PlaySpell>(Owner, Author 1, Source = source, Target = target)
+        if (!eff.SpellCatalogue) return null;
+        const amount = eff.AmountParameter ? paramValue(eff.AmountParameter, pa) : eff.Amount || 0;
+        const out = [];
+        for (const sp of spellCatalogue(eff.SpellCatalogue, { B: sa.B, Amount: amount, SourceId: sa.SourceId || null, Random: sa.Random })) {
+          sp.Conjured = true;
+          if (eff.SpellPower) sp.Power = paramValue(eff.SpellPower, pa);
+          out.push(wrap('Try', ev('PlaySpell', { Owner: sa.Owner, Author: 1, Spell: sp, Source: sa.SourceId || null, Target: sa.TargetId, Steal: false, Power: null })));
+        }
+        return out;
+      }
+      case 'EffectGivePower': { // EffectGivePower.OnSingle (Amount defaults to 1)
+        const amt = eff.Amount ? paramValue(eff.Amount, pa) : 1;
+        return [wrap('Try', ev('GiveMinionPower', { Owner: sa.Owner, Target: sa.TargetId, Source: sa.SourceId || null, Ability: eff.Ability, Amount: amt,
+          ResetFirst: !!eff.ResetFirst, IncludeDestroyed: !!eff.IncludeDestroyed, IncludeDead: !!eff.IncludeDead, Future: !!eff.Future }))];
+      }
+      case 'EffectBalance': {
+        // EffectBalance.OnSingle (Single true): just the target
+        if (!eff.Single) return null;
+        return [wrap('Try', ev('BalanceStats', { Owner: sa.Owner, Source: sa.SourceId || null, Targets: [sa.TargetId], Results: null, Percent: eff.Percent ?? 0, MixStats: !!eff.MixStats }))];
+      }
+      case 'EffectCondition': {
+        // EffectCondition.OnSingle: owner is the source (the target with TargetAsOwner)
+        const oid = eff.TargetAsOwner ? sa.TargetId : sa.SourceId; if (!oid) return null;
+        const ok = conditionCheck(eff.Condition, { B: sa.B, TriggerEvent: sa.TriggerEvent, Random: sa.Random, OwnerId: oid, TriggerPhase: 1, Reversed: false });
+        const next = ok ? eff.TrueEffect : eff.FalseEffect;
+        return next ? effectSingle(next, sa) : null;
+      }
+      case 'EffectGiveBuffHighOrLow': {
+        // EffectGiveBuffHighOrLow.OnSingle: v = StatIncreaseValue (0 without one); attack gets it when (attack > health and
+        // BuffHighestStat) or (attack < health and not), else health (ties go to health); then EffectGiveBuff.OnSingle
+        const v = eff.StatIncreaseValue ? paramValue(eff.StatIncreaseValue, pa) : 0;
+        const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) throw new Error('EffectGiveBuffHighOrLow: no target pet');
+        const a = tm.Attack.Total, h = tm.Health.Total;
+        const toAtk = (h < a && !!eff.BuffHighestStat) || (a < h && !eff.BuffHighestStat);
+        const flat = { $type: 'Parameters.ParameterFlat', Value: v };
+        return effectSingleRaw(Object.assign({}, eff, { $type: 'Effects.EffectGiveBuff', Attack: toAtk ? flat : null, Health: toAtk ? null : flat }), sa);
+      }
+      case 'EffectGiveBuff': {
+        let atk = eff.Attack ? paramValue(eff.Attack, pa) : 0, atkR = eff.AttackRange ? paramValue(eff.AttackRange, pa) : 0;
+        let hp = eff.Health ? paramValue(eff.Health, pa) : 0, hpR = eff.HealthRange ? paramValue(eff.HealthRange, pa) : 0;
+        const restore = eff.HealthRestore ? paramValue(eff.HealthRestore, pa) : 0;
+        if (sa.Spell) {
+          // played by a spell: the spell is Buffed, and the stats are multiplied by BoardExtensions.GetSpellMultiplier plus the
+          // spell's Power (EffectSingleArgs.SpellMultiplier)
+          sa.Spell.Buffed = true;
+          let m = spellMultiplier(sa.B, sa.SourceId); if (sa.Spell.Power != null) m += sa.Spell.Power;
+          atk *= m; atkR *= m; hp *= m; hpR *= m;
+        }
+        if (sa.EffectMultiplier != null) { atk *= sa.EffectMultiplier; atkR *= sa.EffectMultiplier; hp *= sa.EffectMultiplier; hpR *= sa.EffectMultiplier; }
+        const b = ev('BuffMinion', { Owner: sa.Owner, TargetId: sa.TargetId, Source: sa.SourceId, Attack: atk, AttackRange: atkR, Health: hp, HealthRange: hpR, HealthRestore: restore,
+          HealthRestoreAbility: eff.HealthRestoreAbility || 0, Duration: eff.Duration || 0, Future: !!eff.Future, Trigger: sa.TriggerEvent,
+          AttackParameter: eff.LateParameters ? eff.Attack : null, HealthParameter: eff.LateParameters ? eff.Health : null, SourceSpell: null });
+        if (!sa.Reversed) return [wrap('Try', b)];
+        unported('EffectGiveBuff reversed');
+      }
+      case 'EffectDamage': {
+        if (!sa.SourceId || !sa.B.board.findMinion(sa.SourceId)) return null; // no source point
+        const d = ev('MinionAbilityDamage', { Owner: sa.Owner, AmountParameter: eff.Parameter, Amount: paramValue(eff.Parameter, pa), Range: eff.Range ? paramValue(eff.Range, pa) : 0,
+          TargetId: sa.TargetId, SourceId: sa.SourceId, TriggerTargetId: targetOf(sa.TriggerEvent) || null, TriggerSourceId: sourceOf(sa.TriggerEvent) || null, TriggerEvent: sa.TriggerEvent,
+          CriticalDisabled: !!eff.CriticalDisabled, SourcePerk: eff.PerkSource ?? null, Absorb: !!eff.Absorb, IgnorePerks: !!eff.IgnorePerks, AbsorbMax: eff.AbsorbMax ?? null, AbsorbPercent: eff.AbsorbPercent ?? null });
+        if (!sa.Reversed) return [wrap('Try', d)];
+        unported('EffectDamage reversed');
+      }
+      case 'EffectSetStats': {
+        const s = ev('SetMinionStats', { Owner: sa.Owner, Target: sa.TargetId, Source: sa.SourceId, Attack: eff.Attack ? paramValue(eff.Attack, pa) : null, Health: eff.Health ? paramValue(eff.Health, pa) : null,
+          Positive: !!eff.Positive, SourcePerk: eff.PerkSource ?? null });
+        return [wrap('Try', s)];
+      }
+      case 'EffectSummon': return effectSummon(eff, sa);
+      case 'EffectMana': {
+        // EffectMana.OnSingle; the mutator evaluates Value again (AmountParameter)
+        if (!eff.Value) return null;
+        let v = paramValue(eff.Value, pa);
+        if (eff.SpellPower) unported('EffectMana.SpellPower');
+        const c = ev('ChangeMinionMana', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Amount: v, AmountParameter: eff.Value, Absolute: !!eff.Absolute,
+          Transfer: eff.Transfer ?? null, SetPower: false, TriggerDisabled: !!eff.TriggerDisabled, TriggerTargetId: targetOf(sa.TriggerEvent) || null, TriggerSourceId: sourceOf(sa.TriggerEvent) || null,
+          TriggerEvent: sa.TriggerEvent, SourceSpell: null, ProjectileDisabled: !!eff.ProjectileDisabled, ResultAmount: 0, ResultMana: 0, ResultTransferedFrom: null });
+        return [wrap('Try', c)];
+      }
+      case 'EffectGiveExp': {
+        // EffectGiveExp.OnSingle
+        if (!eff.Amount) return null;
+        const g = ev('GiveMinionExp', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Amount: paramValue(eff.Amount, pa), ExpType: 0, Result: null, DisableReward: false, Projectile: null });
+        return [wrap('Try', g)];
+      }
+      case 'EffectTransform': {
+        // EffectTransform.OnSingle
+        // Back with a Transform trigger: a new pet (next id) of the trigger's old pet's type, owner and location, at its level,
+        // capped at BackUpToLevel (which then also becomes the event's Level); otherwise the catalogue's first pet
+        let nm, evLevel = eff.Level ?? null;
+        if (eff.Back && sa.TriggerEvent && sa.TriggerEvent.cls === 'Transform') {
+          const old = sa.TriggerEvent.OldMinion; if (!old) throw new Error('EffectTransform.Back: the trigger has no old pet');
+          let lv = old.Level; if (eff.BackUpToLevel != null && eff.BackUpToLevel < lv) { lv = eff.BackUpToLevel; evLevel = eff.BackUpToLevel; }
+          nm = generateMinion(sa.B, old.Enum, lv, old.Owner, old.Location ?? 1);
+        } else {
+          const tm = sa.TargetId ? sa.B.board.findMinion(sa.TargetId) : null;
+          const level = eff.Level != null ? eff.Level : tm ? tm.Level : 1;
+          nm = catalogueMinions(eff.Catalogue, { B: sa.B, Level: level, Amount: 1, TargetId: sa.TargetId, SourceId: sa.SourceId, Random: sa.Random, Owner: sa.Owner, TriggerEvent: sa.TriggerEvent })[0];
+          if (!nm) return null; // EffectUtility.NoEffect
+        }
+        if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
+        const stat = (prm, own) => (eff.CopyStats ? own : prm ? new M.IntegerStat(paramValue(prm, pa)) : null);
+        const t = ev('TransformMinion', { Owner: sa.Owner, IncludeDead: !!eff.IncludeDead, Source: sa.SourceId || null, Target: sa.TargetId, NewMinion: nm, Back: !!eff.Back, BackUpToLevel: eff.BackUpToLevel ?? null,
+          Stacking: false, ResetStats: !!eff.ResetStats, RemovePerkIf: eff.RemovePerkIf ?? null, ForceActivate: !!eff.ForceActivate, Attack: stat(eff.Attack, nm.Attack), Health: stat(eff.Health, nm.Health),
+          Perk: null, Experience: null, Level: evLevel, ExtraAttack: eff.Catalogue.ExtraAttack ?? null, ExtraHealth: eff.Catalogue.ExtraHealth ?? null, ExtraExperience: eff.Catalogue.ExtraExperience ?? null,
+          Processors: eff.Processors || null, ResultOldMinion: null, ResultMinion: null });
+        const src = sa.SourceId ? sa.B.board.findMinion(sa.SourceId) : null;
+        if (src) (src.LastSummoned = src.LastSummoned || []).push(sa.TargetId);
+        return [wrap('Try', t)];
+      }
+      case 'EffectJumpAttack': {
+        // EffectJumpAttack.OnSingle: the source jumps at the target
+        if (!sa.SourceId) return null; // EffectUtility.NoEffect
+        if (eff.DamageMultiplier != null || eff.Repeats != null) unported('EffectJumpAttack DamageMultiplier/Repeats');
+        const j = ev('MinionJumpAttack', { Owner: 0, /* the ctor sets no owner */ TargetToThrow: sa.SourceId, FailCause: 0, ThrowerSourceId: sa.SourceId, TargetToThrowAt: sa.TargetId,
+          SplashDamage: eff.SplashDamage ?? null, DamageMultiplier: eff.DamageMultiplier ?? null, FixedDamage: eff.FixedDamage ?? null });
+        if (idEq(sa.SourceId, sa.TargetId)) return [wrap('Fail', j)]; // Fails.SourceAndTargetIsSame
+        return [wrap('Try', j)];
+      }
+      case 'EffectDestroyMinion': {
+        // EffectDestroyMinion.OnSingle
+        return [wrap('Try', ev('MinionAbilityDestroy', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Type: eff.Type || 0,
+          Projectile: eff.Projectile || null, TriggerDisabled: !!eff.TriggerDisabled }))];
+      }
+      case 'EffectCopyStats': {
+        // EffectCopyStats.OnSingle: the source copies the target's stats
+        if (!sa.SourceId) return null;
+        return [wrap('Try', ev('CopyMinionStats', { Owner: sa.Owner, CopyFrom: sa.TargetId, CopyTo: sa.SourceId, Attack: !!eff.Attack, AttackMultiplier: eff.AttackMultiplier ?? null,
+          AttackMax: eff.AttackMax ?? null, Health: !!eff.Health, HealthMultiplier: eff.HealthMultiplier ?? null, HealthMax: eff.HealthMax ?? null, Add: !!eff.Add, Rounding: eff.Rounding ?? null,
+          ResultGiveAttack: 0, ResultGiveHealth: 0, ResultAttackGained: 0, ResultHealthGained: 0, ResultAttack: null, ResultHealth: null }))];
+      }
+      case 'EffectForceActivateAbility': {
+        // EffectForceActivateAbility.OnSingle: the target's abilities (through Filter, or all of them) are force-activated
+        const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) return null;
+        let list = eff.Filter ? abilityFilterFind(eff.Filter, tm.Abilities) : null;
+        if (!list) list = tm.Abilities.map((a) => a.Enum);
+        if (!list.length) return null;
+        return [ev('ForceActivateAbility', { Owner: sa.Owner, Level: eff.Level || null, TargetId: tm.Id, AbilityFilter: list, SourceId: sa.SourceId || null,
+          RepeatFromAuraDisabled: !!eff.RepeatFromAuraDisabled, DisableAfterTemp: !!eff.DisableAfterTemp })];
+      }
+      case 'EffectPush': {
+        // EffectPush.OnSingle; To = 1 pushes to a random cell of the target's side
+        let dir = eff.Direction || 0, dist = eff.Distance || 0;
+        if (eff.To === 1) {
+          const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) return null;
+          const lo = tm.Owner === 1 ? 0 : 5, hi = tm.Owner === 1 ? 4 : 9;
+          const x = Math.trunc(sa.Random.nextDouble() * (hi - lo + 1)) + lo;
+          const d = x - tm.Point.x; dir = d < 1 ? 1 : 0; if (tm.Owner === 2) dir = dir === 0 ? 1 : 0; dist = Math.abs(d);
+        }
+        return [wrap('Try', ev('PushMinion', { Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, Direction: dir, Distance: dist, Type: eff.Type || 0,
+          FinalDelta: null, SourcePerk: null, FailCause: 0, ProjectileDisabled: !!eff.ProjectileDisabled, ResultLostPerk: null }))];
+      }
+      case 'EffectLosePerk': {
+        // EffectLosePerk.OnSingle
+        const l = loseMinionPerk(sa.Owner, sa.TargetId, sa.SourceId || null, eff.Perk ?? null, !!eff.IgnoreDurability);
+        Object.assign(l, { IncludeDestroyed: !!eff.IncludeDestroyed, IncludeDead: !!eff.IncludeDead, RenderDelay: !!eff.RenderDelay, RenderLost: !!eff.RenderLost, Positive: eff.Positive ?? null });
+        return [wrap('Try', l)];
+      }
+      case 'EffectGivePerk': {
+        // EffectGivePerk.OnSingle: Perk, or PerkCatalogue.GetPerk(args) when a catalogue is set
+        const perk = eff.PerkCatalogue ? perkCatalogue(eff.PerkCatalogue, { B: sa.B, Owner: sa.Owner, TargetId: sa.TargetId, SourceId: sa.SourceId || null, TriggerEvent: sa.TriggerEvent, Random: sa.Random }) : eff.Perk;
+        const g = ev('GiveMinionPerk', { Owner: sa.Owner, Perk: perk, Duration: eff.Duration || 0, Source: sa.SourceId || null, TargetId: sa.TargetId, Inherit: !!eff.Inherit,
+          SourceSpell: null, Durability: eff.Durability ?? null, DurabilityParameter: eff.DurabilityParameter || null, Multiplier: eff.Multiplier ?? null,
+          MultiplierParameter: eff.MultiplierParameter || null, Future: !!eff.Future, Compound: !!eff.Compound, TriggersDisabled: !!eff.TriggersDisabled,
+          ProjectileDisabled: !!eff.ProjectileDisabled, ResultPerkReplaced: null, Result: null });
+        return [wrap('Try', g)];
+      }
+      // EffectCopyAbility.OnSingle: needs a source; CopyTo = source, CopyFrom = target (Reverse swaps them); Abilities = the filter's
+      // matches on the target's abilities (the mutator does not read them)
+      case 'EffectCopyAbility': {
+        if (!sa.SourceId) return null;
+        const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) throw new Error('EffectCopyAbility: no target pet');
+        const to = eff.Reverse ? sa.TargetId : sa.SourceId, from = eff.Reverse ? sa.SourceId : sa.TargetId;
+        return [wrap('Try', ev('CopyMinionAbility', { Owner: sa.Owner, CopyFrom: from, CopyTo: to, Level: eff.Level || null, Duration: eff.Duration || 0,
+          Abilities: null, FromTemplate: !!eff.FromTemplate, KeepExisting: !!eff.KeepExisting, AlwaysIgnoreMinionLevel: !!eff.AlwaysIgnoreMinionLevel }))];
+      }
+      // EffectSpendMana.OnSingle: Try<SpendMinionMana> on the target, Spend = Value.GetValue(args)
+      case 'EffectSpendMana': {
+        if (!eff.Value) unported('EffectSpendMana without a Value');
+        const v = paramValue(eff.Value, pa);
+        return [wrap('Try', ev('SpendMinionMana', { Owner: sa.Owner, TargetId: sa.TargetId, Spend: v, ResultTargetManaOld: 0, ResultTargetManaNew: 0 }))];
+      }
+      default: return unported(t);
+    }
+  }
+
+  // ---------------------------------------------------------------- summons (EffectSummon, MinionCatalogue*, GenerateMinion)
+  /** MinionExtensions.SetMana / AddMana: 0..50 (the cap is GameConstants.StatsMax). */
+  const setMana = (m, v) => { m.Mana = Math.max(0, Math.min(50, v)); };
+  /**
+   * MinionExtensions.ResetAbility (after a level change): drop the native abilities and add the template's again at the new level,
+   * keeping their charges. AddAbility marks every ability added after the first as IgnoreRepeats.
+   */
+  function resetAbility(m) {
+    if (m.AbilitiesDisabled) return;
+    const charges = new Map(); for (const a of m.Abilities) if (a.Charges != null) charges.set(a.Enum, a.Charges);
+    m.Abilities = m.Abilities.filter((a) => !a.Native);
+    const t = D.minions[m.Enum]; if (!t) return;
+    for (const { e } of t.abilities) {
+      const ab = getAbility(e, m.Level); if (!ab) continue;
+      if (ab.Regain && m.Abilities.length >= 1) continue;
+      if (ab.Singleton && m.Abilities.some((a) => a.Enum === e)) continue;
+      const x = new M.MinionAbilityModel(e, m.Level, true); x.AlwaysIgnoreMinionLevel = !!ab.AlwaysIgnoreMinionLevel; x.IgnoreRepeats = m.Abilities.length > 0;
+      m.Abilities.push(x);
+      if (ab.MaxAttack != null || ab.MaxHealth != null) updateStatsMax(m);
+      if (charges.has(e)) x.Charges = charges.get(e);
+    }
+  }
+  /** MinionExtensions.AddAbility(m, enum, level, native, duration): a Singleton ability the pet already has is returned as is; otherwise a new model
+   *  (IgnoreRepeats when the pet already has abilities) is appended, and MaxAttack/MaxHealth abilities update the stat maxima. */
+  function addAbility(m, e, level, native, duration) {
+    const ab = getAbility(e, level); if (!ab) throw new Error('AddAbility: no ability ' + e + ' level ' + level);
+    if (ab.Singleton) { const have = m.Abilities.find((x) => x.Enum === e); if (have) return have; }
+    const x = new M.MinionAbilityModel(e, level, !!native); x.Duration = duration || 0; x.IgnoreRepeats = m.Abilities.length > 0;
+    m.Abilities.push(x);
+    if (ab.MaxAttack != null || ab.MaxHealth != null) updateStatsMax(m);
+    return x;
+  }
+  /** MinionExtensions.AddExp(m, n): each point gives +1/+1 (not while Sad unless it has ability 839) and one experience; levels at LEVEL_EXP. */
+  function addExp(m, n) {
+    if (n === 0) return { NewLevel: 0, NewExp: 0, LevelsGained: 0, ExpGained: 0, AttackGained: 0, HealthGained: 0 };
+    const lvl0 = m.Level, exp0 = m.Exp, atk0 = m.Attack.Total, hp0 = m.Health.Total;
+    const stat = (d) => { m.Attack.Add(d, false); if (m.Attack.Permanent < 1) m.Attack.Set(1, false); const h = m.Health.Permanent; m.Health.Add(d, false); if (m.Health.Permanent < 1 && h > 0) m.Health.Set(1, false); };
+    for (let i = 0; i < Math.abs(n); i++) {
+      if (n < 1) {
+        stat(-1);
+        if (m.Exp !== 0) { m.Exp--; const l = m.Level - 1; if (l >= 0 && l < LEVEL_EXP.length && m.Exp < LEVEL_EXP[l] && m.Level !== 1) { m.Level--; resetAbility(m); } }
+      } else {
+        if (m.Perk !== 121 || m.Abilities.some((a) => a.Enum === 839)) stat(1);
+        if (!(LEVEL_EXP.length <= m.Level)) { m.Exp++; if (m.Level >= 0 && m.Level < LEVEL_EXP.length && LEVEL_EXP[m.Level] === m.Exp && m.Level < LEVEL_EXP.length) { m.Level++; resetAbility(m); } }
+      }
+    }
+    return { NewLevel: m.Level, NewExp: m.Exp, NewAttack: m.Attack.ShallowCopy(), NewHealth: m.Health.ShallowCopy(), LevelsGained: m.Level - lvl0, ExpGained: m.Exp - exp0,
+      AttackGained: m.Attack.Total - atk0, HealthGained: m.Health.Total - hp0 };
+  }
+  /** MinionExtensions.ResetLevel(m, level): level 1..3 with that level's starting experience. */
+  function resetLevel(m, lvl) { lvl = Math.min(3, Math.max(1, lvl)); m.Level = lvl; m.Exp = LEVEL_EXP[lvl - 1]; resetAbility(m); }
+  /** MinionExtensions.ResetLevelFromExperience: clamp experience, then the level is the number of thresholds reached. */
+  function resetLevelFromExperience(m) {
+    m.Exp = Math.max(0, Math.min(Math.max(...LEVEL_EXP), m.Exp)); m.Level = 0;
+    for (const t of LEVEL_EXP) { if (m.Exp < t) break; m.Level++; }
+    resetAbility(m);
+  }
+  const LEVEL_EXP = [0, 2, 5]; // BoardConstants experience per level (level 2 = 2 seen on recorded boards; level 3 still to verify)
+  /** MinionExtensions.UpdateStatsMax: ability MaxAttack/MaxHealth (SetMaxStats), else the template's AttackMax/HealthMax. */
+  function updateStatsMax(m) {
+    let ma = null, mh = null;
+    for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab) continue; if (ab.MaxHealth != null) mh = ab.MaxHealth; if (ab.MaxAttack != null) ma = ab.MaxAttack; }
+    const raw = (D.minions[m.Enum] || {}).raw || {};
+    m.Attack.MaxOverride = ma != null ? ma : (raw.AttackMax ?? null);
+    m.Health.MaxOverride = mh != null ? mh : (raw.HealthMax ?? null);
+    m.Attack.Set(m.Attack.Permanent, false); m.Attack.Set(m.Attack.Temporary, true);
+    m.Health.Set(m.Health.Permanent, false); m.Health.Set(m.Health.Temporary, true);
+  }
+  /** BoardExtensions.GenerateMinion: a new MinionModel with the next id on the merged board. */
+  /** BoardExtensions.GenerateMinion(board, enum, level, owner, location[, random]); with a random, a template with several Tribes picks one. */
+  function generateMinion(B, e, level, owner, location = 1, rand = null) {
+    const t = D.minions[e]; if (!t) throw new Error("Template does not exist for '" + e + "'.");
+    const tribes = t.raw && t.raw.Tribes ? (t.raw.Tribes.values || t.raw.Tribes) : null;
+    const id = M.itemId('M', B.board.nextUnique());
+    const m = new M.MinionModel({ Id: id, Owner: owner, Enum: e, x: 0, Level: level, Exp: LEVEL_EXP[level - 1] ?? 0, Attack: t.attack, Health: t.health, Tribe: t.tribe,
+      Abilities: t.abilities.map((a) => { const x = new M.MinionAbilityModel(a.e, level, true); const ab = getAbility(a.e, level); x.AlwaysIgnoreMinionLevel = !!(ab && ab.AlwaysIgnoreMinionLevel); return x; }) });
+    m.Location = location;
+    if (rand && tribes && tribes.length) m.Tribe = tribes[rand.next(0, tribes.length)]; // BoardExtensions.GenerateMinion(..., random)
+    updateStatsMax(m);
+    return m;
+  }
+  /** ListExtensions random take: partial Fisher-Yates from the front with Next(i, count). */
+  function takeRandom(list, n, rand) { const l = list.slice(); for (let i = 0; i < n && i !== l.length; i++) { const k = rand.next(i, l.length); const x = l[k]; l[k] = l[i]; l[i] = x; } return n < l.length ? l.slice(0, Math.max(0, n)) : l; }
+  function setAttack(m, v) { if (m.Attack.Max < v) v = m.Attack.Max; if (v < 1) v = 1; m.Attack.Set(v, false); m.Attack.Set(0, true); }
+  function setHealth(m, v) { if (m.Health.Max < v) v = m.Health.Max; m.Health.Set(v, false); m.Health.Set(0, true); }
+  /** PerkCatalogueBase.GetPerk(PerkCatalogueArgs {B, Owner, TargetId, SourceId, TriggerEvent, Random}) */
+  function perkCatalogue(c, a) {
+    const t = short(T(c)).replace(/^Ability\.PerkCatalogue\./, '');
+    switch (t) {
+      case 'PerkCatalogueStatic': return c.Perk ?? 0;
+      case 'PerkCatalogueEvent': return a.TriggerEvent && a.TriggerEvent.cls === 'PerkLost' ? a.TriggerEvent.Perk : 8; // the lost perk, else perk 8
+      case 'PerkCatalogueRandom': return perkCatalogueRandom(c, a);
+      default: return unported(t);
+    }
+  }
+  /**
+   * PerkCatalogueRandom.GetBasePerk: with NegativeRisk set, a NextDouble below it (or a risk of 1 or more, which skips the roll) picks
+   * from the released negative perks; otherwise from the perks of the released spells (one entry per spell). Both lists are in the
+   * game's order (data.lists) and filtered by Check; the pick is list[Next(0, count)], Fallback when empty.
+   */
+  function perkCatalogueRandom(c, a) {
+    const PK = PERKS(); const L = D.lists || {}; const list = [];
+    let negative = false;
+    if (c.NegativeRisk != null) { if (c.NegativeRisk >= 1) negative = true; else negative = a.Random.nextDouble() < Math.fround(c.NegativeRisk); }
+    if (negative) {
+      for (const e of L.releasedPerks || []) { const pk = PK[e]; if (pk && !pk.positive && perkCatalogueCheck(c, a, e, pk)) list.push(e); }
+    } else {
+      for (const sp of L.releasedSpells || []) {
+        if (sp.perk == null) continue; const pk = PK[sp.perk]; if (!pk || !pk.positive) continue;
+        if (c.Rollable != null && c.Rollable !== sp.rollable) continue;
+        if (c.InPack) { // the args owner's pack (Owner 1: Pack, else OpponentPack): its custom deck's spells, else the spell's Packs
+          const pack = a.Owner === 1 ? (a.B.board.Pack ?? 0) : (a.B.board.OpponentPack ?? 0); if (isCustomPack(pack)) unported('PerkCatalogueRandom.InPack custom deck');
+          if (!(sp.packs || []).includes(pack)) continue;
+        }
+        if (perkCatalogueCheck(c, a, sp.perk, pk)) list.push(sp.perk);
+      }
+    }
+    if (!list.length) return c.Fallback ?? 0;
+    return list[a.Random.next(0, list.length)];
+  }
+  /** PerkCatalogueRandom.Check: Excluding; Universal/Defense(Shield) for positive perks; tier (the perk's spell tier) against Tier; SmartBattle keeps mid-battle perks in battle. */
+  function perkCatalogueCheck(c, a, e, pk) {
+    if (c.Excluding && c.Excluding.includes(e)) return false;
+    if (pk.positive) {
+      if (c.Universal != null && c.Universal !== pk.universal) return false;
+      if (c.Defense != null && c.Defense !== pk.shield) return false;
+    }
+    if (c.Tier) {
+      const want = paramValue(c.Tier, { B: a.B, TargetId: a.TargetId, SourceId: a.SourceId, TriggerSourceId: sourceOf(a.TriggerEvent) || null, TriggerTargetId: targetOf(a.TriggerEvent) || null,
+        AimId: null, Random: a.Random, TriggerEvent: a.TriggerEvent, Owner: a.Owner });
+      if (pk.spell == null) return false;
+      const sp = ((D.lists || {}).releasedSpells || []).find((x) => x.e === pk.spell); if (!sp) unported('PerkTemplate.GetTier of an unreleased spell');
+      if (!opCheck(c.TierOperator || 0, sp.tier, want)) return false;
+    }
+    if (c.SmartBattle && a.B.board.IsBattle && !pk.midBattle) return false;
+    return true;
+  }
+  // MinionCatalogueFind.Predicate's hard-coded pet list for WithUniversalBattleAbility (bit tests on the MinionEnum, build 26131463)
+  function inUniversalList(u) {
+    const bit = (base, span, mask) => u - base >= 0 && u - base < span && ((mask >> BigInt(u - base)) & 1n) === 1n;
+    return bit(0x6b, 0x3e, 0x3a02000200001001n) || bit(0x219, 0x24, 0x880100881n) || bit(0x2ef, 0x3e, 0x2104000040089009n) || bit(0x14b, 0x33, 0x4908000000003n) ||
+      bit(0x2af, 0x3d, 0x1480201404000001n) || bit(0, 0x3a, 0x200002000000004n) || u === 0x1b7 || u === 0x25d || u === 0x18c || bit(0xee, 0x24, 0x800020001n) || u === 0x51 || u === 0x218;
+  }
+  const isCustomPack = (p) => p === 3 || p === 4 || p === 10 || p === 11; // PackExtensions.IsStandard (named so in the build; true for these)
+  const hsValues = (h) => (h ? (h.values || h) : []);
+  /** MinionCatalogueFind.Predicate(args, template) */
+  function findPredicate(c, ca, e) {
+    const t = D.minions[e]; if (!t) return false; const raw = t.raw || {};
+    const board = ca.B.board;
+    const pack = ca.Owner === 1 ? (board.Pack ?? 0) : (board.OpponentPack ?? 0);
+    if (!c.IgnorePacks) {
+      if (isCustomPack(pack)) unported('MinionCatalogueFind custom-pack deck');
+      if (!(t.packs || []).includes(pack)) return false;
+    }
+    if (raw.Unreleased && !((D.lists || {}).packUnreleased || {})[pack]) return false;
+    if (!!raw.Rollable !== !!c.WithRollable) return false;
+    if (c.WithCustomExclusive != null) unported('MinionCatalogueFind.WithCustomExclusive');
+    if (c.WithBad != null && !!raw.Bad !== c.WithBad) return false;
+    if (c.WithType != null && (t.type || 0) !== c.WithType) return false;
+    if (c.WithRelicType != null && (t.relicType || 0) !== c.WithRelicType) return false;
+    if (c.WithAttack != null && t.attack !== c.WithAttack) return false;
+    if (c.WithHealth != null && t.health !== c.WithHealth) return false;
+    const pa = { B: ca.B, TargetId: ca.TargetId, SourceId: ca.SourceId, TriggerSourceId: sourceOf(ca.TriggerEvent) || null, TriggerTargetId: targetOf(ca.TriggerEvent) || null,
+      AimId: ca.AimId ?? null, Random: ca.Random, TriggerEvent: ca.TriggerEvent, Owner: ca.Owner };
+    if (c.WithTier) { const v = Math.min(paramValue(c.WithTier, pa), 6); if (t.tier !== v) return false; }
+    if (c.WithMaxTier) { const v = Math.min(paramValue(c.WithMaxTier, pa), 6); if (v < t.tier) return false; }
+    const tm = { Abilities: t.abilities.map((a) => ({ Enum: a.e, Level: 1 })) }; // MinionTemplate overloads walk the template's abilities
+    if (c.WithPlayTrigger != null && hasPlayEffect(tm) !== c.WithPlayTrigger) return false;
+    if (c.WithDeathTrigger != null && hasDeathEffect(tm) !== c.WithDeathTrigger) return false;
+    if (c.Exclude != null && e === c.Exclude) return false;
+    if (c.Excludes && hsValues(c.Excludes).includes(e)) return false;
+    if (c.ExcludeSource) { const sm = ca.SourceId ? board.findMinion(ca.SourceId) : null; if (sm && sm.Enum === e) return false; }
+    if (c.ExcludeTarget) { const tg = ca.TargetId ? board.findMinion(ca.TargetId) : null; if (tg && tg.Enum === e) return false; }
+    if (c.Includes && !hsValues(c.Includes).includes(e)) return false;
+    if (c.WithStartOfBattleTrigger != null && hasTrigger(tm, ['TriggerStartBattle'], false) !== c.WithStartOfBattleTrigger) return false;
+    if (c.WithHurtTrigger != null && hasHurtEffect(tm) !== c.WithHurtTrigger) return false;
+    if (c.WithSellTrigger != null && hasSellEffect(tm) !== c.WithSellTrigger) return false;
+    if (raw.Unique && !c.IncludeUniqueMinions) return false;
+    if (c.WithGimmickConsumers != null) { const cons = hsValues(raw.ArchetypeConsumer); if ([0x1c, 0xe, 8, 0x11, 0xc].some((x) => cons.includes(x)) !== c.WithGimmickConsumers) return false; }
+    if (c.WithProducer || c.WithConsumer) unported('MinionCatalogueFind.WithProducer/WithConsumer');
+    if (c.WithUniversalBattleAbility != null && inUniversalList(e) === c.WithUniversalBattleAbility) return false; // the game rejects on equality
+    return true;
+  }
+  /** MinionExtensions.GetExcessMana: mana beyond what the pet's spender abilities use (all of it with perk 55; none left when a spender has no amount) */
+  function getExcessMana(m) {
+    if (!m || !(m.Mana > 0)) return 0;
+    if (m.Perk === 55) return m.Mana;
+    let used = 0;
+    for (const a of m.Abilities) { const ab = getAbility(a.Enum, a.Level); if (!ab || !ab.ManaSpender) continue; if (ab.ManaSpenderAmount == null) { used = m.Mana; break; } used += ab.ManaSpenderAmount; }
+    return used < m.Mana ? m.Mana - used : 0;
+  }
+  /**
+   * MinionModel.CopyFrom: Id, Price, Frozen flags, Enum, Exp, Level, Health and Attack (shallow copies), the perk (with durability,
+   * max durability, multiplier, duration), abilities (copied), Power, SellValue, memories, this turn's / battle's counters, the old and
+   * last targets and the removable buffs. Owner, Location, Point and Mana are not copied.
+   */
+  function copyFrom(n, o) {
+    n.Id = o.Id; n.Price = o.Price; n.Frozen = o.Frozen; n.WasFrozen = o.WasFrozen; n.AutoFroze = o.AutoFroze; n.AddedByEffect = o.AddedByEffect;
+    n.Enum = o.Enum; n.Exp = o.Exp; n.Level = o.Level; n.Health = o.Health.ShallowCopy(); n.Attack = o.Attack.ShallowCopy();
+    n.Perk = o.Perk; n.PerkDurability = o.PerkDurability; n.PerkDurabilityMax = o.PerkDurabilityMax; n.PerkMultiplier = o.PerkMultiplier; n.PerkDuration = o.PerkDuration;
+    n.SellValue = o.SellValue;
+    n.Abilities = (o.Abilities || []).map((a) => Object.assign(Object.create(Object.getPrototypeOf(a)), a));
+    n.Brain = o.Brain ? Object.fromEntries(Object.entries(o.Brain).map(([k, v]) => [k, v.map((x) => ({ ...x }))])) : o.Brain;
+    n.AttackCountsThisTurn = o.AttackCountsThisTurn; n.AttackCountsThisBattle = o.AttackCountsThisBattle; n.HurtCountsThisTurn = o.HurtCountsThisTurn;
+    n.HurtCountsThisBattle = o.HurtCountsThisBattle; n.HurtTotalThisBattle = o.HurtTotalThisBattle; n.SpellCountsThisTurn = o.SpellCountsThisTurn;
+    n.Power = o.Power ? { ...o.Power } : o.Power;
+    n.RemoveableBuffs = o.RemoveableBuffs ? o.RemoveableBuffs.map((x) => (Array.isArray(x) ? x.slice() : { ...x })) : o.RemoveableBuffs;
+    n.LastTargetsThisTurn = o.LastTargetsThisTurn ? o.LastTargetsThisTurn.slice() : o.LastTargetsThisTurn;
+    n.OldTargetsThisTurn = o.OldTargetsThisTurn ? o.OldTargetsThisTurn.slice() : o.OldTargetsThisTurn;
+    n.DragAndDropMode = o.DragAndDropMode;
+  }
+  /** MinionExtensions.CopyTriggerCount: abilities with a TriggerLimit take the TriggerCount of the first same-enum ability of copyFrom. */
+  function copyTriggerCount(m, from) {
+    for (const a of m.Abilities) {
+      const ab = getAbility(a.Enum, a.Level); if (!ab || ab.TriggerLimit == null) continue;
+      const f = from.Abilities.find((x) => x.Enum === a.Enum); if (f) a.TriggerCount = f.TriggerCount;
+    }
+  }
+  /** MinionCatalogueBase.GetMinions */
+  function catalogueMinions(c, ca) {
+    const t = short(T(c)); let base;
+    switch (t) {
+      case 'MinionCatalogueFixed': base = (c.Minions || []).map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner)); break;
+      case 'MinionCatalogueList': base = takeRandom(c.Minions || [], ca.Amount, ca.Random).map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner)); break;
+      case 'MinionCatalogueFind': {
+        // the game's active pets (MinionConstants.GetActiveMinions order) passing Predicate; Amount picks with replacement
+        // (Next(0, count) each), or without (partial Fisher-Yates) when Unique; Shuffle shuffles from the end; then generated with the random
+        const pool = ((D.lists || {}).activeMinions || []).filter((e) => findPredicate(c, ca, e));
+        let pick;
+        if (!c.Unique) { pick = []; if (pool.length) for (let i = 0; i < ca.Amount; i++) pick.push(pool[ca.Random.next(0, pool.length)]); }
+        else pick = takeRandom(pool, ca.Amount, ca.Random);
+        if (c.Shuffle) for (let n = pick.length; n > 1;) { const k = ca.Random.next(0, n); n--; const x = pick[k]; pick[k] = pick[n]; pick[n] = x; }
+        base = pick.map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random));
+        break;
+      }
+      case 'MinionCatalogueCompound': {
+        // active pets passing any of the Finders, then picked like MinionCatalogueFind
+        const pool = ((D.lists || {}).activeMinions || []).filter((e) => (c.Finders || []).some((f) => findPredicate(f, ca, e)));
+        let pick;
+        if (!c.Unique) { pick = []; if (pool.length) for (let i = 0; i < ca.Amount; i++) pick.push(pool[ca.Random.next(0, pool.length)]); }
+        else pick = takeRandom(pool, ca.Amount, ca.Random);
+        if (c.Shuffle) for (let n = pick.length; n > 1;) { const k = ca.Random.next(0, n); n--; const x = pick[k]; pick[k] = pick[n]; pick[n] = x; }
+        base = pick.map((e) => generateMinion(ca.B, e, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random));
+        break;
+      }
+      case 'MinionCatalogueTriggerSource': {
+        // a fresh copy of the trigger event's source; Reborn keeps its trigger counts
+        base = []; const sid = sourceOf(ca.TriggerEvent); if (!sid) break;
+        const sm = ca.B.board.findMinion(sid); if (!sm) break;
+        const m = generateMinion(ca.B, sm.Enum, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random);
+        if (c.Reborn) copyTriggerCount(m, sm);
+        base.push(m); break;
+      }
+      case 'MinionCatalogueMemory': {
+        // MinionCatalogueMemory.GetBaseMinions / FetchMinion: one pet per memory the source holds under Ability
+        base = []; const src = ca.SourceId ? ca.B.board.findMinion(ca.SourceId) : null;
+        const mems = src && src.Brain ? src.Brain[c.Ability] || [] : [];
+        for (const mem of mems) {
+          const e = c.OverrideMinionEnum ?? mem.MinionEnum; if (e == null) continue;
+          const lvl = c.CopyLevel && mem.Level != null ? mem.Level : ca.Level;
+          const m = generateMinion(ca.B, e, lvl, ca.Owner, ca.Location ?? 1, ca.Random);
+          if (c.CopyAttack && mem.Attack != null) m.Attack.Set(mem.Attack, false);
+          if (c.CopyHealth && mem.Health != null) m.Health.Set(mem.Health, false);
+          if (c.CopyMana && mem.Mana != null) setMana(m, mem.Mana);
+          if (c.CopyPerk && mem.Perk != null) setPerk(m, mem.Perk);
+          if (c.CopyPower && mem.Power) m.Power = { ...mem.Power };
+          if (c.CopyExperience && mem.Experience != null) m.Exp = mem.Experience;
+          base.push(m);
+        }
+        break;
+      }
+      case 'MinionCatalogueSelfCopy': {
+        // a copy of the source (its owner, location and level unless ExcludeLevel); Reborn keeps its trigger and attack counts
+        base = []; if (!ca.SourceId) break;
+        const src = ca.B.board.findMinion(ca.SourceId); if (!src) break;
+        const m = generateMinion(ca.B, src.Enum, c.ExcludeLevel ? ca.Level : src.Level, src.Owner, src.Location);
+        if (c.Reborn) { copyTriggerCount(m, src); m.AttackCountsThisBattle = src.AttackCountsThisBattle; m.AttackCountsThisTurn = src.AttackCountsThisTurn; }
+        base.push(m); break;
+      }
+      case 'MinionCatalogueTargetCopy': {
+        // MinionCatalogueTargetCopy.GetBaseMinions: Target's targets (TargetsArgs: the trigger, the source pet and its owner, no aim),
+        // each a new pet of the target's type at the catalogue's level (Exact: the target's level, then MinionModel.CopyFrom with the
+        // new pet's own Id kept); CopyPerk sets the target's perk
+        const src = ca.SourceId ? ca.B.board.findMinion(ca.SourceId) : null; if (!src || !c.Target) return unported('MinionCatalogueTargetCopy without a source or Target');
+        const ids = getTargets(c.Target, { B: ca.B, TriggerEvent: ca.TriggerEvent, OwnerMinion: src, Owner: src.Owner, Aim: null, Random: ca.Random, Reversed: false }) || [];
+        base = ids.map((id) => {
+          const tm = ca.B.board.findMinion(id); if (!tm) unported('MinionCatalogueTargetCopy of a missing pet');
+          const m = generateMinion(ca.B, tm.Enum, c.Exact ? tm.Level : ca.Level, ca.Owner, ca.Location ?? 1);
+          if (c.Exact) { const keep = m.Id; copyFrom(m, tm); m.Id = keep; }
+          if (c.CopyPerk) setPerk(m, tm.Perk ?? null, tm.PerkDuration || 0);
+          return m;
+        });
+        break;
+      }
+      case 'MinionCatalogueTriggerTarget': {
+        // a fresh copy of the trigger event's target. The game checks CopyAttack twice and never reads CopyHealth,
+        // so CopyAttack copies attack and health (MinionCatalogueTriggerTarget.GetBaseMinions, build 26131463)
+        base = []; const tid = targetOf(ca.TriggerEvent); if (!tid) break;
+        const tm = ca.B.board.findMinion(tid);
+        if (c.MinionFinder && !predicate(c.MinionFinder, ca.B, tm, ca.SourceId ? ca.B.board.findMinion(ca.SourceId) : null)) break;
+        if (!tm) break;
+        const m = generateMinion(ca.B, tm.Enum, ca.Level, ca.Owner, ca.Location ?? 1, ca.Random);
+        if (c.CopyAttack) { m.Attack = tm.Attack.ShallowCopy(); m.Health = tm.Health.ShallowCopy(); }
+        if (c.CopyPerk) setPerk(m, tm.Perk, tm.PerkDuration, tm.PerkMultiplier, tm.PerkDurability);
+        base.push(m); break;
+      }
+      default: return unported(t);
+    }
+    const pa = { B: ca.B, TargetId: ca.TargetId, SourceId: ca.SourceId, Random: ca.Random, TriggerEvent: ca.TriggerEvent, Owner: ca.Owner };
+    for (const m of base) {
+      if (c.Attack) setAttack(m, paramValue(c.Attack, pa));
+      if (c.AttackRange) { let v = m.Attack.Total; const r = paramValue(c.AttackRange, pa); if (r > 0) v += ca.Random.next(0, r + 1); setAttack(m, v); }
+      if (c.ExtraAttack != null) setAttack(m, m.Attack.Total + c.ExtraAttack);
+      if (c.Health) setHealth(m, paramValue(c.Health, pa));
+      if (c.HealthRange) { let v = m.Health.Total; const r = paramValue(c.HealthRange, pa); if (r > 0) v += ca.Random.next(0, r + 1); setHealth(m, v); }
+      if (c.ExtraHealth != null) setHealth(m, m.Health.Total + c.ExtraHealth);
+      if (c.Perk) unported('MinionCatalogue.Perk');
+      if (c.Countdown) unported('MinionCatalogue.Countdown');
+      if (c.DisableAbility) { m.AbilitiesDisabled = true; m.Abilities.length = 0; } // MinionExtensions.DisableAbilities
+      if (c.Frozen) m.Frozen = true;
+      if (c.ExtraExperience != null) { m.Exp += c.ExtraExperience; resetLevelFromExperience(m); }
+    }
+    return base;
+  }
+  function effectSummon(eff, sa) {
+    const B = sa.B, board = B.board; const pa = singleParamArgs(sa);
+    const level = eff.Level ? paramValue(eff.Level, pa) : 1;
+    let side = sa.Owner;
+    const tm = board.findMinion(sa.TargetId); let point = tm ? { x: tm.Point.x, y: tm.Point.y } : { x: 0, y: 0 };
+    if ((point.x < 5 && side !== 1) || (point.x > 4 && side === 1)) side = side === 1 ? 2 : side === 2 ? 1 : 0;
+    const ca = { B, Level: level, Amount: 1, TargetId: sa.TargetId, SourceId: sa.SourceId, Random: sa.Random, Owner: side, TriggerEvent: sa.TriggerEvent };
+    let push = eff.PushDirection ?? null;
+    if (eff.SummonDirection != null) {
+      const dv = (sa.Owner === 1 && eff.SummonDirection === 0) || (sa.Owner === 2 && eff.SummonDirection === 1) ? 1 : -1;
+      let x = point.x + dv; const lo = side !== 1 ? 5 : 0, hi = side !== 1 ? 9 : 4;
+      push = eff.SummonDirection === 0 ? 1 : 0; // RelativeDirection.Reverse
+      if (x >= lo && x <= hi) {
+        do { if (!board.cells[x]) { push = eff.SummonDirection; point = { x: point.x + dv, y: point.y }; break; } x += dv; } while (lo <= x && x <= hi);
+      }
+    }
+    if (eff.Back) point = side === 1 ? { x: 0, y: 0 } : { x: 9, y: 0 };
+    const source = sa.SourceId ? board.findMinion(sa.SourceId) : null;
+    const make = (m) => {
+      if (!m) return null;
+      if (source) { source.LastSummoned = source.LastSummoned || []; source.LastSummoned.push(m.Id); }
+      for (const pr of eff.Processors || []) summonProcess(pr, { B, SummonPoint: point, Minion: m, Parent: source, Reversed: sa.Reversed });
+      const s = ev('SummonMinion', { Owner: m.Owner, Minion: m, Type: 1, SubType: eff.SubType || 0, Jumped: false, TriggerDisabled: false, TargetPoint: { x: point.x, y: point.y },
+        FailCause: 0, SourceId: source ? source.Id : null, Projectile: !!eff.Projectile, ForceActivateAbility: !!eff.ForceActivate, PushDirection: push });
+      return wrap('Try', s);
+    };
+    const out = [];
+    if (eff.SinglePass) { for (const m of catalogueMinions(eff.Catalogue, ca)) { const x = make(m); if (x) out.push(x); } }
+    else { const n = eff.Amount ? paramValue(eff.Amount, pa) : 1; for (let i = 0; i < n; i++) { const x = make(catalogueMinions(eff.Catalogue, ca)[0]); if (x) out.push(x); } }
+    return out.length ? out : null;
+  }
+  function procValue(v, a) {
+    if (short(T(v)) === 'ParameterFlat') return v.Value;
+    if (!a.Parent) unported('summon processor parameter without a parent');
+    return paramValue(v, { B: a.B, TargetId: a.Minion.Id, SourceId: a.Parent.Id, TriggerTargetId: a.Minion.Id, TriggerSourceId: a.Parent.Id, AimId: null, Random: null, TriggerEvent: null });
+  }
+  function summonProcess(pr, a) {
+    const t = short(T(pr)).replace(/^BoardEvents\./, ''); const m = a.Minion, p = a.Parent;
+    switch (t) {
+      // SetAttack / SetHealth: ParameterInt.GetValue(new ParameterArgs(processor args)): target and trigger target = the new pet,
+      // source and trigger source = the parent (no aim, random or trigger event)
+      case 'EffectSummonProcessorSetAttack': setAttack(m, procValue(pr.Value, a)); return;
+      case 'EffectSummonProcessorSetHealth': setHealth(m, procValue(pr.Value, a)); return;
+      case 'EffectSummonProcessorMakeEnemy': if (!a.Reversed) m.Owner = m.Owner === 1 ? 2 : m.Owner === 2 ? 1 : 0; return;
+      case 'EffectSummonProcessorSetAttackToBase': setAttack(m, D.minions[m.Enum].attack * pr.Multiplier); return;
+      case 'EffectSummonProcessorSetHealthToBase': setHealth(m, D.minions[m.Enum].health * pr.Multiplier); return;
+      case 'EffectSummonProcessorCopyAttack': case 'EffectSummonProcessorCopyHealth': {
+        if (!p) return; const atk = t.endsWith('Attack'); let v = atk ? p.Attack.Total : p.Health.Total;
+        if (pr.Multiplier != null) v = Math.trunc(v * decimal(pr.Multiplier)); if (pr.Addition != null) v += pr.Addition;
+        if (atk) setAttack(m, v); else setHealth(m, v); return;
+      }
+      case 'EffectSummonProcessorCopyLevel': if (p) m.Level = p.Level; return;
+      case 'EffectSummonProcessorSetPerk': setPerk(m, pr.Value ?? null); return;
+      case 'EffectSummonProcessorCopyPerk': { // the parent's perk (when Positive is set, only a perk of that polarity)
+        if (!p) return;
+        if (p.Perk != null && pr.Positive != null) { const pk = PERKS()[p.Perk]; if (!pk || pk.positive !== pr.Positive) return; }
+        setPerk(m, p.Perk ?? null); return; // a parent without a perk clears the summon's perk
+      }
+      default: return unported(t);
+    }
+  }
+  // BoardExtensions push helpers. RelativeDirection: 0 forward, 1 backward. DirectionEnum: 1 right (+x), 3 left (-x).
+  const fwd = (owner) => (owner === 1 ? 1 : 3), bwd = (owner) => (owner === 1 ? 3 : 1);
+  const toDx = (dir) => (dir === 1 ? 1 : dir === 3 ? -1 : 0);
+  const isInside = (p, owner) => p.y === 0 && (owner === 1 ? p.x >= 0 && p.x <= 4 : owner === 2 ? p.x >= 5 && p.x <= 9 : true);
+  function canPushMinion(board, m, rel) {
+    const np = { x: m.Point.x + toDx(rel === 0 ? fwd(m.Owner) : bwd(m.Owner)), y: 0 };
+    if (!isInside(np, m.Owner)) return false;
+    const c = board.get(np); const o = c ? board.findMinion(c.Id, true, false) : null;
+    if (o) { if (idEq(o.Id, m.Id) || o.Point.x === m.Point.x) throw new Error('EndlessLoopException: CanPushMinion'); return canPushMinion(board, o, rel); }
+    return true;
+  }
+  /** BoardExtensions.CanSummonMinion: cell in bounds, free or pushable, and fewer live pets than BoardCapacity. */
+  function canSummonMinion(board, m, p) {
+    if (p.x < 0 || p.x >= board.Width || p.y !== 0) return false;
+    const c = board.get(p);
+    if (c && c.IsAlive && !canPushMinion(board, c, 0) && !canPushMinion(board, c, 1)) return false;
+    return board.cells.filter((x) => x && x.IsAlive).length < board.BoardCapacity;
+  }
+  /** BoardExtensions.TryMove: Do<MoveMinion>(quick, forced) for the chain of pushed pets, returned in reverse order. */
+  function tryMove(board, m, dir) {
+    const out = []; let p = { x: m.Point.x, y: 0 };
+    for (let i = 0; ;) {
+      const c = board.get(p); if (!c) break; const o = board.findMinion(c.Id, true, false); if (!o) break;
+      const np = { x: p.x + toDx(dir), y: 0 };
+      if (!isInside(np, m.Owner)) return null;
+      out.push(wrap('Do', ev('MoveMinion', { Owner: m.Owner, MinionId: o.Id, From: { x: p.x, y: 0 }, To: np, Quick: true, Forced: true })));
+      p = np; if (++i > 4) return null;
+    }
+    return out.reverse();
+  }
+  function tryClearSpace(board, p, rel) {
+    const c = board.get(p); const o = c ? board.findMinion(c.Id, true, false) : null;
+    if (!o) return { ok: true, events: [], rel };
+    if (!canPushMinion(board, o, rel)) { rel = rel === 0 ? 1 : 0; if (!canPushMinion(board, o, rel)) return { ok: false, events: [], rel }; }
+    const evs = tryMove(board, o, rel === 0 ? fwd(o.Owner) : bwd(o.Owner));
+    return evs ? { ok: true, events: evs, rel } : { ok: false, events: [], rel };
+  }
+  /** SummonMinionAttemptSystem */
+  function summonAttempt(B, e) {
+    const s = e.Event, board = B.board; let p = { x: s.TargetPoint.x, y: s.TargetPoint.y }; const m = s.Minion;
+    if (s.SubType !== 1) m.Owner = s.Owner;
+    const fail = (cause) => { s.FailCause = cause; B.add(wrap('Fail', s)); };
+    if (!canSummonMinion(board, m, p)) return fail(1);
+    let rel = s.PushDirection ?? 0;
+    if (rel === 1) { const o = board.findLiveMinion(p); if (o && !canPushMinion(board, o, 1)) { p = { x: p.x + (p.x > 4 ? -1 : 1), y: 0 }; rel = 0; } }
+    const r = tryClearSpace(board, p, rel);
+    if (!r.ok) return fail(1);
+    m.Point = { x: p.x, y: p.y }; s.TargetPoint = { x: p.x, y: p.y }; s.PushDirection = r.rel;
+    B.add(r.events.concat([wrap('Do', s)]));
+  }
+  function deepCopy(m) {
+    const c = Object.assign(Object.create(Object.getPrototypeOf(m)), m);
+    c.Attack = m.Attack.ShallowCopy(); c.Health = m.Health.ShallowCopy(); c.Point = { x: m.Point.x, y: m.Point.y };
+    c.Abilities = m.Abilities.map((a) => Object.assign(Object.create(Object.getPrototypeOf(a)), a)); c.Power = Object.assign({}, m.Power); c.LastSummoned = (m.LastSummoned || []).slice();
+    return c;
+  }
+  /** SummonMinionMutator */
+  function summonMutator(B, e) {
+    const s = e.Event, board = B.board;
+    let m = s.Minion; if (s.Type !== 3 && s.Type !== 5) m = deepCopy(m);
+    const p = s.TargetPoint;
+    if (canSummonMinion(board, m, p)) {
+      m.Location = 1;
+      if ((p.x < 5 && m.Owner !== 1) || (p.x > 4 && m.Owner === 1)) m.Owner = m.Owner === 1 ? 2 : 1;
+      board.setMinion(p, m);
+    } else unported('SummonMinionMutator when the summon fails at Do');
+    if (s.Jumped && board.IsBattle) m.JumpsThisBattle++;
+    if (!s.TriggerDisabled) { if (e.Owner === 1) board.MinionsSummonedThisTurn++; else board.OpponentSummons = (board.OpponentSummons || 0) + 1; }
+    B.add(wrap('Done', s));
+    if (s.ForceActivateAbility) {
+      const filter = m.Abilities.filter((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects; }).map((a) => a.Enum);
+      B.add(ev('ForceActivateAbility', { Owner: e.Owner, Level: null, TargetId: m.Id, AbilityFilter: filter, SourceId: null, RepeatFromAuraDisabled: false, DisableAfterTemp: false }));
+    }
+  }
+  /** AbilityFilter.FindAbilities(models): enums of the abilities whose own triggers match every set With* field. */
+  function abilityFilterFind(f, models) {
+    const has = (a, types, own) => { const ab = getAbility(a.Enum, a.Level); if (!ab || ab.HiddenTriggersAndEffects) return false; return trigHas(ab.Trigger, types, own); };
+    const out = [];
+    for (const a of models) {
+      if (f.WithPlayTrigger != null && has(a, ['TriggerPlayMinion'], true) !== f.WithPlayTrigger) continue;
+      if (f.WithDeathTrigger != null && (has(a, ['TriggerDeath'], true) || has(a, ['TriggerBeforeDeath'], true)) !== f.WithDeathTrigger) continue;
+      if (f.WithBattleStartTrigger != null && has(a, ['TriggerStartBattle'], false) !== f.WithBattleStartTrigger) continue;
+      if (f.WithTurnEndTrigger != null && has(a, ['TriggerEndTurn'], false) !== f.WithTurnEndTrigger) continue;
+      if (f.WithTurnStartTrigger != null && has(a, ['TriggerStartTurn'], false) !== f.WithTurnStartTrigger) continue;
+      out.push(a.Enum);
+    }
+    return out;
+  }
+  /** ForceActivateAbilitySystem: Do<AbilityTriggered>(forced) for each listed ability, on a TriggerEvent.Force. */
+  function forceActivateAbility(B, e) {
+    if (!e.AbilityFilter) return;
+    const m = B.board.findMinion(e.TargetId); if (!m || !m.Abilities.length) return;
+    if (((D.minions[m.Enum] || {}).raw || {}).ForceActivateImmune) return;
+    for (const a of m.Abilities) {
+      if (!e.AbilityFilter.includes(a.Enum)) continue;
+      const rand = B.randomizer(e.Owner);
+      const level = e.Level ? paramValue(e.Level, { B, TargetId: e.TargetId, SourceId: e.SourceId || null, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: rand, TriggerEvent: null, Owner: e.Owner }) : a.Level;
+      const trig = e.SourceId ? ev('WithSource', { SourceId: e.SourceId }) : ev('Force', {}); // TriggerEvent.Force.New: Force+WithSource when there is a source
+      B.add(wrap('Do', ev('AbilityTriggered', { Owner: e.Owner, Ability: a.Enum, Level: level, MinionId: e.TargetId, Aim: null, TriggerEvent: trig, UpdateLevel: false, Type: 0,
+        Force: true, RepeatFromAuraDisabled: e.RepeatFromAuraDisabled, DisableAfterTemp: e.DisableAfterTemp, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
+    }
+  }
+
+  // ---------------------------------------------------------------- mutators fed by effects
+  const mutators = {
+    /** AddMinionChargeMutator: whole charges emit Done<ChargedMinion>, partial progress emits ChargedMinionPartially */
+    AddMinionChargeMutator(B, e) {
+      const c = e.Event; const m = B.board.findMinion(c.TargetId); if (!m) return;
+      const model = m.Abilities.find((a) => a.Enum === c.Ability); if (!model) return;
+      if (model.Charges == null) model.Charges = 0;
+      const ab = getAbility(model.Enum, model.Level);
+      if (ab.ChargesMax != null && ab.ChargesMax <= model.Charges) return;
+      if (!canMinionAbilityTrigger(B, model, ab)) return;
+      const before = ab.Charges != null ? tdiv(model.Charges, ab.Charges) : null;
+      model.Charges = model.Charges + c.Amount;
+      const after = ab.Charges != null ? tdiv(model.Charges, ab.Charges) : null;
+      const diff = before != null && after != null ? after - before : null;
+      if (!(diff > 0)) { if (ab.Charges != null) B.add(ev('ChargedMinionPartially', { Owner: m.Owner, MinionId: m.Id, Ability: model.Enum, Max: ab.Charges, Current: model.Charges, Hidden: false })); return; }
+      for (let i = 0; i < diff; i++) B.add(wrap('Done', ev('ChargedMinion', { Owner: m.Owner, MinionId: m.Id, Ability: model.Enum, Hidden: false })));
+    },
+    /** AddMinionPowerMutator */
+    AddMinionPowerMutator(B, e) {
+      const p = e.Event; const m = B.board.findMinion(p.TargetId); if (!m) return;
+      const ab = getAbility(p.Ability, 1); if (ab && ab.PowerMax != null) unported('AddPowerToAbility with PowerMax');
+      m.Power[p.Ability] = (m.Power[p.Ability] || 0) + p.Amount;
+      p.ResultCurrent = m.Power[p.Ability];
+      B.add(wrap('Done', p));
+    },
+    /** AbilityDamageSystem: MinionAbilityDamage -> DamageMinion (DamageType 1, owner = target's owner) */
+    AbilityDamageSystem(B, e) {
+      const d = e.Event; const board = B.board;
+      const target = board.findLiveMinion(d.TargetId); if (!target) return;
+      const source = d.SourceId ? board.findLiveMinion(d.SourceId) : null;
+      if (d.AmountParameter) d.Amount = paramValue(d.AmountParameter, { B, TargetId: d.TargetId, SourceId: d.SourceId, TriggerTargetId: d.TriggerTargetId, TriggerSourceId: d.TriggerSourceId, Random: B.randomizer(e.Owner), TriggerEvent: d.TriggerEvent });
+      const dm = ev('DamageMinion', { Owner: target.Owner, Amount: d.Amount, Range: d.Range, TargetId: d.TargetId, SourceId: d.SourceId, DamageType: 1, AttackType: 0, CriticalDisabled: d.CriticalDisabled,
+        Absorb: d.Absorb, AbsorbMax: d.AbsorbMax, AbsorbPercent: d.AbsorbPercent, IgnorePerks: d.IgnorePerks, SourcePerk: d.SourcePerk });
+      setupDamage(dm, B, source, target);
+      B.add(wrap('Try', dm));
+      B.add(wrap('Done', d));
+    },
+    /** GiveMinionBuffMutator */
+    GiveMinionBuffMutator(B, e) {
+      const b = e.Event; const board = B.board;
+      const m = board.findMinion(b.TargetId, true, false); if (!m) return;
+      const rand = B.randomizer(e.Owner);
+      const source = b.Source ? board.findMinion(b.Source) : null;
+      if (source && (b.AttackParameter || b.HealthParameter)) unported('BuffMinion late parameters');
+      const atk0 = m.Attack.Total, hp0 = m.Health.Total;
+      let atk = b.Attack; if (b.AttackRange > 0) { const r = rand.next(0, b.AttackRange + 1); b.Attack += r; atk += r; }
+      let hp = b.Health; if (b.HealthRange > 0) { const r = rand.next(0, b.HealthRange + 1); hp += r; b.Health += r; }
+      // GiveMinionBuffMutator.Restore: with a live source and a Hurt/HurtEarly trigger, give back up to the damage not yet restored
+      // (Amount - Restored), at most HealthRestore - the source's power for HealthRestoreAbility; counts it in Restored and the power
+      if (b.Source && b.Trigger && (b.Trigger.cls === 'Hurt' || b.Trigger.cls === 'HurtEarly')) {
+        const src = board.findLiveMinion(b.Source);
+        if (src) {
+          const pow = src.Power[b.HealthRestoreAbility] || 0; const t = b.Trigger; const left = t.Amount - (t.Restored || 0);
+          if (pow < b.HealthRestore && left > 0) {
+            const n = Math.min(Math.min(b.HealthRestore - pow, t.Amount), left);
+            t.Restored = (t.Restored || 0) + n;
+            src.Power[b.HealthRestoreAbility] = pow + n; src._powerDict = true;
+            hp += n; b.Health += n;
+          }
+        }
+      }
+      if (m.Perk === 121 && !(B.hooks.sadImmune && B.hooks.sadImmune(m))) { atk = 0; hp = 0; b.Attack = 0; b.Health = 0; }
+      const dur = b.Duration || 0;
+      // Duration 2 buffs are removable: a negative one from a source takes back what that source gave (records in RemoveableBuffs),
+      // never leaving a stat below 1; a positive one records (source, attack gained, health gained) below
+      const negative = b.Health < 0 || b.Attack < 0;
+      if (source && dur === 2 && negative && m.RemoveableBuffs) {
+        const mine = m.RemoveableBuffs.filter((r) => idEq(r[0], source.Id));
+        m.RemoveableBuffs = m.RemoveableBuffs.filter((r) => !idEq(r[0], source.Id));
+        atk = mine.reduce((acc, r) => acc - r[1], 0); hp = mine.reduce((acc, r) => acc - r[2], 0);
+        if (m.Health.Total <= Math.abs(hp)) hp = 1 - m.Health.Total;
+        if (m.Attack.Total <= Math.abs(atk)) atk = 1 - m.Attack.Total;
+      }
+      addAttack(m, atk, dur);
+      M.addHealth(m, hp, dur !== 0);
+      b.ResultGiveAttack = atk; b.ResultGiveHealth = hp; b.ResultAttackGained = m.Attack.Total - atk0; b.ResultHealthGained = m.Health.Total - hp0;
+      b.ResultAttack = m.Attack.ShallowCopy(); b.ResultHealth = m.Health.ShallowCopy();
+      if (source && dur === 2 && !negative && m.RemoveableBuffs) m.RemoveableBuffs.push([source.Id, b.ResultAttackGained, b.ResultHealthGained]);
+      if (b.Future && board.IsBattle) (board.MinionFutures = board.MinionFutures || []).push({ Target: b.TargetId, Attack: b.Attack > 0 ? b.Attack : null, Health: b.Health > 0 ? b.Health : null }); // BoardModel +0x1b0
+      if ((b.Health < 0 || b.Attack < 0) && b.ResultAttackGained < 0) B.add(ev('LostAttack', { SourceId: b.TargetId }));
+      B.add(wrap('Done', b));
+    },
+    /** ReleaseManaSystem (Try<ReleaseMana>): a fainting pet with mana force-runs ability 686 at level 1 */
+    ReleaseManaSystem(B, e) {
+      const r = e.Event; const m = B.board.findMinion(r.TargetId); if (!m || m.Mana < 1) return;
+      B.add(wrap('Do', ev('AbilityTriggered', { Owner: m.Owner, Ability: 686, Level: 1, MinionId: m.Id, Aim: null, TriggerEvent: r.TriggerEvent, UpdateLevel: false, Type: 0, Force: true,
+        RepeatFromAuraDisabled: false, DisableAfterTemp: false, FailCause: { Status: 0, Loud: false }, PerkSource: null, RemovePerk: null, EffectMultiplier: null })));
+    },
+    /**
+     * ThrowMinionMutator (Try<MinionJumpAttack>): the thrown pet hits the target (splash/fixed damage, attack type 1), then takes the
+     * target's hit back with adjacents ignored. Neither attacks with health. If either is gone, both just count an attack.
+     */
+    ThrowMinionMutator(B, e) {
+      const j = e.Event; const board = B.board;
+      const thrown = board.findLiveMinion(j.TargetToThrow), at = board.findLiveMinion(j.TargetToThrowAt);
+      if (!thrown || !at) {
+        for (const id of [j.TargetToThrow, j.TargetToThrowAt]) { const m = board.findMinion(id); if (m) { m.AttackCountsThisTurn++; if (board.IsBattle) m.AttackCountsThisBattle++; } }
+        return;
+      }
+      B.add(B.doTradeDamage(at.Id, thrown.Id, false, { splash: j.SplashDamage, multiplier: j.DamageMultiplier, fixed: j.FixedDamage, attackType: 1 }));
+      B.add(B.doTradeDamage(thrown.Id, at.Id, false, { ignoreAdjacents: true, attackType: 1 }));
+      B.add(wrap('Done', j));
+    },
+    /**
+     * CopyMinionStatsMutator (Try<CopyMinionStats>): stat = from's stat (times the multiplier, rounded up only with Rounding 1, then truncated),
+     * capped by the max, plus to's own stat with Add; health is at least 1.
+     */
+    /**
+     * CopyMinionAbilityMutator: from = FindMinion(CopyFrom), to = FindLiveMinion(CopyTo). Without KeepExisting the receiver's abilities are cleared.
+     * Each of from's abilities (stopping at the first with a Group, or once the receiver has 5) is added with AddAbility at Level
+     * (read with target = from, source = to) or its own level, with Duration, AlwaysIgnoreMinionLevel as given. Then Done.
+     */
+    CopyMinionAbilityMutator(B, e) {
+      const c = e.Event; const board = B.board;
+      const from = board.findMinion(c.CopyFrom); if (!from) return;
+      const to = board.findLiveMinion(c.CopyTo); if (!to) return;
+      if (c.FromTemplate) unported('CopyMinionAbility FromTemplate');
+      if (!c.KeepExisting) to.Abilities = [];
+      for (const a of from.Abilities.slice()) {
+        if (a.Group > 0) break;
+        if (to.Abilities.length > 4) break;
+        const lv = c.Level ? paramValue(c.Level, { B, TargetId: from.Id, SourceId: to.Id, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: null, TriggerEvent: null }) : a.Level;
+        const x = addAbility(to, a.Enum, lv, false, c.Duration || 0);
+        if (c.AlwaysIgnoreMinionLevel && x) x.AlwaysIgnoreMinionLevel = true;
+      }
+      B.add(wrap('Done', c));
+    },
+    CopyMinionStatsMutator(B, e) {
+      const c = e.Event; const board = B.board;
+      const from = board.findLiveMinion(c.CopyFrom), to = board.findLiveMinion(c.CopyTo);
+      if (!to || !from) return;
+      const a0 = to.Attack.Total, h0 = to.Health.Total;
+      const scaled = (v, mult) => { if (mult == null) return v; const x = Dec.mul(Dec.int(v), Dec.from(mult)); return Dec.toInt(c.Rounding === 1 ? Dec.ceil(x) : x); };
+      if (c.Attack) {
+        let v = scaled(from.Attack.Total, c.AttackMultiplier);
+        if (c.AttackMax != null && c.AttackMax < v) v = c.AttackMax;
+        if (c.Add) v += to.Attack.Total;
+        setAttack(to, v);
+        if (c.Add) { c.ResultGiveAttack = v - a0; c.ResultAttackGained = to.Attack.Total - a0; c.ResultAttack = to.Attack.ShallowCopy(); }
+      }
+      if (c.Health) {
+        let v = scaled(from.Health.Total, c.HealthMultiplier);
+        if (c.HealthMax != null && c.HealthMax < v) v = c.HealthMax;
+        if (c.Add) v += to.Health.Total;
+        if (v < 1) v = 1;
+        setHealth(to, v);
+        if (c.Add) { c.ResultGiveHealth = v - h0; c.ResultHealthGained = to.Health.Total - h0; c.ResultHealth = to.Health.ShallowCopy(); }
+      }
+      B.add(wrap('Done', c));
+    },
+    /** GainGoldMutator (Try<GainGold>): BoardExtensions.GainGold (player only; gains capped at 50 a turn via GoldGained, gold kept in 0..300; Future adds to FutureGold) */
+    GainGoldMutator(B, e) {
+      const g = e.Event; const b = B.board; let gained = 0;
+      if (g.Owner === 1) {
+        if (!g.Future) {
+          const room = 50 - (b.GoldGained || 0);
+          if (room > 0) { const amt = Math.min(g.Amount, room); b.GoldGained = (b.GoldGained || 0) + amt; const old = b.Gold || 0; b.Gold = Math.max(0, Math.min(300, old + amt)); gained = old - b.Gold; }
+        } else b.FutureGold = (b.FutureGold || 0) + g.Amount;
+      }
+      g.ResultGained = gained; g.ResultNewValue = b.Gold || 0; // GainGold.SetResult(gained, board.Gold); the game returns old - new as "gained"
+      B.add(wrap('Done', g));
+    },
+    /** GainRollsMutator (Try<GainRolls>): player only; BuildExtensions.GainRolls (FreeRolls kept in 0..10, Future adds to FutureFreeRolls), then ChangeFreeRolls */
+    GainRollsMutator(B, e) {
+      const g = e.Event; const b = B.board; if (g.Owner !== 1) return;
+      const old = b.FreeRolls || 0;
+      if (!g.Future) b.FreeRolls = Math.max(0, Math.min(10, old + g.Rolls)); else b.FutureFreeRolls = (b.FutureFreeRolls || 0) + g.Rolls;
+      B.add(ev('ChangeFreeRolls', { Owner: g.Owner, OldFreeRolls: old, NewFreeRolls: b.FreeRolls || 0, SourceId: g.SourceId, Future: g.Future, Shower: g.Shower }));
+    },
+    /** SpendMinionManaMutator (Try<SpendMinionMana>): Spend (all when null), not below 0 */
+    SpendMinionManaMutator(B, e) {
+      const sm = e.Event; const m = B.board.findMinion(sm.TargetId); if (!m) return;
+      const spend = sm.Spend ?? m.Mana; const old = m.Mana;
+      m.Mana = Math.max(0, m.Mana - spend);
+      sm.ResultTargetManaOld = old; sm.ResultTargetManaNew = m.Mana;
+      B.add(wrap('Done', sm));
+    },
+    /**
+     * BalanceStatsMutator (Try<BalanceStats>), in float32 like the game: each pet keeps (1 - Percent) of its own permanent/temporary
+     * attack and health plus an equal share of Percent of the totals (MixStats pools attack with health); Math.Round (to even).
+     */
+    BalanceStatsMutator(B, e) {
+      const bs = e.Event; const list = bs.Targets.map((id) => B.board.findLiveMinion(id)).filter(Boolean);
+      if (!list.length) return;
+      const f = Math.fround, p = f(bs.Percent);
+      let aP = 0, aT = 0, hP = 0, hT = 0;
+      for (const m of list) { aP = f(aP + f(m.Attack.Permanent * p)); aT = f(aT + f(m.Attack.Temporary * p)); hP = f(hP + f(m.Health.Permanent * p)); hT = f(hT + f(m.Health.Temporary * p)); }
+      if (bs.MixStats) { aP = hP = f(f(hP + aP) * 0.5); aT = hT = f(f(hT + aT) * 0.5); }
+      const n = list.length, q = f(1 - p);
+      const round = (x) => { const fl = Math.floor(x); const d = x - fl; return d > 0.5 ? fl + 1 : d < 0.5 ? fl : (fl % 2 === 0 ? fl : fl + 1); };
+      bs.Results = [];
+      for (const m of list) {
+        let x = f(f(q * m.Attack.Permanent) + f(aP / n)), hp = f(f(m.Health.Permanent * q) + f(hP / n));
+        let xt = f(f(m.Attack.Temporary * q) + f(aT / n)), ht = f(f(m.Health.Temporary * q) + f(hT / n));
+        if (n === 1) {
+          if (Math.abs(x - Math.floor(x) - 0.5) < 0.01) { x = Math.floor(x); hp = Math.ceil(hp); }
+          if (Math.abs(xt - Math.floor(xt) - 0.5) < 0.01) { xt = Math.floor(xt); ht = Math.ceil(ht); }
+        }
+        m.Attack.Set(round(x), false); m.Health.Set(round(hp), false); m.Attack.Set(round(xt), true); m.Health.Set(round(ht), true);
+        bs.Results.push({ Id: m.Id, ResultAttack: m.Attack.ShallowCopy(), ResultHealth: m.Health.ShallowCopy() });
+      }
+      B.add(wrap('Done', bs));
+    },
+    /**
+     * PlaySpellMutator (Try<PlaySpell>): BoardExtensions.PlaySpell (CanPlaySpell: a spell with an Aim needs a live pet it can aim
+     * at; the target must be aimable), then Power += the event's Power, Spell.Activate once, and Done. A conjured spell skips the
+     * shop, the spell history and the gold (no SpendGold).
+     */
+    PlaySpellMutator(B, e) {
+      const p = e.Event; const sp = p.Spell; const tpl = (D.spells || {})[sp.Enum]; if (!tpl) unported('spell ' + sp.Enum + ' (not in the data)');
+      if (p.Author === 0) unported('PlaySpell by the player');
+      if (!sp.Conjured) unported('PlaySpell of a shop spell');
+      if (tpl.Aim && !B.board.findLiveMinions().some((m) => canAimSpellAt(B, sp, m.Id))) return; // CanPlaySpellResult 4
+      if (p.Target && !canAimSpellAt(B, sp, p.Target)) return;
+      sp.Stolen = !!p.Steal; sp.Frozen = false;
+      if (tpl.GameCounter) unported('PlaySpell GameCounter');
+      const rand = B.randomizer(p.Owner);
+      sp.Power = (sp.Power ?? 0) + (p.Power ?? 0);
+      B.add(activateSpell(B, tpl, p.Owner, sp, p.Source || null, p.Target || null, rand));
+      if (sp.Links && sp.Links.length) unported('EscapeSpell');
+      B.add(wrap('Done', p));
+    },
+    /** GiveMinionPowerMutator (Try<GiveMinionPower>): ResetFirst removes the power, then AddPower (no cap) */
+    GiveMinionPowerMutator(B, e) {
+      const g = e.Event; const m = B.board.findMinion(g.Target, !g.IncludeDestroyed, !g.IncludeDead); if (!m) return;
+      if (g.ResetFirst) delete m.Power[g.Ability];
+      m._powerDict = true;
+      m.Power[g.Ability] = (m.Power[g.Ability] || 0) + g.Amount;
+      if (g.Future && B.board.IsBattle) (B.board.MinionFutures = B.board.MinionFutures || []).push({ Target: g.Target, Power: g.Amount > 0 ? g.Amount : null, Ability: g.Ability }); // BoardModel +0x1b0
+      B.add(wrap('Done', g));
+    },
+    /**
+     * RememberMinionMutator (Try<RememberMinion>): the source adds a MinionMemory of the target under Ability (MinionBrain.Lists);
+     * UniqueEnum skips a pet type already remembered there, and without KeepMany the list is cleared first
+     */
+    RememberMinionMutator(B, e) {
+      const r = e.Event; if (!r.Source) return;
+      const who = B.board.findMinion(r.Source); if (!who) return;
+      const tm = B.board.findLiveMinion(r.Target); if (!tm) return;
+      const brain = who.Brain && who.Brain[r.Ability];
+      if (r.UniqueEnum && brain && brain.some((x) => x.MinionEnum === tm.Enum)) return;
+      const mem = { MinionEnum: null, Attack: null, Health: null, Mana: null, Perk: null, Level: null, Experience: null, Power: null, Duration: r.Duration };
+      if (r.KeepEnum) mem.MinionEnum = tm.Enum;
+      if (r.KeepAttack) mem.Attack = tm.Attack.Total;
+      if (r.KeepHealth) mem.Health = tm.Health.Total;
+      if (r.KeepMana) mem.Mana = tm.Mana;
+      if (r.KeepPerk) mem.Perk = tm.Perk ?? null;
+      if (r.KeepLevel) mem.Level = tm.Level;
+      if (r.Level != null) mem.Level = r.Level;
+      if (r.KeepExperience) mem.Experience = tm.Exp;
+      if (r.KeepPower && tm.Power) mem.Power = { ...tm.Power };
+      if (!r.KeepMany && who.Brain) delete who.Brain[r.Ability]; // MinionBrain.Clear(ability)
+      who.Brain = who.Brain || {}; (who.Brain[r.Ability] = who.Brain[r.Ability] || []).push(mem); // MinionExtensions.AddMemory
+      B.add(wrap('Done', r));
+    },
+    /** StealMinionPerkMutator (Try<StealMinionPerk>): the thief gets the victim's perk; the victim loses it unless TargetPerkStays */
+    StealMinionPerkMutator(B, e) {
+      const st = e.Event; const victim = B.board.findMinion(st.Target, !st.IncludeDestroyed, !st.IncludeDead); if (!victim) return;
+      const thief = B.board.findLiveMinion(st.Source); if (!thief) return;
+      const perk = victim.Perk; if (perk == null) return;
+      if (st.MustBeNew && thief.Perk === perk) return;
+      st.ResultPerk = perk; setPerk(thief, perk); st.Result = perkResult(thief);
+      if (!st.TargetPerkStays) setPerk(victim, null);
+      B.add(wrap('Done', st));
+    },
+    /** PushMutator (Try<PushMinion>): lift the pet, clear the landing cell, re-summon it there (type 5, triggers off) */
+    PushMutator(B, e) {
+      const pm = e.Event; const board = B.board;
+      const target = board.findMinion(pm.TargetId, true, false);
+      const source = (pm.SourceId && board.findMinion(pm.SourceId)) || target; if (!source) return;
+      if (!target) return;
+      if (target.Perk === 66 && (pm.Type || 0) === 0) { const f = wrap('Fail', pm); pm.ResultLostPerk = tryRemovePerk(target); B.add(f); return; } // perk 66 resists pushes
+      let d = source.Owner !== 1 ? 3 : 1; if (pm.Direction) d = d === 1 ? 3 : d === 3 ? 1 : d === 0 ? 2 : 0; // DirectionUtility.Relative
+      const from = { x: target.Point.x, y: target.Point.y };
+      let x = from.x + toDx(d) * pm.Distance;
+      const lo = target.Owner === 1 ? 0 : 5, hi = target.Owner === 1 ? 4 : 9; x = Math.max(lo, Math.min(hi, x)); // GetMinMaxPoint
+      const to = { x, y: from.y };
+      board.cells[board.index(from)] = null;
+      const r = tryClearSpace(board, to, pm.Direction === 0 ? 1 : 0);
+      if (!r.ok) { board.cells[board.index(from)] = target; return; }
+      B.add(r.events);
+      B.add(wrap('Try', ev('SummonMinion', { Owner: target.Owner, Minion: target, Type: 5, SubType: 2, Jumped: (pm.Type || 0) === 1, TriggerDisabled: true, TargetPoint: to, FailCause: 0,
+        SourceId: null, Projectile: false, ForceActivateAbility: false, PushDirection: null })));
+      pm.FinalDelta = { x: to.x - from.x, y: 0 };
+      B.add(wrap('Done', pm));
+    },
+    /** TransformMinionMutator (Try<TransformMinion>) */
+    TransformMinionMutator(B, e) {
+      const t = e.Event; const board = B.board;
+      const old = t.IncludeDead ? board.findMinion(t.Target, true, false) : board.findLiveMinion(t.Target);
+      if (!old || (old.Location ?? 1) !== 1) return;
+      // BoardExtensions.RemoveMinion(id, 1): destroyed, off the grid, Location 6 (not to the graveyard)
+      old.Destroyed = true; board.cells[board.index(old.Point)] = null; old.Location = 6;
+      const n = deepCopy(t.NewMinion);
+      n.Id = old.Id; n.Perk = old.Perk; n.Owner = old.Owner; n.Point = { x: old.Point.x, y: old.Point.y };
+      n.Dead = false; n.Destroyed = false; n.DestroyedBy = null;
+      let atk = old.Attack.Permanent, atkT = old.Attack.Temporary, hp = old.Health.Permanent, hpT = old.Health.Temporary;
+      if (t.ResetStats) { atk = n.Attack.Permanent; hp = n.Health.Permanent; }
+      if (t.Attack) { atk = t.Attack.Permanent; atkT = t.Attack.Temporary; }
+      if (t.Health) { hp = t.Health.Permanent; hpT = t.Health.Temporary; }
+      if (t.ExtraAttack != null) atk += t.ExtraAttack;
+      if (t.ExtraHealth != null) hp += t.ExtraHealth;
+      n.Attack.Set(atk, false); n.Attack.Set(atkT, true); n.Health.Set(hp, false); n.Health.Set(hpT, true);
+      n.Mana = old.Mana; n.SellValue = old.SellValue; n.RemoveableBuffs = old.RemoveableBuffs; // MinionModel +0x60, +0xe0, +0x160 carry over
+      if (t.RemovePerkIf != null && n.Perk === t.RemovePerkIf) setPerk(n, null, 0, null, null);
+      else if (t.Perk != null) setPerk(n, t.Perk, 0, null, null);
+      else setPerk(n, old.Perk, old.PerkDuration, old.PerkMultiplier, old.PerkDurability);
+      if (t.BackUpToLevel != null && t.BackUpToLevel <= old.Level) resetLevel(n, t.BackUpToLevel);
+      else if (t.Level != null) resetLevel(n, t.Level);
+      else { let x = t.Experience != null ? t.Experience : old.Exp; if (t.ExtraExperience != null) x += t.ExtraExperience; n.Exp = Math.max(0, x); resetLevelFromExperience(n); }
+      if (findAuras(B, old, 12).length && B.randomizer(old.Owner).next(0, 2) === 1) { n.Enum = old.Enum; n.Abilities = old.Abilities; }
+      if (t.ForceActivate) {
+        const filter = n.Abilities.filter((a) => { const ab = getAbility(a.Enum, a.Level); return ab && !ab.HiddenTriggersAndEffects; }).map((a) => a.Enum);
+        B.add(ev('ForceActivateAbility', { Owner: e.Owner, Level: null, TargetId: n.Id, AbilityFilter: filter, SourceId: null, RepeatFromAuraDisabled: false, DisableAfterTemp: false }));
+      }
+      // BoardExtensions.SummonMinion(new, old point)
+      if (!canSummonMinion(board, n, old.Point)) return;
+      n.Location = 1;
+      if ((old.Point.x < 5 && n.Owner !== 1) || (old.Point.x > 4 && n.Owner === 1)) n.Owner = n.Owner === 1 ? 2 : 1;
+      board.setMinion(old.Point, n);
+      for (const pr of t.Processors || []) summonProcess(pr, { B, SummonPoint: old.Point, Minion: n, Parent: old, Reversed: false });
+      if (old.Owner === 1) board.TransformationsThisTurn = (board.TransformationsThisTurn || 0) + 1; else board.OpponentTransformations = (board.OpponentTransformations || 0) + 1;
+      t.ResultMinion = n; t.ResultOldMinion = old; t.ResultNewTransformations = board.TransformationsThisTurn || 0; t.ResultNewOpponentTransformations = board.OpponentTransformations || 0;
+      B.add(wrap('Done', t));
+    },
+    /** ChangeMinionManaMutator (Try<ChangeMinionMana>) */
+    ChangeMinionManaMutator(B, e) {
+      const c = e.Event; const board = B.board; const m = board.findLiveMinion(c.TargetId); if (!m) return;
+      if (c.AmountParameter) c.Amount = paramValue(c.AmountParameter, { B, TargetId: c.TargetId, SourceId: c.SourceId, TriggerTargetId: c.TriggerTargetId, TriggerSourceId: c.TriggerSourceId,
+        TriggerEvent: c.TriggerEvent, Random: B.randomizer(c.Owner), Owner: c.Owner });
+      let amount = c.Amount;
+      if (c.Transfer != null) {
+        c.ResultTransferedFrom = [];
+        for (const x of board.cells) {
+          if (!x || !(x.Mana > 0) || idEq(x.Id, m.Id) || x.Owner !== m.Owner || !(c.Transfer > 0)) continue;
+          const take = Math.min(c.Transfer, x.Mana); amount += take; x.Mana -= take; c.ResultTransferedFrom.push({ Id: x.Id, Amount: take, Remaining: x.Mana });
+        }
+      }
+      setMana(m, c.Absolute ? amount : m.Mana + amount);
+      c.ResultAmount = amount; c.ResultMana = m.Mana;
+      B.add(wrap('Done', c));
+    },
+    /** GiveMinionExpMutator (Try<GiveMinionExp>): Done, then Try<GainReward> for a level gained (shop rewards) */
+    GiveMinionExpMutator(B, e) {
+      const g = e.Event; const m = B.board.findLiveMinion(g.TargetId); if (!m) return;
+      const r = addExp(m, g.Amount); g.Result = r;
+      B.add(wrap('Done', g));
+      if (!(r.LevelsGained > 0) || ((D.minions[m.Enum] || {}).raw || {}).Rewardless || g.DisableReward) return;
+      if (m.Perk !== 55 && m.Abilities.some((a) => a.Enum === 760)) return;
+      B.add(wrap('Try', ev('GainReward', { Owner: e.Owner, Rewards: r.LevelsGained, SourceLevel: m.Level, SourceTier: (D.minions[m.Enum] || {}).tier })));
+    },
+    /**
+     * ShuffleStatsMutator (Try<ShuffleStats>): a live pet with health and at least 3 permanent stats in all re-splits them at random:
+     * attack r+1, health n-r+1 for r = Next(0, n), n = sum - 2 (the side's random). Anything over a stat's max goes to the other, each is
+     * then capped (attack at least 1) and Set permanently. Emits Done<SetMinionStats> with the uncapped split and the new stats.
+     */
+    ShuffleStatsMutator(B, e) {
+      const x = e.Event; const m = B.board.findLiveMinion(x.TargetId); if (!m || m.Health.Total < 1) return;
+      let n = m.Health.Permanent + m.Attack.Permanent; if (n < 3) return; n -= 2;
+      const r = B.randomizer(e.Owner).next(0, n);
+      let a = r + 1, h = n - r + 1;
+      if (m.Attack.Max < a) { h = h + (a - m.Attack.Max); a = m.Attack.Max; }
+      else if (m.Health.Max < h) { a = a + (h - m.Health.Max); h = m.Health.Max; }
+      m.Attack.Set(Math.max(1, Math.min(a, m.Attack.Max)), false);
+      m.Health.Set(Math.min(h, m.Health.Max), false);
+      B.add(wrap('Done', ev('SetMinionStats', { Owner: e.Owner, Target: x.TargetId, Source: x.SourceId, Attack: a, Health: h, Positive: false, SourcePerk: null, SourceSpell: null,
+        ResultAttack: m.Attack.ShallowCopy(), ResultHealth: m.Health.ShallowCopy() })));
+    },
+    /**
+     * ShuffleMinionsMutator (Try<ShuffleMinions>): the live targets (in target order; FindLiveMinions(ids)) split into the event
+     * owner's side and the other side; within each, every pet in turn takes a random remaining point of its group
+     * (i = Next(0, count), taken out) via SetMinion, recorded in ResultItems. Then Done.
+     */
+    ShuffleMinionsMutator(B, e) {
+      const x = e.Event; const board = B.board; const rand = B.randomizer(e.Owner);
+      const live = (x.TargetIds || []).map((id) => board.findMinion(id, true, true)).filter(Boolean);
+      x.ResultItems = [];
+      for (const group of [live.filter((m) => m.Owner === e.Owner), live.filter((m) => m.Owner !== e.Owner)]) {
+        const points = group.map((m) => ({ x: m.Point.x, y: m.Point.y }));
+        for (const m of group) {
+          if (!points.length) break;
+          const i = rand.next(0, points.length); const p = points[i]; points.splice(i, 1);
+          board.setMinion(p, m); x.ResultItems.push({ Id: m.Id, Point: { x: p.x, y: p.y } });
+        }
+      }
+      B.add(wrap('Done', x));
+    },
+    /** SwapStatsMutator (Try<SwapStats>): a live pet swaps attack and health, permanent and temporary parts each, then Done */
+    SwapStatsMutator(B, e) {
+      const x = e.Event; const m = B.board.findLiveMinion(x.TargetId); if (!m) return;
+      const ap = m.Attack.Permanent, at = m.Attack.Temporary, hp = m.Health.Permanent, ht = m.Health.Temporary;
+      m.Attack.Set(hp, false); m.Attack.Set(ht, true); m.Health.Set(ap, false); m.Health.Set(at, true);
+      B.add(wrap('Done', x));
+    },
+    /** SetMinionStatsMutator (Try<SetMinionStats>); DamageRemovableBuffs only touches shop buffs, which battles never hold */
+    SetMinionStatsMutator(B, e) {
+      const s = e.Event; const m = B.board.findLiveMinion(s.Target); if (!m) return;
+      const atk0 = m.Attack.Total, hp0 = m.Health.Total;
+      // each stat set also uses |delta| up against the removable-buff records (MinionExtensions.DamageRemovableBuffs)
+      if (s.Attack != null) { setAttack(m, s.Attack); s.ResultAttackDelta = m.Attack.Total - atk0; s.ResultAttack = m.Attack.ShallowCopy(); M.damageRemovableBuffs(m, Math.abs(s.ResultAttackDelta), 0); }
+      if (s.Health != null) { m.Health.Set(Math.min(m.Health.Max, s.Health), false); m.Health.Set(0, true); s.ResultHealthDelta = m.Health.Total - hp0; s.ResultHealth = m.Health.ShallowCopy(); M.damageRemovableBuffs(m, 0, Math.abs(s.ResultHealthDelta)); }
+      B.add(wrap('Done', s));
+    },
+    /** GainTrumpetsMutator (Try<GainTrumpets>): Do<ChangeTrumpets>, or Done<DenyTrumpets> once the trumpets were used */
+    GainTrumpetsMutator(B, e) {
+      const g = e.Event; const board = B.board; const o = e.Owner;
+      const old = getTrumpets(board, o);
+      if (areTrumpetsDone(board, o)) { B.add(wrap('Done', ev('DenyTrumpets', { Owner: o, SourceId: g.SourceId, Value: g.Points }))); return; }
+      if (gainTrumpets(board, o, g.Points) == null) return;
+      const now = getTrumpets(board, o);
+      const c = ev('ChangeTrumpets', { Owner: o, SourceId: g.SourceId, OldTrumpets: old, NewTrumpets: now, DeltaTrumpets: now - old, NewPerk: null, Finale: false });
+      if (g.SetPower != null && g.SourceId) { const s = board.findMinion(g.SourceId); if (s) s.Power[g.SetPower] = Math.abs(g.Points); }
+      let perk = g.Perk;
+      if (g.PerkInherit && g.SourceId) { const s = board.findMinion(g.SourceId); if (s) perk = s.Perk; }
+      if (perk != null) { if (o === 1) board.TrumpetsPerk = perk; else if (o === 2) board.OpponentTrumpetsPerk = perk; c.NewPerk = perk; }
+      B.add(wrap('Do', c));
+    },
+    /** ChangeTrumpetsMutator (Do<ChangeTrumpets>) */
+    ChangeTrumpetsMutator(B, e) { const c = e.Event; if (e.Owner === 1) B.board.Trumpets = c.NewTrumpets; else B.board.OpponentTrumpets = c.NewTrumpets; B.add(wrap('Done', c)); },
+    /** TrumpetsMutator.Force (Try<ForceTrumpets>) */
+    'TrumpetsMutator.Force'(B, e) { summonTrumpetMinion(B, e.Event.Owner, 5); },
+    /** PerkMutator (Try<GiveMinionPerk>) */
+    PerkMutator(B, e) {
+      const g = e.Event; const board = B.board;
+      const m = board.findLiveMinion(g.TargetId); if (!m) return;
+      let source = null;
+      if (g.Source && g.Inherit) { source = board.findMinion(g.Source); if (source && source.Perk != null) g.Perk = source.Perk; }
+      if (g.Perk == null) return;
+      const pk = PERKS()[g.Perk]; if (!pk) unported('PerkConstants.GetPerk(' + g.Perk + ')');
+      if (!pk.positive) {
+        // Ambrosia (60) and White Okra (101) block an ailment and are lost; Strawberry (14) only with an aura of type 11
+        if (m.Perk === 60 || m.Perk === 101 || (m.Perk === 14 && findAuras(B, m, 11).length > 0)) { B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, true))); return; }
+      } else if (m.Perk === 120 && !m.Abilities.some((a) => a.Enum === 839)) { // Bloated is lost unless the pet has ability 839
+        B.add(wrap('Try', loseMinionPerk(g.Owner, g.TargetId, g.Source, m.Perk, false))); return;
+      }
+      let duration = g.Duration || 0;
+      if ((source && source.Perk === 32) || m.Perk === 32) duration = 1; // Corn
+      const pa = () => ({ B, SourceId: g.Source, TargetId: g.TargetId, Random: B.randomizer(g.Owner), Owner: g.Owner });
+      let mult = g.Multiplier;
+      if (g.MultiplierParameter) mult = paramValue(g.MultiplierParameter, pa());
+      const old = m.Perk;
+      if (g.Compound && old === g.Perk) { if (mult == null) mult = 0; mult = (m.PerkMultiplier || 1) + 1 + mult; }
+      let dur = g.Durability;
+      if (g.DurabilityParameter) dur = paramValue(g.DurabilityParameter, pa());
+      setPerk(m, g.Perk, duration, mult ?? null, dur ?? null);
+      g.ResultPerkReplaced = old; g.Result = perkResult(m, null);
+      // Future: a MinionFuture (target, perk and its values) is appended to BoardModel +0x1b0 (in and out of battle); battles never read it
+      if (g.Future) (board.MinionFutures = board.MinionFutures || []).push({ Target: g.TargetId, Perk: g.Perk, Multiplier: mult ?? null, Durability: dur ?? null });
+      if (g.SourceSpell == null && pk.positive) m.SpellCountsThisTurn++;
+      B.add(wrap('Done', g));
+    },
+    /** LoseMinionPerkMutator (Try<LoseMinionPerk>) */
+    LoseMinionPerkMutator(B, e) {
+      const l = e.Event; const m = B.board.findMinion(l.Target, !l.IncludeDestroyed, !l.IncludeDead); if (!m) return;
+      const lost = (res) => ev('PerkLost', { Owner: l.Owner, TargetId: l.Target, SourceId: l.Source, Perk: res, Projectile: null, RenderDelay: false, RenderSfx: l.RenderSfx, RenderLost: l.RenderLost, FailCause: 0 });
+      if (m.Perk == null) { const f = lost(perkResult(m, null)); f.FailCause = 1; B.add(wrap('Fail', f)); return; }
+      if (l.Perk != null && m.Perk !== l.Perk) return;
+      if (l.Positive != null && perkPositive(m.Perk) !== l.Positive) return;
+      const was = m.Perk;
+      let res; if (!l.IgnoreDurability) res = tryRemovePerk(m); else { setPerk(m, null); res = perkResult(m, was); }
+      B.add(wrap('Done', lost(res)));
+    },
+  };
+  /** MinionExtensions.SetPerk(m, perk, duration, multiplier, durability): durability defaults to the template's (only when a perk is set). */
+  function setPerk(m, perk, duration = 0, multiplier = null, durability = null) {
+    m.Perk = perk ?? null; m.PerkDuration = duration; m.PerkMultiplier = multiplier;
+    if (perk != null) { const pk = PERKS()[perk]; if (pk && durability == null) durability = pk.durability ?? null; m.PerkDurability = durability; m.PerkDurabilityMax = durability; }
+  }
+  const perkResult = (m, lost) => ({ LostPerk: lost ?? null, NewPerk: m.Perk, NewDurability: m.PerkDurability, NewDurabilityMax: m.PerkDurabilityMax, NewDuration: m.PerkDuration, Multiplier: m.PerkMultiplier });
+  /** MinionExtensions.TryRemovePerk: a durability perk loses one charge first; the perk goes when none are left. */
+  function tryRemovePerk(m) {
+    if (m.Perk == null) return null;
+    const res = { LostPerk: null, NewPerk: null, NewDurability: null, NewDurabilityMax: null, NewDuration: 0, Multiplier: m.PerkMultiplier };
+    if (m.PerkDurability != null) {
+      m.PerkDurability = m.PerkDurability - 1;
+      if (m.PerkDurability < 1) { m.PerkDurability = null; m.PerkDurabilityMax = null; }
+      res.NewDuration = m.PerkDuration; res.NewDurability = m.PerkDurability; res.NewDurabilityMax = m.PerkDurabilityMax;
+      if (m.PerkDurability != null) { res.NewPerk = m.Perk; return res; }
+    }
+    const lost = m.Perk; setPerk(m, null); res.LostPerk = lost; res.NewPerk = m.Perk; return res;
+  }
+  const loseMinionPerk = (owner, target, source, perk, ignoreDurability) => ev('LoseMinionPerk', { Owner: owner, IncludeDestroyed: false, IncludeDead: false, Source: source, Target: target,
+    Perk: perk, Projectile: null, RenderDelay: false, RenderSfx: true, RenderLost: true, IgnoreDurability: !!ignoreDurability, Positive: null });
+  /** MinionExtensions.AddAttack: attack never drops below 1 (decompiled alongside AddHealth). */
+  function addAttack(m, amount, dur) { m.Attack.Add(amount, dur !== 0); if (m.Attack.Permanent < 1) m.Attack.Set(1, false); }
+  /** DamageMinion.Setup: remember HoneydewMelon/Guava/MapleSyrup holders (perks 93, 105, 110) and their multipliers. */
+  function setupDamage(dm, B, source, target) {
+    if (source && [93, 105, 110].includes(source.Perk)) { dm.AttackerInitialPerk = source.Perk; dm.AttackerInitialPerkMultiplier = getPerkMultiplier(B, source); }
+    if (target && [93, 105, 110].includes(target.Perk)) { dm.DefenderInitialPerk = target.Perk; dm.DefenderInitialPerkMultiplier = getPerkMultiplier(B, target); }
+  }
+
+  const triggers = {
+    /** TriggerSummonSystem */
+    TriggerSummonSystem(B, e) {
+      const s = e.Event; if (s.TriggerDisabled) return;
+      if (s.SubType === 1) B.add(ev('Transform', { SourceId: s.Minion.Id }));
+      else if (s.SubType === 3) B.add(ev('PetActivated', { PetActivatedId: s.Minion.Id, AbilityEnum: 10000 }));
+      else B.add(ev('Summon', { SourceId: s.Minion.Id, SubType: s.SubType }));
+    },
+    /** TriggerSummonFailSystem: a summon that fails for lack of space flings the pet */
+    TriggerSummonFailSystem(B, e) { const s = e.Event; if (s.TriggerDisabled || s.FailCause !== 1) return; B.add(ev('Flung', { SourceId: s.Minion.Id, Minion: s.Minion })); },
+    /** TriggerChargedMinionSystem: Done<ChargedMinion> -> Charged */
+    TriggerChargedMinionSystem(B, e) { const c = e.Event; B.add(ev('Charged', { SourceId: c.MinionId, Ability: c.Ability })); },
+    /** TriggerGainedHealthSystem: Done<BuffMinion> with health gained -> HealthGained */
+    TriggerGainedHealthSystem(B, e) { const b = e.Event; if (b.ResultHealthGained > 0) B.add(ev('HealthGained', { SourceId: b.TargetId, TargetId: b.Source, Value: b.ResultHealthGained })); },
+    /** TriggerPetActivatedSystem */
+    TriggerPetActivatedSystem(B, e) { const a = e.Event; B.add(ev('PetActivated', { PetActivatedId: a.MinionId, AbilityEnum: a.Ability })); },
+    /** TriggerPerkGainedSystem (Done<GiveMinionPerk>): PerkLost for a replaced perk, PerkGained, then PlayedSpellOn for a positive food perk */
+    /** TriggerStealPerkSystem (Done<StealMinionPerk>): PerkLost (unless the perk stays), PerkGained, and PlayedSpellOn for the perk's spell */
+    TriggerStealPerkSystem(B, e) {
+      const st = e.Event; if (st.ResultPerk == null) return;
+      if (!st.TargetPerkStays) B.add(ev('PerkLost', { SourceId: st.Target, Perk: st.ResultPerk }));
+      B.add(ev('PerkGained', { SourceId: st.Source, Perk: st.ResultPerk }));
+      if (st.SourceSpell != null) return;
+      const pk = PERKS()[st.ResultPerk]; if (!pk || pk.spell == null) return;
+      B.add(ev('PlayedSpellOn', { Owner: st.Owner, Spell: pk.spell, TargetId: st.Source, SourceId: st.Target, Shop: false, Disabled: false }));
+    },
+    /** TriggerPlaySpellOnSystem (Done<PlayedSpellOn>): unless the spell is NonFood, PlayedSpellOn(owner, spell, target, Shop) */
+    TriggerPlaySpellOnSystem(B, e) {
+      const d = e.Event; const tpl = d.Spell && (D.spells || {})[d.Spell.Enum]; if (!tpl || tpl.NonFood) return;
+      B.add(ev('PlayedSpellOn', { Owner: d.Owner, Spell: d.Spell.Enum, TargetId: d.TargetId, SourceId: null, Shop: true, Disabled: false }));
+    },
+    /** TriggerPlaySpellSystem (Done<PlaySpell>): unless the spell is NonFood, PlaySpell(owner, spell, target) */
+    TriggerPlaySpellSystem(B, e) {
+      const d = e.Event; const tpl = d.Spell && (D.spells || {})[d.Spell.Enum]; if (!tpl || tpl.NonFood) return;
+      B.add(ev('PlaySpell', { Owner: d.Owner, Spell: d.Spell.Enum, TargetId: d.Target || null }));
+    },
+    TriggerPerkGainedSystem(B, e) {
+      const g = e.Event; if (g.Perk == null) return;
+      if (g.ResultPerkReplaced != null) B.add(ev('PerkLost', { SourceId: g.TargetId, Perk: g.ResultPerkReplaced, ReplacedBy: g.Perk }));
+      B.add(ev('PerkGained', { SourceId: g.TargetId, Perk: g.Perk, Disabled: g.TriggersDisabled }));
+      if (g.SourceSpell != null) return;
+      const pk = PERKS()[g.Perk]; if (!pk || pk.spell == null || !pk.positive) return;
+      B.add(ev('PlayedSpellOn', { Owner: g.Owner, Spell: pk.spell, TargetId: g.TargetId, SourceId: g.Source, Shop: false, Disabled: g.TriggersDisabled }));
+    },
+    /** TriggerJumpAttackSystem (Done<MinionJumpAttack>): the jumper counts as pushed (type 1) */
+    TriggerJumpAttackSystem(B, e) { B.add(ev('Pushed', { SourceId: e.Event.TargetToThrow, Type: 1 })); },
+    /** TriggerPushMinionSystem (Done<PushMinion>) */
+    TriggerPushMinionSystem(B, e) { const pm = e.Event; B.add(ev('Pushed', { SourceId: pm.TargetId, Type: pm.Type || 0 })); },
+    /** TriggerPushMinionFailSystem (Fail<PushMinion>): the resisting perk is used up */
+    TriggerPushMinionFailSystem(B, e) { const pm = e.Event; if (pm.ResultLostPerk && pm.ResultLostPerk.LostPerk != null) B.add(ev('PerkLost', { SourceId: pm.TargetId, Perk: pm.ResultLostPerk.LostPerk })); },
+    /** TriggerTransformSystem (Done<TransformMinion>) */
+    TriggerTransformSystem(B, e) { const t = e.Event; B.add(ev('Transform', { SourceId: t.Target, Back: t.Back, Stacking: t.Stacking, OldMinion: t.ResultOldMinion })); },
+    /** TriggerGainedManaSystem (Done<ChangeMinionMana>) */
+    TriggerGainedManaSystem(B, e) { const c = e.Event; if (c.TriggerDisabled || !(c.ResultAmount > 0)) return; B.add(ev('ManaGained', { SourceId: c.TargetId, TargetId: c.SourceId || M.itemId('M', 0), Value: c.Amount })); },
+    /** TriggerGiveExpSystem (Done<GiveMinionExp>) */
+    TriggerGiveExpSystem(B, e) { const g = e.Event; if (!(g.Amount > 0)) return; B.add(ev('GiveExperience', { SourceId: g.SourceId || M.itemId('M', 0), TargetId: g.TargetId })); },
+    /** TriggerLevelUp (Done<GiveMinionExp>): one Levelup per level gained, TriggerLevel = the level reached */
+    TriggerLevelUp(B, e) {
+      const g = e.Event; const r = g.Result; if (!r) return;
+      for (let i = 0; i < r.LevelsGained; i++) B.add(ev('Levelup', { SourceId: g.TargetId, TriggerLevel: r.NewLevel - r.LevelsGained + 1 + i }));
+    },
+    /** TriggerPerkLostSystem (Done<PerkLost>) */
+    TriggerPerkLostSystem(B, e) { const l = e.Event; if (l.Perk && l.Perk.LostPerk != null) B.add(ev('PerkLost', { SourceId: l.TargetId, Perk: l.Perk.LostPerk })); },
+  };
+
+  const hooks = {
+    tryTriggerMinion, activateAbilityTry, activateAbilityDo,
+    castEffectWrapper(B, e) { B.add(e.CastEffects); },
+    castEffect(B, e) { B.add(e.EffectResult.Events); },
+    /** MinionAbilityDestroySystem (Try<MinionAbilityDestroy>): Type 1 kills as damage type 2, Type 3 as type 3 (marking CountdownDestroyed), else type 1 */
+    abilityDestroy(B, e) {
+      const d = e.Event; let dt = 1;
+      if (d.Type === 1) dt = 2;
+      else if (d.Type === 3) { dt = 3; const m = B.board.findLiveMinion(d.TargetId); if (m) m.CountdownDestroyed = true; }
+      B.add(wrap('Try', ev('MarkMinionDead', { Owner: d.Owner, TargetId: d.TargetId, SourceId: d.SourceId, DamageType: dt, TriggerDisabled: !!d.TriggerDisabled })));
+      B.add(wrap('Done', d));
+    },
+    abilityCleanup(B, e) { const m = B.board.findLiveMinion(e.Event.MinionId); if (!m) return; if (m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return ab && ab.PersistTargets; })) {
+      // AbilityCleanupMutator: current targets (+0x140) move to OldTargetsThisTurn (+0x118)
+      if (m.CurrentTargetsThisTurn) m.OldTargetsThisTurn = (m.OldTargetsThisTurn || []).concat(m.CurrentTargetsThisTurn);
+      m.CurrentTargetsThisTurn = null;
+    } },
+    mutators, triggers,
+    summonAttempt, summonMutator, forceActivateAbility, initMinion: updateStatsMax,
+    findAuras, countAura, tryAttackAdjacent, getPerkMultiplier, getNegativePerkMultiplier, setupDamage,
+    // DamageAttemptMutator.TryDamage <>c b__3_0/1 (and Ability.Activate): ailments are reversed for a pet with ability 839
+    ailmentReversed: (B, m) => !!m && m.Abilities.some((a) => a.Enum === 839),
+    sadImmune: (m) => m.Abilities.some((a) => a.Enum === 839), // GiveMinionBuffMutator <>c b__0_0: perk 121 does not cancel buffs with ability 839
+    // TriggerBeforeDeathSystem <>c b__0_0: an ability with ManaBurstDisabled (+0x155) stops the fainting pet's mana release
+    blocksManaRelease: (m) => m.Abilities.some((a) => { const ab = getAbility(a.Enum, a.Level); return !!(ab && ab.ManaBurstDisabled); }),
+    checkAura: () => {}, // CheckAuraSystem.Execute is an empty method (RET) in build 26131463
+    finalCleanup: () => {}, // FinalCleanupMutator.Execute is an empty method (RET) in build 26131463
+    /**
+     * RemoveMinionMutator (Try<RemoveMinion>): a relic leaves the relic grid (BoardExtensions.RemoveRelic); any other live pet is
+     * marked Destroyed and leaves the grid (BoardExtensions.RemoveMinion), going to Location 6 for RemoveType 1, else to the graveyard.
+     * Done only when something was removed.
+     */
+    removeMinion(B, e) {
+      const r = e.Event; const board = B.board; const m = board.findMinion(r.MinionId); if (!m) return;
+      if (minionType(m) === 1) {
+        const i = board.Relics.indexOf(m); if (i < 0) return; board.Relics[i] = null;
+      } else {
+        const x = board.findMinion(r.MinionId, true, true); if (!x) return;
+        x.Destroyed = true; const i = board.cells.indexOf(x); if (i >= 0) board.cells[i] = null;
+        if ((r.RemoveType || 0) === 1) x.Location = 6; else board.MinionGraveyard.push(x);
+      }
+      B.add(wrap('Done', r));
+    },
+    forceActivatePerk: () => unported('ForceActivatePerkSystem'),
+    summonTrumpetMinion, trumpetsTrade(B) { summonTrumpetMinion(B, 1, 2); summonTrumpetMinion(B, 2, 2); },
+    minionType: (m) => (D.minions[m.Enum] || {}).type || 0, // MinionTemplate.Type (+0xfc): 1 = relic
+    attacksWithHealth: (m) => !!((D.minions[m.Enum] || {}).raw || {}).AttackWithHealth, // MinionTemplate.AttackWithHealth (+0x120)
+  };
+
+  const api = { hooks, getAbility, paramValue, predicate, findMinions, getTargets, conditionCheck, isTriggered, fastShuffle };
+  if (isNode) module.exports = api; else { root.SAPGame = root.SAPGame || {}; root.SAPGame.abilities = api; }
+})(typeof window !== 'undefined' ? window : globalThis);

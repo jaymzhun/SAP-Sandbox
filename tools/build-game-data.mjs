@@ -1,0 +1,71 @@
+// Builds js/game/data.js from the live dumps of the game's own objects (frida/live/*.json, taken with agent.js dumpAbilities /
+// dumpMinions). Nothing here is hand-written: every value comes from the running game's AbilityConstants / MinionConstants.
+// Usage: node tools/build-game-data.mjs <live dir> <enum-values.json> [out=js/game/data.js]
+import fs from "node:fs";
+import path from "node:path";
+
+const [liveDir, enumPath, outPath = "js/game/data.js"] = process.argv.slice(2);
+const load = (prefix) => { const all = {}; for (const f of fs.readdirSync(liveDir).filter((f) => f.startsWith(prefix)).sort()) Object.assign(all, JSON.parse(fs.readFileSync(path.join(liveDir, f), "utf8"))); return all; };
+const enums = JSON.parse(fs.readFileSync(enumPath, "utf8"));
+
+// Drop presentation-only fields and defaults; keep the object graph ($type, $id/$ref) intact.
+const UI = /^(About|AboutLocoKey|AboutArgs|FinePrint|FinePrintLocoKey|CustomNote|RepeatText|Hidden(Text|Render|AbilityCard|Charges|Power|Memory)|Show.*|Localization|Asset|Relations|Highlight|ExplainPerk|ExplainSpell|GoldPrompt|CompoundGoldPrompt|IgnoreOwnerWhenRendering|RenderPostDelay)$/;
+const strip = (o) => {
+  if (Array.isArray(o)) return o.map(strip);
+  if (o && typeof o === "object") {
+    if (o.$type === "System.Collections.Generic.HashSet`1") return { $type: "HashSet", values: (Array.isArray(o._slots) ? o._slots : []).slice(0, o._lastIndex).filter((s) => s.hashCode >= 0).map((s) => strip(s.value)) };
+    if (o.$type === "System.RuntimeType") return { $type: "Type" }; // type handles are not readable; never needed by the engine so far
+    const r = {};
+    for (const [k, v] of Object.entries(o)) {
+      if (v === null || UI.test(k) || (Array.isArray(v) && v.length === 0)) continue; // keep false: many fields are Nullable<bool> where false != null
+      if (k === "$type") { r[k] = v.replace(/^Spacewood\.Core\.Models\.Abilities\./, "").replace(/^Spacewood\.(Core|SpacewoodCore)\.Models\./, ""); continue; }
+      r[k] = strip(v);
+    }
+    return r;
+  }
+  return o;
+};
+
+const abilitiesRaw = load("abilities");
+const abilities = {};
+for (const [e, levels] of Object.entries(abilitiesRaw)) {
+  if (!levels) continue;
+  const out = {};
+  for (const [lvl, a] of Object.entries(levels)) if (a && a.Trigger !== undefined && !a.$error) out[lvl] = strip(a);
+  if (Object.keys(out).length) abilities[e] = out;
+}
+const text = {};
+for (const [e, levels] of Object.entries(abilitiesRaw)) if (levels) for (const [lvl, a] of Object.entries(levels)) if (a && a.About) (text[e] ||= {})[lvl] = a.About;
+
+const minionsRaw = load("minions");
+const minions = {};
+for (const [e, t] of Object.entries(minionsRaw)) {
+  if (!t) continue;
+  minions[e] = { name: t.Name, tier: t.Tier, attack: t.Attack, health: t.Health, type: t.Type, relicType: t.RelicType,
+    tribe: t.Tribe ?? null, packs: t.Packs ? strip(t.Packs).values : [], abilities: (t.Abilities || []).map((a) => ({ e: a.Enum, native: !!a.Native, group: a.Group || 0 })),
+    raw: strip(Object.fromEntries(Object.entries(t).filter(([k]) => !/^(Name|NameNormalized|Packs|PacksOwnership|ArchetypeProducer|Abilities|AbilityEnums)$/.test(k)))) };
+}
+const perksRaw = fs.existsSync(path.join(liveDir, "perks.json")) ? JSON.parse(fs.readFileSync(path.join(liveDir, "perks.json"), "utf8")) : {};
+const perks = {};
+for (const [e, p] of Object.entries(perksRaw)) if (p && !p.$error) perks[e] = { name: p.Name, abilities: p.Abilities || [], positive: !!p.Positive, midBattle: !!p.MidBattle, universal: !!p.Universal, durability: p.Durability ?? null, spell: p.Spell ?? null, shield: !!p.Shield };
+// Spell (food) templates (agent.js dumpSpells: SpellConstants.GetSpell): Pairs run by Spell.Activate when a pet plays one
+const spellsRaw = fs.existsSync(path.join(liveDir, "spells.json")) ? JSON.parse(fs.readFileSync(path.join(liveDir, "spells.json"), "utf8")) : {};
+const spells = {};
+for (const [e, t] of Object.entries(spellsRaw)) if (t && !t.$error)
+  spells[e] = strip(Object.fromEntries(Object.entries(t).filter(([k]) => !/^(Name|NameNormalized|Packs|PacksOwnership|Archetype.*|Cache.*|Roles|Relations|Model|Skin|Note|Highlight)$/.test(k))));
+// Static lists in the game's own order (agent.js constantLists: SpellConstants.GetReleasedSpells, PerkConstants.GetReleasedPerks,
+// MinionConstants.GetActiveMinions); random picks index into them, so the order matters.
+const constRaw = fs.existsSync(path.join(liveDir, "constants.json")) ? JSON.parse(fs.readFileSync(path.join(liveDir, "constants.json"), "utf8")) : {};
+const packsOf = (t) => (t && t.Packs ? strip(t.Packs).values : []);
+const lists = {
+  releasedSpells: (constRaw.spells || []).filter(Boolean).map((t) => ({ e: t.Enum, tier: t.Tier, rollable: !!t.Rollable, perk: t.Perk ?? null, packs: packsOf(t) })),
+  releasedPerks: (constRaw.perks || []).filter(Boolean).map((t) => t.Enum),
+  activeMinions: (constRaw.minions || []).filter(Boolean).map((t) => t.Enum),
+  packUnreleased: Object.fromEntries(Object.entries(constRaw.packs || {}).filter(([, t]) => t && !t.$error).map(([k, t]) => [k, !!t.Unreleased])), // PackConstants.GetPack(p).Unreleased (+0x2a)
+};
+const names = (en) => Object.fromEntries(Object.entries(enums[en] || {}).map(([k, v]) => [v, k]));
+const data = { source: "live game objects (AbilityConstants.GetAbility / MinionConstants.TryGetMinion / PerkConstants.GetPerk)", abilities, text, minions, perks, spells, lists,
+  enums: { ability: names("Spacewood.Core.Models.Abilities.AbilityEnum"), minion: names("Spacewood.Core.Enums.MinionEnum"), perk: names("Spacewood.Core.Enums.Perk") } };
+const js = `/* Generated by tools/build-game-data.mjs from the running game's own objects. Do not edit. */\n(function (root) {\n  const data = ${JSON.stringify(data)};\n  if (typeof module !== 'undefined' && module.exports) module.exports = data; else { root.SAPGame = root.SAPGame || {}; root.SAPGame.data = data; }\n})(typeof window !== 'undefined' ? window : globalThis);\n`;
+fs.writeFileSync(outPath, js);
+console.log(`abilities ${Object.keys(abilities).length}, minions ${Object.keys(minions).length}, perks ${Object.keys(perks).length}, ${(js.length / 1e6).toFixed(2)} MB -> ${outPath}`);
