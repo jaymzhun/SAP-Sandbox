@@ -187,6 +187,14 @@
         return n;
       }
       case 'ParameterMinionAttack': { const m = paramMinion(p, pa); return m ? m.Attack.Total : 1; }
+      // ParameterCondition.GetMinionValue: Condition checked with the Origin pet as owner (TriggerPhase 1, the args' Owner);
+      // no condition or true -> TrueValue, else FalseValue (read with the same args)
+      case 'ParameterCondition': {
+        const m = paramMinion(p, pa); if (!m) return 1;
+        const ok = !p.Condition || conditionCheck(p.Condition, { B: pa.B, TriggerEvent: pa.TriggerEvent ?? null, Random: pa.Random ?? null, OwnerId: m.Id, TriggerPhase: 1, Reversed: false, Owner: pa.Owner ?? null });
+        const v = ok ? p.TrueValue : p.FalseValue; if (!v) throw new Error('ParameterCondition without a value');
+        return paramValue(v, pa);
+      }
       case 'ParameterMinionHealth': { const m = paramMinion(p, pa); return m ? m.Health.Total : 1; }
       case 'ParameterMinionLevel': { const m = paramMinion(p, pa); return m ? m.Level : 1; }
       case 'ParameterMinionMana': { const m = paramMinion(p, pa); return m ? m.Mana : 1; }
@@ -383,7 +391,8 @@
     if (!m) return [];
     if ((D.minions[m.Enum] || {}).relicType === 1) return [];
     const ref = (holder, a) => { const ab = getAbility(a.Enum, a.Level); return { Minion: holder, Ability: a, value: ab.MagicVariable || 0, ceil: ab.TriggerLimit == null, Template: ab }; };
-    if (!m.IsAlive) { const a = findAuraAbilities(m, aura, m)[0]; return a && checkAura(B, m, a, m) ? [ref(m, a)] : []; }
+    // a fainted pet: its own aura when it has one that passes CheckAura; otherwise the grid scan as for a live pet
+    if (!m.IsAlive) { const a = findAuraAbilities(m, aura, m)[0]; if (a && checkAura(B, m, a, m)) return [ref(m, a)]; }
     const out = []; const cells = B.board.cells;
     for (let i = 0; i < cells.length; i++) {
       const x = cells[m.Owner !== 1 ? cells.length - i - 1 : i];
@@ -1331,6 +1340,16 @@
         const next = ok ? eff.TrueEffect : eff.FalseEffect;
         return next ? effectSingle(next, sa) : null;
       }
+      case 'EffectGiveBuffHighOrLow': {
+        // EffectGiveBuffHighOrLow.OnSingle: v = StatIncreaseValue (0 without one); attack gets it when (attack > health and
+        // BuffHighestStat) or (attack < health and not), else health (ties go to health); then EffectGiveBuff.OnSingle
+        const v = eff.StatIncreaseValue ? paramValue(eff.StatIncreaseValue, pa) : 0;
+        const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) throw new Error('EffectGiveBuffHighOrLow: no target pet');
+        const a = tm.Attack.Total, h = tm.Health.Total;
+        const toAtk = (h < a && !!eff.BuffHighestStat) || (a < h && !eff.BuffHighestStat);
+        const flat = { $type: 'Parameters.ParameterFlat', Value: v };
+        return effectSingleRaw(Object.assign({}, eff, { $type: 'Effects.EffectGiveBuff', Attack: toAtk ? flat : null, Health: toAtk ? null : flat }), sa);
+      }
       case 'EffectGiveBuff': {
         let atk = eff.Attack ? paramValue(eff.Attack, pa) : 0, atkR = eff.AttackRange ? paramValue(eff.AttackRange, pa) : 0;
         let hp = eff.Health ? paramValue(eff.Health, pa) : 0, hpR = eff.HealthRange ? paramValue(eff.HealthRange, pa) : 0;
@@ -1381,16 +1400,24 @@
       }
       case 'EffectTransform': {
         // EffectTransform.OnSingle
-        if (eff.Back && sa.TriggerEvent && sa.TriggerEvent.cls === 'Transform') unported('EffectTransform.Back');
-        const tm = sa.TargetId ? sa.B.board.findMinion(sa.TargetId) : null;
-        const level = eff.Level != null ? eff.Level : tm ? tm.Level : 1;
-        const nm = catalogueMinions(eff.Catalogue, { B: sa.B, Level: level, Amount: 1, TargetId: sa.TargetId, SourceId: sa.SourceId, Random: sa.Random, Owner: sa.Owner, TriggerEvent: sa.TriggerEvent })[0];
-        if (!nm) return null; // EffectUtility.NoEffect
+        // Back with a Transform trigger: a new pet (next id) of the trigger's old pet's type, owner and location, at its level,
+        // capped at BackUpToLevel (which then also becomes the event's Level); otherwise the catalogue's first pet
+        let nm, evLevel = eff.Level ?? null;
+        if (eff.Back && sa.TriggerEvent && sa.TriggerEvent.cls === 'Transform') {
+          const old = sa.TriggerEvent.OldMinion; if (!old) throw new Error('EffectTransform.Back: the trigger has no old pet');
+          let lv = old.Level; if (eff.BackUpToLevel != null && eff.BackUpToLevel < lv) { lv = eff.BackUpToLevel; evLevel = eff.BackUpToLevel; }
+          nm = generateMinion(sa.B, old.Enum, lv, old.Owner, old.Location ?? 1);
+        } else {
+          const tm = sa.TargetId ? sa.B.board.findMinion(sa.TargetId) : null;
+          const level = eff.Level != null ? eff.Level : tm ? tm.Level : 1;
+          nm = catalogueMinions(eff.Catalogue, { B: sa.B, Level: level, Amount: 1, TargetId: sa.TargetId, SourceId: sa.SourceId, Random: sa.Random, Owner: sa.Owner, TriggerEvent: sa.TriggerEvent })[0];
+          if (!nm) return null; // EffectUtility.NoEffect
+        }
         if (eff.PerkCatalogue) unported(short(T(eff.PerkCatalogue)).replace(/^Ability\.PerkCatalogue\./, ''));
         const stat = (prm, own) => (eff.CopyStats ? own : prm ? new M.IntegerStat(paramValue(prm, pa)) : null);
         const t = ev('TransformMinion', { Owner: sa.Owner, IncludeDead: !!eff.IncludeDead, Source: sa.SourceId || null, Target: sa.TargetId, NewMinion: nm, Back: !!eff.Back, BackUpToLevel: eff.BackUpToLevel ?? null,
           Stacking: false, ResetStats: !!eff.ResetStats, RemovePerkIf: eff.RemovePerkIf ?? null, ForceActivate: !!eff.ForceActivate, Attack: stat(eff.Attack, nm.Attack), Health: stat(eff.Health, nm.Health),
-          Perk: null, Experience: null, Level: eff.Level ?? null, ExtraAttack: eff.Catalogue.ExtraAttack ?? null, ExtraHealth: eff.Catalogue.ExtraHealth ?? null, ExtraExperience: eff.Catalogue.ExtraExperience ?? null,
+          Perk: null, Experience: null, Level: evLevel, ExtraAttack: eff.Catalogue.ExtraAttack ?? null, ExtraHealth: eff.Catalogue.ExtraHealth ?? null, ExtraExperience: eff.Catalogue.ExtraExperience ?? null,
           Processors: eff.Processors || null, ResultOldMinion: null, ResultMinion: null });
         const src = sa.SourceId ? sa.B.board.findMinion(sa.SourceId) : null;
         if (src) (src.LastSummoned = src.LastSummoned || []).push(sa.TargetId);
@@ -1453,6 +1480,15 @@
           ProjectileDisabled: !!eff.ProjectileDisabled, ResultPerkReplaced: null, Result: null });
         return [wrap('Try', g)];
       }
+      // EffectCopyAbility.OnSingle: needs a source; CopyTo = source, CopyFrom = target (Reverse swaps them); Abilities = the filter's
+      // matches on the target's abilities (the mutator does not read them)
+      case 'EffectCopyAbility': {
+        if (!sa.SourceId) return null;
+        const tm = sa.B.board.findMinion(sa.TargetId); if (!tm) throw new Error('EffectCopyAbility: no target pet');
+        const to = eff.Reverse ? sa.TargetId : sa.SourceId, from = eff.Reverse ? sa.SourceId : sa.TargetId;
+        return [wrap('Try', ev('CopyMinionAbility', { Owner: sa.Owner, CopyFrom: from, CopyTo: to, Level: eff.Level || null, Duration: eff.Duration || 0,
+          Abilities: null, FromTemplate: !!eff.FromTemplate, KeepExisting: !!eff.KeepExisting, AlwaysIgnoreMinionLevel: !!eff.AlwaysIgnoreMinionLevel }))];
+      }
       // EffectSpendMana.OnSingle: Try<SpendMinionMana> on the target, Spend = Value.GetValue(args)
       case 'EffectSpendMana': {
         if (!eff.Value) unported('EffectSpendMana without a Value');
@@ -1484,6 +1520,16 @@
       if (ab.MaxAttack != null || ab.MaxHealth != null) updateStatsMax(m);
       if (charges.has(e)) x.Charges = charges.get(e);
     }
+  }
+  /** MinionExtensions.AddAbility(m, enum, level, native, duration): a Singleton ability the pet already has is returned as is; otherwise a new model
+   *  (IgnoreRepeats when the pet already has abilities) is appended, and MaxAttack/MaxHealth abilities update the stat maxima. */
+  function addAbility(m, e, level, native, duration) {
+    const ab = getAbility(e, level); if (!ab) throw new Error('AddAbility: no ability ' + e + ' level ' + level);
+    if (ab.Singleton) { const have = m.Abilities.find((x) => x.Enum === e); if (have) return have; }
+    const x = new M.MinionAbilityModel(e, level, !!native); x.Duration = duration || 0; x.IgnoreRepeats = m.Abilities.length > 0;
+    m.Abilities.push(x);
+    if (ab.MaxAttack != null || ab.MaxHealth != null) updateStatsMax(m);
+    return x;
   }
   /** MinionExtensions.AddExp(m, n): each point gives +1/+1 (not while Sad unless it has ability 839) and one experience; levels at LEVEL_EXP. */
   function addExp(m, n) {
@@ -1563,7 +1609,10 @@
       for (const sp of L.releasedSpells || []) {
         if (sp.perk == null) continue; const pk = PK[sp.perk]; if (!pk || !pk.positive) continue;
         if (c.Rollable != null && c.Rollable !== sp.rollable) continue;
-        if (c.InPack) unported('PerkCatalogueRandom.InPack');
+        if (c.InPack) { // the args owner's pack (Owner 1: Pack, else OpponentPack): its custom deck's spells, else the spell's Packs
+          const pack = a.Owner === 1 ? (a.B.board.Pack ?? 0) : (a.B.board.OpponentPack ?? 0); if (isCustomPack(pack)) unported('PerkCatalogueRandom.InPack custom deck');
+          if (!(sp.packs || []).includes(pack)) continue;
+        }
         if (perkCatalogueCheck(c, a, sp.perk, pk)) list.push(sp.perk);
       }
     }
@@ -2045,6 +2094,26 @@
      * CopyMinionStatsMutator (Try<CopyMinionStats>): stat = from's stat (times the multiplier, rounded up only with Rounding 1, then truncated),
      * capped by the max, plus to's own stat with Add; health is at least 1.
      */
+    /**
+     * CopyMinionAbilityMutator: from = FindMinion(CopyFrom), to = FindLiveMinion(CopyTo). Without KeepExisting the receiver's abilities are cleared.
+     * Each of from's abilities (stopping at the first with a Group, or once the receiver has 5) is added with AddAbility at Level
+     * (read with target = from, source = to) or its own level, with Duration, AlwaysIgnoreMinionLevel as given. Then Done.
+     */
+    CopyMinionAbilityMutator(B, e) {
+      const c = e.Event; const board = B.board;
+      const from = board.findMinion(c.CopyFrom); if (!from) return;
+      const to = board.findLiveMinion(c.CopyTo); if (!to) return;
+      if (c.FromTemplate) unported('CopyMinionAbility FromTemplate');
+      if (!c.KeepExisting) to.Abilities = [];
+      for (const a of from.Abilities.slice()) {
+        if (a.Group > 0) break;
+        if (to.Abilities.length > 4) break;
+        const lv = c.Level ? paramValue(c.Level, { B, TargetId: from.Id, SourceId: to.Id, TriggerSourceId: null, TriggerTargetId: null, AimId: null, Random: null, TriggerEvent: null }) : a.Level;
+        const x = addAbility(to, a.Enum, lv, false, c.Duration || 0);
+        if (c.AlwaysIgnoreMinionLevel && x) x.AlwaysIgnoreMinionLevel = true;
+      }
+      B.add(wrap('Done', c));
+    },
     CopyMinionStatsMutator(B, e) {
       const c = e.Event; const board = B.board;
       const from = board.findLiveMinion(c.CopyFrom), to = board.findLiveMinion(c.CopyTo);
@@ -2364,7 +2433,8 @@
       if (g.DurabilityParameter) dur = paramValue(g.DurabilityParameter, pa());
       setPerk(m, g.Perk, duration, mult ?? null, dur ?? null);
       g.ResultPerkReplaced = old; g.Result = perkResult(m, null);
-      if (g.Future) unported('GiveMinionPerk.Future');
+      // Future: a MinionFuture (target, perk and its values) is appended to BoardModel +0x1b0 (in and out of battle); battles never read it
+      if (g.Future) (board.MinionFutures = board.MinionFutures || []).push({ Target: g.TargetId, Perk: g.Perk, Multiplier: mult ?? null, Durability: dur ?? null });
       if (g.SourceSpell == null && pk.positive) m.SpellCountsThisTurn++;
       B.add(wrap('Done', g));
     },
