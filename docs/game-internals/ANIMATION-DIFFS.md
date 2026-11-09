@@ -44,7 +44,7 @@ This file lists every place where the site still differs from the game, and why.
      - The Ability splash (`GenericAbility`) and the summon's SoundFX notes: when these play isn't traced.
      - Eats (sticker pieces), when a perk comes from food.
      - The game's reduced-effects setting, which turns the Buff splash into Eats.
-2. **Ability card bounce.** When an ability fires, the game also pops the pet's ability card (or perk card) beside it (`CardController.BounceAbilityCard` / `BouncePerkCard`; TweenSettings.Cards: scale 0.9 → 1 over 0.4 s OutBack, bounce 0.1 / 0.2 s). The site only highlights the pet. Doing this would reuse the hover card, which also pauses the fight on hover. **Needs your call** on whether the card should pop during play.
+2. **Ability card bounce.** When an ability fires, the game also pops the pet's ability card (or perk card) beside it (`CardController.BounceAbilityCard` / `BouncePerkCard`; TweenSettings.Cards: scale 0.9 → 1 over 0.4 s OutBack, bounce 0.1 / 0.2 s). The site only highlights the pet. **Decided: keep the highlight only.** The card stays a hover card, which also pauses the fight.
 3. **Screen shake on a punched faint.** `BoardView.Shake(camera, 0.5)` calls `BestCamera.ShakeStart` with a preset that isn't in the decompiles; the Ghidra daemon is down, so I can't decompile more. The site doesn't shake.
 4. **Mascot reaction.** On a faint the game sets the owner's mascot pose 3 (`MascotView.AddPose`). The site's mascots don't react during the fight yet: the pose name for 3 isn't mapped, and the art is the mascot set the site already has.
 5. **Faint vertical offset.** DestroyPunch adds `Random.Range(?)` to the end height. The range arguments were lost in the decompile, so the site uses 0.
