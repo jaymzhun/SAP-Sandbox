@@ -5,7 +5,14 @@
   for (const b of ['WhiteBattle', 'DarkGrayBattle']) if (!D.bgs.includes(b)) D.bgs.unshift(b); // plain themes, listed first
   const Engine = window.SAPEngine;
   const COMPILED = window.SAPAbilities.compileAll(D, Engine);
-  const AB = COMPILED.abilities, STATUS = COMPILED.status;
+  // Editor info (battle / shop-only, trigger limits, charge counters) from the game's own abilities (js/game/info.js);
+  // the trigger wording stays the site's
+  const GINFO = window.SAPGame.info.build(D, window.SAPGame.data, window.SAPGame.adapter);
+  const AB = GINFO.abilities, STATUS = {};
+  for (const k of Object.keys(D.pets)) {
+    const g = GINFO.status[k] || { status: 'none', endTurn: false }; const o = COMPILED.status[k] || {};
+    STATUS[k] = { trigger: o.trigger || D.pets[k].tr, status: g.status === 'goldshop' ? 'shop' : g.status, goldShop: g.status === 'goldshop', endTurn: g.endTurn };
+  }
 
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -82,16 +89,15 @@
   const CARRIES_OVER = new Set(['Okapi', 'WhiteWhale', 'SarcasticFringehead']); // shop abilities whose result shows up in battle
   const ctxKeys = id => Object.keys(PET_CTX).filter(k => PET_CTX[k].includes(id));
   const SETTING_NAMES = { rolls: 'Rolls this turn', turn: 'Turn number', battles: 'Battles fought', foodEaten: 'Food eaten this turn', transforms: 'Transformations this turn', goldSpent: 'Gold spent this turn', lvl3Sold: 'Level 3 pets sold' };
-  const SHOP_TRIGGERS = new Set(['Shop', 'None']);
 
   function noBattleText(id) { if (CARRIES_OVER.has(id)) return 'Shop ability: set what it did this turn in the pet editor and it carries into the battle.';
     return noBattleText0(id); }
-  function noBattleText0(id) { if (STATUS[id].endTurn === 'ok') return 'End turn ability: only runs in battle when a Pink Robin activates it.'; return SHOP_TRIGGERS.has(STATUS[id].trigger) ? 'Shop ability: no effect in battle.' : 'Triggers in battle, but only affects gold or the shop.'; }
-  function limitAt(id, lv) { const ab = AB[id]; if (!ab || !ab.limit || !ab.levels[lv - 1]) return 0; return Array.isArray(ab.limit) ? ab.limit[lv - 1] || 0 : ab.limit; }
+  function noBattleText0(id) { if (STATUS[id].goldShop) return 'Triggers in battle, but only affects gold or the shop.'; if (STATUS[id].endTurn) return 'End turn ability: only runs in battle when another pet activates it.'; return 'Shop ability: no effect in battle.'; }
+  function limitAt(id, lv) { const ab = AB[id]; return ab ? ab.limit[lv - 1] || 0 : 0; }
   function editTrig(id, lv) {
-    const ab = AB[id]; if (!ab || !ab.levels[lv - 1]) return null;
+    const ab = AB[id]; if (!ab) return null;
     const lim = limitAt(id, lv); if (lim) return { left: lim, max: lim };
-    if (ab.trigger && ab.trigger.startsWith('Count:')) return { cnt: 0, need: +ab.trigger.split(':')[2] };
+    if (ab.charges[lv - 1]) return { cnt: 0, need: ab.charges[lv - 1] };
     return null;
   }
   function limitText(id, lv) { const n = limitAt(id, lv); return n ? `Works ${n} time${n === 1 ? '' : 's'} per battle.` : ''; }
@@ -415,7 +421,7 @@
             el('div', { class: 'pst' }, el('img', { src: UI('Fist'), alt: '' }), String(d.a), el('img', { src: UI('Heart_1'), alt: '' }), String(d.h)),
             el('div', { class: 'tier' }, 'T' + d.t));
           if (st === 'shop' && CARRIES_OVER.has(k)) card.append(el('div', { class: 'tag good', title: 'Set its shop result in the pet editor' }, 'set in editor'));
-          else if (st === 'shop') card.append(el('div', { class: 'tag', title: noBattleText(k) }, SHOP_TRIGGERS.has(STATUS[k].trigger) ? 'shop' : 'no battle effect'));
+          else if (st === 'shop') card.append(el('div', { class: 'tag', title: noBattleText(k) }, STATUS[k].goldShop ? 'no battle effect' : 'shop'));
           else if (st === 'passive') card.append(el('div', { class: 'tag good', title: 'Passive: always active in battle' }, 'passive'));
           card.addEventListener('click', () => {
             const old = S.teams[side][i];
@@ -459,7 +465,7 @@
         }
         if (st.status === 'unsupported') info.append(el('div', { class: 'support-note' }, "This pet's battle ability isn't simulated yet, so it fights with stats only."));
         else if (st.status === 'shop' && CARRIES_OVER.has(p.id)) info.append(el('div', { class: 'support-note good' }, 'Shop ability, but what it did this turn carries into the battle: set it under "This turn" below.'));
-        else if (st.status === 'shop') info.append(el('div', { class: 'support-note shop' }, SHOP_TRIGGERS.has(st.trigger) ? 'This ability only works in the shop, so it has no effect in battle (same as the game).' : 'This ability triggers in battle, but it only affects gold or the shop, so it changes nothing in the fight.'));
+        else if (st.status === 'shop') info.append(el('div', { class: 'support-note shop' }, !st.goldShop ? 'This ability only works in the shop, so it has no effect in battle (same as the game).' : 'This ability triggers in battle, but it only affects gold or the shop, so it changes nothing in the fight.'));
         else if (st.status === 'passive') info.append(el('div', { class: 'support-note good' }, 'Passive ability: always active in battle.'));
         if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, 'Set what happened in the shop this turn below (blank uses Settings).'));
         top.append(spr, info);
