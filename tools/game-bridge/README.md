@@ -5,9 +5,12 @@ engine and animations. The site no longer simulates battles in the browser.
 
 ## Use it
 
-1. Have Super Auto Pets installed through Steam (Windows). The game can be closed: the bridge starts it.
-2. Double-click `start-bridge.bat` and keep its window open. The first run installs Frida (`pip install --user frida`).
-3. Open the sandbox (https://jaymzhun.github.io/SAP-Sandbox/ or a local copy), set up both teams and press **Test Battle**.
+1. Have Super Auto Pets installed through Steam (Windows only). The game can be closed: the bridge starts it.
+2. Install [Python 3](https://www.python.org/downloads/). In the installer, tick "Add python.exe to PATH".
+3. Download this repository (Code → Download ZIP on GitHub) and unzip it.
+4. Double-click `tools/game-bridge/start-bridge.bat` and keep its window open. The first run installs Frida (`pip install --user frida`).
+5. Open the sandbox (https://jaymzhun.github.io/SAP-Sandbox/ or a local copy), set up both teams and press **Test Battle**.
+   If the browser asks to let the site access devices on your local network, allow it: that's how the page reaches the bridge.
 
 The game window comes to the front and plays the battle.
 
@@ -25,6 +28,8 @@ Notes:
 - Don't play online while the bridge is attached. Close the game, or the bridge window, before going online.
 - "This turn" values (rolls, gold spent, transformations, friends summoned, level 3 pets sold, battles won, turn number,
   foods each pet ate) come from each pet's editor, or from Settings when left blank. Each team gets its own values.
+  Gold spent is one shared value: changing it on a pet changes Settings and every other pet that uses it.
   A swallowed pet (White Whale, Sarcastic Fringehead) isn't sent to the game yet.
+- Some antivirus programs warn about Frida, because it attaches to another program.
 - Every battle gets a new random seed, so luck-based abilities can turn out differently each time you press the button.
 - A game update can rename the classes the agent uses. If **Test Battle** reports an error after an update, the agent needs updating.

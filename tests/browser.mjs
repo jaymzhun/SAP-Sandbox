@@ -131,6 +131,27 @@ T.testBattle = async () => {
   return `${v.teams[0]} vs ${v.teams[1]} pets sent`;
 };
 
+// Gold spent is one value for the whole battle: an old per-pet value moves into Settings, and the pet editor edits Settings
+T.sharedGold = async () => {
+  await open();
+  await js(`localStorage.setItem('sap-sandbox', JSON.stringify({ teams: [[{ id: 'Meerkat', atk: 1, hp: 1, xp: 0, perk: null, ctx: { goldSpent: 3 } }, null, null, null, null],
+    [{ id: 'Meerkat', atk: 1, hp: 1, xp: 0, perk: null }, null, null, null, null]], settings: { goldSpent: 0 } }))`);
+  await open(BASE, false);
+  const m = await js(`({ g: SAP_SANDBOX.S.settings.goldSpent, left: SAP_SANDBOX.S.teams.flat().some(p => p && p.ctx && 'goldSpent' in p.ctx) })`);
+  check(m.g === 3 && !m.left, 'an old per-pet gold spent should move into Settings: ' + JSON.stringify(m));
+  await click('.pet[data-side="1"][data-i="0"]');
+  check(await until(`!!document.querySelector('#modal:not([hidden]) .ctx-row input')`, 3000), 'no gold spent field in the pet editor');
+  check(await js(`document.querySelector('.ctx-row input').value`) === '3', 'the pet editor should show the Settings value');
+  await js(`(() => { const i = document.querySelector('.ctx-row input'); i.value = 12; i.dispatchEvent(new Event('change')); })()`);
+  const v = await js(`({ g: SAP_SANDBOX.S.settings.goldSpent, b: SAP_SANDBOX.S.teams.map(t => SAP_SANDBOX.bridgeBoard(t).GoldSpent) })`);
+  check(v.g === 12 && v.b[0] === 12 && v.b[1] === 12, 'changing gold spent on a pet should change it everywhere: ' + JSON.stringify(v));
+  await shot('gold-shared'); await key('Escape');
+  await click('#btn-help');
+  check(await until(`!document.querySelector('#modal').hidden && /How to use/.test(document.querySelector('#panel h2').textContent) && /start-bridge\\.bat/.test(document.querySelector('#panel').textContent)`, 3000), 'How to use did not open the guide');
+  await sleep(600); await shot('how-to-use'); await key('Escape');
+  return 'gold spent shared; guide opens';
+};
+
 T.smallScreen = async () => {
   await viewport(960, 540);
   try {
