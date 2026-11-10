@@ -1,5 +1,8 @@
 # Phase 1 summary: ground truth from the game files
 
+> **2026-11-10:** the in-browser battle (`js/battle.js`, `js/fx.js`) was removed. **Test Battle** now plays the teams in the game
+> itself through the [game bridge](../../tools/game-bridge/README.md). These notes remain as a reference for the game's rules.
+
 Game build analysed (installed via Steam, unchanged since 2026-10-13):
 
 | File | Identity |

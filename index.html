@@ -44,36 +44,13 @@
 
     <!-- arena -->
     <div id="arena"></div>
-    <div id="fx"></div>
-    <div id="trumpets"><div class="tr left" id="tr-0"></div><div class="tr right" id="tr-1"></div></div>
 
     <!-- bottom bar (edit) -->
     <div id="bottombar" class="edit-only">
       <button class="obtn ghost" id="btn-swap" title="Swap the two teams"><img src="img/ui/Refresh.webp" alt=""><span>Swap</span></button>
-      <button class="obtn big" id="btn-fight"><img src="img/ui/Swords.webp" alt=""><span>Fight!</span></button>
-      <button class="obtn ghost" id="btn-odds" title="Simulate many battles"><img src="img/ui/Trophy.webp" alt=""><span>Odds</span></button>
+      <button class="obtn big" id="btn-test" title="Play these teams in Super Auto Pets (needs the game bridge)"><img src="img/ui/Swords.webp" alt=""><span>Test Battle</span></button>
     </div>
-    <div id="odds" class="edit-only" hidden></div>
     <div id="hint" class="edit-only">Click a slot to add a pet · click a pet to edit · drag to reorder</div>
-
-    <!-- battle controls -->
-    <div id="battlebar" class="battle-only">
-      <button class="sbtn" id="bb-back" title="Back to teams"><img src="img/ui/Back.webp" alt=""></button>
-      <button class="sbtn" id="bb-play" title="Pause / play"><img src="img/ui/Pause.webp" alt=""></button>
-      <button class="sbtn speed" id="bb-speed" title="Speed"><img src="img/ui/Speed1.webp" alt=""></button>
-      <button class="sbtn" id="bb-skip" title="Skip to the end"><img src="img/ui/FastForward.webp" alt=""></button>
-      <button class="sbtn" id="bb-replay" title="Replay"><img src="img/ui/Replay.webp" alt=""></button>
-      <button class="sbtn" id="bb-rerun" title="Fight again (new random rolls)"><img src="img/ui/Dice.webp" alt=""></button>
-      <button class="sbtn" id="bb-log" title="Battle log"><img src="img/ui/Plaque1.webp" alt=""></button>
-    </div>
-    <div id="phase" class="battle-only"></div>
-    <div id="logpanel" hidden><div class="lp-head">Battle log</div><ol id="loglist"></ol></div>
-
-    <div id="result" hidden>
-      <img class="mascot" alt="">
-      <div class="ribbon"><span></span></div>
-      <div class="result-sub"></div>
-    </div>
 
     <!-- modal layer -->
     <div id="modal" hidden>
@@ -88,11 +65,8 @@
 <script src="data/data.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/abilities.js"></script>
-<script src="js/fx-data.js"></script>
-<script src="js/fx.js"></script>
-<script src="js/battle.js"></script>
 <script src="js/order.js"></script>
-<!-- game-exact battle engine: the game's ability definitions and resolver -->
+<!-- the game's pet, perk and ability data (pet cards, team ordering) -->
 <script src="js/game/data.js"></script>
 <script src="js/game/rng.js"></script>
 <script src="js/game/model.js"></script>
