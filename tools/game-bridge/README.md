@@ -26,9 +26,9 @@ The game window comes to the front and plays the battle.
 Notes:
 
 - Don't play online while the bridge is attached. Close the game, or the bridge window, before going online.
-- "This turn" values (rolls, gold spent, transformations, friends summoned, level 3 pets sold, battles won, turn number,
-  foods each pet ate) come from each pet's editor, or from Settings when left blank. Each team gets its own values.
-  Gold spent is one shared value: changing it on a pet changes Settings and every other pet that uses it.
+- Rolls, gold spent, transformations, friends summoned, level 3 pets sold and the turn number are one shared value
+  each: changing one in a pet's editor changes Settings and every other pet that uses it. Foods eaten and battles won
+  are set per pet, falling back to Settings when left blank.
   A swallowed pet (White Whale, Sarcastic Fringehead) isn't sent to the game yet.
 - Some antivirus programs warn about Frida, because it attaches to another program.
 - Every battle gets a new random seed, so luck-based abilities can turn out differently each time you press the button.

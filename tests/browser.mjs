@@ -131,14 +131,15 @@ T.testBattle = async () => {
   return `${v.teams[0]} vs ${v.teams[1]} pets sent`;
 };
 
-// Gold spent is one value for the whole battle: an old per-pet value moves into Settings, and the pet editor edits Settings
+// Gold spent, rolls, turn... are one value for the whole battle: an old per-pet value moves into Settings, and the pet editor edits Settings
 T.sharedGold = async () => {
   await open();
-  await js(`localStorage.setItem('sap-sandbox', JSON.stringify({ teams: [[{ id: 'Meerkat', atk: 1, hp: 1, xp: 0, perk: null, ctx: { goldSpent: 3 } }, null, null, null, null],
+  await js(`localStorage.setItem('sap-sandbox', JSON.stringify({ teams: [[{ id: 'Meerkat', atk: 1, hp: 1, xp: 0, perk: null, ctx: { goldSpent: 3, rolls: 4, turn: 7, summoned: 2 } }, null, null, null, null],
     [{ id: 'Meerkat', atk: 1, hp: 1, xp: 0, perk: null }, null, null, null, null]], settings: { goldSpent: 0 } }))`);
   await open(BASE, false);
-  const m = await js(`({ g: SAP_SANDBOX.S.settings.goldSpent, left: SAP_SANDBOX.S.teams.flat().some(p => p && p.ctx && 'goldSpent' in p.ctx) })`);
-  check(m.g === 3 && !m.left, 'an old per-pet gold spent should move into Settings: ' + JSON.stringify(m));
+  const m = await js(`({ g: SAP_SANDBOX.S.settings.goldSpent, r: SAP_SANDBOX.S.settings.rolls, t: SAP_SANDBOX.S.settings.turn, s: SAP_SANDBOX.S.settings.summoned,
+    left: SAP_SANDBOX.S.teams.flat().some(p => p && p.ctx && ['goldSpent', 'rolls', 'turn', 'summoned'].some(k => k in p.ctx)) })`);
+  check(m.g === 3 && m.r === 4 && m.t === 7 && m.s === 2 && !m.left, 'an old per-pet gold spent should move into Settings: ' + JSON.stringify(m));
   await click('.pet[data-side="1"][data-i="0"]');
   check(await until(`!!document.querySelector('#modal:not([hidden]) .ctx-row input')`, 3000), 'no gold spent field in the pet editor');
   check(await js(`document.querySelector('.ctx-row input').value`) === '3', 'the pet editor should show the Settings value');

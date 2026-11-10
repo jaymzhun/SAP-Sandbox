@@ -87,7 +87,7 @@
     battles: ['Battles fought', 0, 40], turn: ['Turn number', 1, 40], transforms: ['Transformations this turn', 0, 10], goldSpent: ['Gold spent this turn', 0, 40],
     lvl3Sold: ['Level 3 pets sold', 0, 10] };
   // values with one setting for the whole battle: the pet editor edits the Settings value itself (every such pet follows)
-  const SHARED_CTX = new Set(['goldSpent']);
+  const SHARED_CTX = new Set(['goldSpent', 'rolls', 'transforms', 'summoned', 'lvl3Sold', 'turn']);
   const CARRIES_OVER = new Set(['Okapi', 'WhiteWhale', 'SarcasticFringehead']); // shop abilities whose result shows up in battle
   const ctxKeys = id => Object.keys(PET_CTX).filter(k => PET_CTX[k].includes(id));
   const SETTING_NAMES = { rolls: 'Rolls this turn', turn: 'Turn number', battles: 'Battles fought', foodEaten: 'Food eaten this turn', transforms: 'Transformations this turn', goldSpent: 'Gold spent this turn', lvl3Sold: 'Level 3 pets sold' };
@@ -145,7 +145,7 @@
     names: ['Team 1', 'Team 2'],
     meta: [{ player: 'Player 1', mascot: 'Tyrannosaurus', bg: 'FieldBattle', trophies: 0, lives: 5 }, { player: 'Player 2', mascot: 'Bee', bg: 'FrontYardBattle', trophies: 0, lives: 5 }],
     bg: 'FieldBattle',
-    settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
+    settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, summoned: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
     rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
   };
   let perkQuery = '';
@@ -710,6 +710,7 @@
         row('Rolls this turn', 'For roll-based abilities (Fossa, Bunyip, Mana Hound…)', num('rolls', 0, 20)),
         row('Transformations this turn', 'For Giant Pangasius', num('transforms', 0, 10)),
         row('Gold spent this turn', 'For Meerkat', num('goldSpent', 0, 40)),
+        row('Friends summoned this turn', 'For Night Crawler', num('summoned', 0, 20)),
         row('Level 3 pets sold', 'For Jersey Devil', num('lvl3Sold', 0, 10)));
       p.append(body);
       const built = window.SAP_BUILD && new Date(window.SAP_BUILD);
@@ -766,8 +767,8 @@
     for (const [k, f] of Object.entries(BOARD_KEYS)) { const p = !SHARED_CTX.has(k) && t.find(x => own(x, k)); out[f] = +(p ? p.ctx[k] : S.settings[k] || 0); }
     return out;
   }
-  // the battle has one turn number: a pet's own (Werewolf, Amphisbaena) wins over Settings
-  const bridgeTurn = () => { const p = S.teams.flat().find(x => own(x, 'turn')); return +(p ? p.ctx.turn : S.settings.turn || 1); };
+  // the battle's turn number (shared: Werewolf and Amphisbaena edit the Settings value)
+  const bridgeTurn = () => +(S.settings.turn || 1);
   let sending = false;
   async function testBattle() {
     if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
@@ -803,7 +804,7 @@
         el('ul', {},
           el('li', {}, 'Click an empty slot to add a pet. Click a pet to change its level, stats, perk and mana.'),
           el('li', {}, 'Drag pets to reorder them. The pets nearest the middle are at the front.'),
-          el('li', {}, 'Settings holds the shop values some pets use (rolls, gold spent, turn…). A pet’s editor can override some of them for that pet.'),
+          el('li', {}, 'Settings holds the shop values some pets use (rolls, gold spent, turn…). Changing one in a pet’s editor changes it in Settings and for every pet that uses it.'),
           el('li', {}, 'Share copies a link to these teams and settings.')),
         h('Test Battle: play it in the real game'),
         el('p', {}, 'Test Battle plays your teams in Super Auto Pets itself, with the game’s own rules and animations. It needs a little program, the game bridge, running on your PC. One-time setup (Windows only):'),
