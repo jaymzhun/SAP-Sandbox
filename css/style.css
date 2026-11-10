@@ -522,3 +522,14 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .bpet.attacking .bp-sprite { filter: drop-shadow(3px 0 0 #f00) drop-shadow(-3px 0 0 #f00) drop-shadow(0 3px 0 #f00) drop-shadow(0 -3px 0 #f00); }
 .bp-stat span, .bp-mana span { display: inline-block; }
 #btn-test.busy { opacity: .7; pointer-events: none; }
+
+/* How to use guide */
+#btn-help { width: 96px; }
+.panel.guide { width: 760px; }
+.panel.guide .body { font-family: 'Pangolin'; font-size: 16px; color: var(--ink); line-height: 1.4; padding-right: 6px; }
+.panel.guide .body p { margin: 4px 2px 8px; }
+.panel.guide .body ol, .panel.guide .body ul { margin: 2px 0 10px; padding-left: 24px; }
+.panel.guide .body li { margin: 3px 0; }
+.panel.guide .body a { color: #1d5fa8; font-weight: bold; }
+.panel.guide .section-title { margin-top: 12px; }
+.panel.guide .support-note { margin: 0 0 6px; }

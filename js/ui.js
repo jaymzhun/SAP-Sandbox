@@ -86,6 +86,8 @@
   const CTX_LABEL = { rolls: ['Rolls this turn', 0, 20], foodEaten: ['Food it ate this turn', 0, 10], summoned: ['Friends summoned this turn', 0, 20],
     battles: ['Battles fought', 0, 40], turn: ['Turn number', 1, 40], transforms: ['Transformations this turn', 0, 10], goldSpent: ['Gold spent this turn', 0, 40],
     lvl3Sold: ['Level 3 pets sold', 0, 10] };
+  // values with one setting for the whole battle: the pet editor edits the Settings value itself (every such pet follows)
+  const SHARED_CTX = new Set(['goldSpent', 'rolls', 'transforms', 'summoned', 'lvl3Sold', 'turn']);
   const CARRIES_OVER = new Set(['Okapi', 'WhiteWhale', 'SarcasticFringehead']); // shop abilities whose result shows up in battle
   const ctxKeys = id => Object.keys(PET_CTX).filter(k => PET_CTX[k].includes(id));
   const SETTING_NAMES = { rolls: 'Rolls this turn', turn: 'Turn number', battles: 'Battles fought', foodEaten: 'Food eaten this turn', transforms: 'Transformations this turn', goldSpent: 'Gold spent this turn', lvl3Sold: 'Level 3 pets sold' };
@@ -143,7 +145,7 @@
     names: ['Team 1', 'Team 2'],
     meta: [{ player: 'Player 1', mascot: 'Tyrannosaurus', bg: 'FieldBattle', trophies: 0, lives: 5 }, { player: 'Player 2', mascot: 'Bee', bg: 'FrontYardBattle', trophies: 0, lives: 5 }],
     bg: 'FieldBattle',
-    settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
+    settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, summoned: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
     rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
   };
   let perkQuery = '';
@@ -159,6 +161,12 @@
       if (st.bg && D.bgs.includes(st.bg)) S.bg = st.bg;
       if (st.settings) Object.assign(S.settings, st.settings);
       if (st.rnd) Object.assign(S.rnd, st.rnd);
+      // shared values used to be per pet: an older save or link's pet value becomes the Settings one
+      for (const key of SHARED_CTX) {
+        const p = S.teams.flat().find(x => x && x.ctx && x.ctx[key] != null && x.ctx[key] !== '');
+        if (p) S.settings[key] = +p.ctx[key];
+        for (const x of S.teams.flat()) if (x && x.ctx) delete x.ctx[key];
+      }
       return true;
     }
     return false;
@@ -308,12 +316,13 @@
         out.push(sw && D.pets[sw] ? `Swallowed <b>${esc(D.pets[sw].n)}</b>` : 'Nothing swallowed');
         continue;
       }
-      const own = ctx && ctx[key] != null && ctx[key] !== '';
+      const shared = SHARED_CTX.has(key);
+      const own = !shared && ctx && ctx[key] != null && ctx[key] !== '';
       const n = own ? +ctx[key] : S.settings[key];
       const txt = { rolls: `${n} roll${n === 1 ? '' : 's'} this turn`, foodEaten: `${n} food${n === 1 ? '' : 's'} eaten this turn`, summoned: `${n} friend${n === 1 ? '' : 's'} summoned this turn`,
         battles: `${n} battle${n === 1 ? '' : 's'} fought`, turn: `Turn ${n}`, transforms: `${n} transformation${n === 1 ? '' : 's'} this turn`,
         goldSpent: `${n} gold spent this turn`, lvl3Sold: `${n} level 3 pet${n === 1 ? '' : 's'} sold` }[key];
-      out.push(txt + (own ? '' : ' <i>(Settings)</i>'));
+      out.push(txt + (own || shared ? '' : ' <i>(Settings)</i>'));
     }
     return out.length ? `<br><span style="color:#2f6f2a">${out.join(' · ')}</span>` : '';
   }
@@ -465,7 +474,9 @@
         else if (st.status === 'shop' && CARRIES_OVER.has(p.id)) info.append(el('div', { class: 'support-note good' }, 'Shop ability, but what it did this turn carries into the battle: set it under "This turn" below.'));
         else if (st.status === 'shop') info.append(el('div', { class: 'support-note shop' }, !st.goldShop ? 'This ability only works in the shop, so it has no effect in battle (same as the game).' : 'This ability triggers in battle, but it only affects gold or the shop, so it changes nothing in the fight.'));
         else if (st.status === 'passive') info.append(el('div', { class: 'support-note good' }, 'Passive ability: always active in battle.'));
-        if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, 'Set what happened in the shop this turn below (blank uses Settings).'));
+        if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, ctxKeys(p.id).every(k => SHARED_CTX.has(k))
+          ? 'Set what happened in the shop this turn below. It’s shared with Settings and every pet that uses it.'
+          : 'Set what happened in the shop this turn below (blank uses Settings).'));
         top.append(spr, info);
         body.append(top);
 
@@ -511,6 +522,18 @@
               continue;
             }
             const [label, min, max] = CTX_LABEL[key];
+            if (SHARED_CTX.has(key)) {
+              // one value for the whole battle: this edits Settings, and every pet that uses it follows
+              const inp = el('input', { type: 'number', class: 'cb-num', min, max, value: S.settings[key] });
+              inp.title = 'Same value as in Settings; changing it here changes it for every pet';
+              inp.addEventListener('change', () => {
+                S.settings[key] = Math.max(min, Math.min(max, inp.value | 0)); inp.value = S.settings[key];
+                for (const x of S.teams.flat()) if (x && x.ctx) delete x.ctx[key];
+                save();
+              });
+              rows.append(el('div', { class: 'ctx-row' }, el('span', {}, label, el('small', {}, ' (all pets, same as Settings)')), inp));
+              continue;
+            }
             const v = p.ctx && p.ctx[key] != null ? p.ctx[key] : '';
             const inp = el('input', { type: 'number', class: 'cb-num', min, max, value: v, placeholder: String(S.settings[key]) });
             inp.addEventListener('change', () => {
@@ -687,6 +710,7 @@
         row('Rolls this turn', 'For roll-based abilities (Fossa, Bunyip, Mana Hound…)', num('rolls', 0, 20)),
         row('Transformations this turn', 'For Giant Pangasius', num('transforms', 0, 10)),
         row('Gold spent this turn', 'For Meerkat', num('goldSpent', 0, 40)),
+        row('Friends summoned this turn', 'For Night Crawler', num('summoned', 0, 20)),
         row('Level 3 pets sold', 'For Jersey Devil', num('lvl3Sold', 0, 10)));
       p.append(body);
       const built = window.SAP_BUILD && new Date(window.SAP_BUILD);
@@ -711,7 +735,8 @@
     });
   }
   function share() {
-    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta };
+    // settings travel with the link: shared values like gold spent live only there
+    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, settings: S.settings };
     const h = '#t=' + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
     history.replaceState(null, '', h);
     const url = location.href;
@@ -739,11 +764,11 @@
     lvl3Sold: 'MaxLevelMinionsSold', battles: 'Victories' };
   function bridgeBoard(t) {
     const out = {};
-    for (const [k, f] of Object.entries(BOARD_KEYS)) { const p = t.find(x => own(x, k)); out[f] = +(p ? p.ctx[k] : S.settings[k] || 0); }
+    for (const [k, f] of Object.entries(BOARD_KEYS)) { const p = !SHARED_CTX.has(k) && t.find(x => own(x, k)); out[f] = +(p ? p.ctx[k] : S.settings[k] || 0); }
     return out;
   }
-  // the battle has one turn number: a pet's own (Werewolf, Amphisbaena) wins over Settings
-  const bridgeTurn = () => { const p = S.teams.flat().find(x => own(x, 'turn')); return +(p ? p.ctx.turn : S.settings.turn || 1); };
+  // the battle's turn number (shared: Werewolf and Amphisbaena edit the Settings value)
+  const bridgeTurn = () => +(S.settings.turn || 1);
   let sending = false;
   async function testBattle() {
     if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
@@ -766,19 +791,39 @@
       else bridgeHelp();
     } finally { sending = false; btn.classList.remove('busy'); }
   }
-  function bridgeHelp() {
-    openModal('form', p => {
-      p.append(el('div', { class: 'head' }, el('h2', {}, 'Start the game bridge')));
+  // the How to use guide; missing = opened because Test Battle couldn't reach the bridge
+  const REPO = 'https://github.com/jaymzhun/SAP-Sandbox';
+  function openGuide(missing) {
+    openModal('form guide', p => {
+      const a = (href, text) => el('a', { href, target: '_blank', rel: 'noopener' }, text);
+      const h = t => el('div', { class: 'section-title' }, t);
+      p.append(el('div', { class: 'head' }, el('h2', {}, missing ? 'Start the game bridge' : 'How to use')));
       p.append(el('div', { class: 'body' },
-        el('p', {}, 'Test Battle plays your teams in Super Auto Pets itself, on this PC. It needs the game (from Steam) and the small bridge program running.'),
+        missing ? el('p', { class: 'support-note bad' }, 'Test Battle couldn’t reach the game bridge on this PC. Set it up once with the steps below, then press Test Battle again.') : null,
+        h('Build your teams'),
+        el('ul', {},
+          el('li', {}, 'Click an empty slot to add a pet. Click a pet to change its level, stats, perk and mana.'),
+          el('li', {}, 'Drag pets to reorder them. The pets nearest the middle are at the front.'),
+          el('li', {}, 'Settings holds the shop values some pets use (rolls, gold spent, turn…). Changing one in a pet’s editor changes it in Settings and for every pet that uses it.'),
+          el('li', {}, 'Share copies a link to these teams and settings.')),
+        h('Test Battle: play it in the real game'),
+        el('p', {}, 'Test Battle plays your teams in Super Auto Pets itself, with the game’s own rules and animations. It needs a little program, the game bridge, running on your PC. One-time setup (Windows only):'),
         el('ol', {},
-          el('li', {}, 'Install Python 3 if you don’t have it.'),
-          el('li', {}, 'Download the sandbox (Code → Download ZIP on GitHub) and open the tools/game-bridge folder.'),
-          el('li', {}, 'Double-click start-bridge.bat and keep its window open.'),
-          el('li', {}, 'Press Test Battle again. The game starts if it isn’t open yet.')),
-        el('p', {}, el('small', {}, 'The battle runs offline inside the game; nothing is sent to the game’s servers.'))));
+          el('li', {}, 'Install Super Auto Pets from Steam.'),
+          el('li', {}, 'Install ', a('https://www.python.org/downloads/', 'Python 3'), '. In the installer, tick “Add python.exe to PATH”.'),
+          el('li', {}, 'Download the sandbox: on ', a(REPO, 'GitHub'), ', press Code → Download ZIP, then unzip it.'),
+          el('li', {}, 'Open the tools/game-bridge folder and double-click start-bridge.bat. The first time, it installs Frida, the tool it uses to talk to the game. Keep its window open while you use Test Battle.'),
+          el('li', {}, 'Press Test Battle. The game starts if it isn’t open, and plays the battle.')),
+        h('Good to know'),
+        el('ul', {},
+          el('li', {}, 'Your browser may ask to let this site access devices on your local network. Allow it: that’s how the page reaches the bridge.'),
+          el('li', {}, 'The battle runs offline inside the game; nothing is sent to the game’s servers. Don’t play online while the bridge is running: close it first.'),
+          el('li', {}, 'Some antivirus programs warn about Frida, because it attaches to another program.'),
+          el('li', {}, 'A game update can break the bridge until it’s updated. Macs aren’t supported.'),
+          el('li', {}, 'Each battle uses a new random seed, so luck-based abilities can differ between runs.'))));
     });
   }
+  const bridgeHelp = () => openGuide(true);
 
   // ------------------------------------------------------------------ team settings (player, mascot, background, trophies, lives)
   const MASCOTS = ['Tyrannosaurus', 'Bee', 'BlueBird', 'BlueWhale', 'Bulldog', 'Capybara', 'Cat', 'Chameleon', 'Chicken', 'Crane', 'Crow', 'Dolphin', 'Donkey', 'Dove', 'Frog',
@@ -819,6 +864,7 @@
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-bg').addEventListener('click', () => openTeamSettings(0));
   $('#btn-share').addEventListener('click', share);
+  $('#btn-help').addEventListener('click', () => openGuide(false));
   $$('.team-tools .sbtn').forEach(b => b.addEventListener('click', () => {
     const s = +b.dataset.side;
     if (b.dataset.act === 'random') openRandomizer(s);
