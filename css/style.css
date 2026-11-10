@@ -348,6 +348,7 @@ body.battle .tname { pointer-events: none; }
 .bpet.pop { animation: pop .4s; }
 
 /* effects */
+.b-num.orange { color: #ff8f5e; }
 .b-num { position: absolute; font-family: 'Lapsus'; font-size: 64px; line-height: 1; color: #ff2a1f; -webkit-text-stroke: 0.14em #1d1a17; paint-order: stroke fill; text-shadow: 0 0.06em 0 #1d1a17; z-index: 40; pointer-events: none; }
 .b-float { position: absolute; font-family: 'Lapsus'; font-size: 30px; color: #fff; -webkit-text-stroke: 0.18em #1d1a17; paint-order: stroke fill; white-space: nowrap; pointer-events: none; z-index: 40; }
 .b-float.both, .b-float.hp { color: #6dff5c; } .b-float.atk { color: #ffd23f; } .b-float.neg { color: #ff5a4a; }
@@ -355,6 +356,9 @@ body.battle .tname { pointer-events: none; }
 .b-proj { position: absolute; width: 40px; height: 40px; z-index: 35; pointer-events: none; }
 .b-proj:not(.img) { border-radius: 50%; background: radial-gradient(circle at 38% 35%, #fff 0 25%, #fff7c2 40%, #ffd23f 62%, rgba(255,160,0,0) 72%); box-shadow: 0 0 14px 4px rgba(255,240,170,.6); }
 .b-proj.heal:not(.img) { background: radial-gradient(circle at 38% 35%, #fff 0 25%, #d8ffc4 40%, #59d64a 62%, rgba(40,170,40,0) 72%); box-shadow: 0 0 14px 4px rgba(170,255,150,.6); }
+/* SpriteLibrary sprites are 256 px at 256 px/unit (1 unit = 120 px here); the trimmed art is about 114 px */
+.b-proj.img { width: 114px; height: 114px; }
+.b-proj.img.perk { width: 76px; height: 76px; }
 .b-proj.img img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 2px 0 rgba(0,0,0,.4)); }
 
 /* intro labels */
@@ -486,7 +490,6 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .build-stamp { margin-top: 10px; text-align: right; font: 13px 'Pangolin', sans-serif; color: #8d8170; }
 
 /* thrown rock for snipes (game's Rock sprite) */
-.b-proj.rock { width: 46px; height: 43px; }
 
 /* randomizer buttons: one row */
 .rnd-acts { display: flex; gap: 10px; justify-content: center; margin-top: 4px; }
@@ -510,6 +513,11 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .b-gain { position: absolute; width: 64px; height: 60px; display: grid; place-items: center; background: center / contain no-repeat; pointer-events: none; z-index: 41; }
 .b-gain.atk { background-image: url('../img/fx/game/StickerFist.webp'); }
 .b-gain.hp { background-image: url('../img/fx/game/StickerHeart.webp'); }
+.b-gain > b { position: absolute; right: 100%; top: 50%; transform: translateY(-50%); margin-right: -6px; font: 34px 'Lapsus'; color: #fff; -webkit-text-stroke: 0.18em #1d1a17; paint-order: stroke fill; text-shadow: 0 0.08em 0 #1d1a17; }
 .b-gain span { font-family: 'Lapsus'; font-size: 34px; color: #fff; -webkit-text-stroke: 0.18em #1d1a17; paint-order: stroke fill; text-shadow: 0 0.08em 0 #1d1a17; margin-top: 2px; }
-.bpet.active .bp-sprite { filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 2px #fff) drop-shadow(0 0 4px #fff); }
+.bp-move { position: absolute; inset: 0; }
+/* MinionView.Highlight (AllOneShader outline): green (0,1,0) for an ability (AbilityAggregator), red (1,0,0) for both
+   pets in a trade (TradeAggregator.Run) */
+.bpet.active .bp-sprite { filter: drop-shadow(3px 0 0 #0f0) drop-shadow(-3px 0 0 #0f0) drop-shadow(0 3px 0 #0f0) drop-shadow(0 -3px 0 #0f0); }
+.bpet.attacking .bp-sprite { filter: drop-shadow(3px 0 0 #f00) drop-shadow(-3px 0 0 #f00) drop-shadow(0 3px 0 #f00) drop-shadow(0 -3px 0 #f00); }
 .bp-stat span, .bp-mana span { display: inline-block; }

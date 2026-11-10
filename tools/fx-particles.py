@@ -237,7 +237,7 @@ print('modules', used, 'shapes', shapes, 'modes', modes, 'align', aligns, 'space
 
 # ---- copy the effects the battle screen uses into the repo
 from PIL import Image
-KEEP = ['StickerBlast', 'Smoke', 'SmokeTrail', 'Smash', 'Mana', 'Exp', 'Level', 'Swallow', 'Buff', 'Debuff']
+KEEP = ['StickerBlast', 'Smoke', 'SmokeTrail', 'Smash', 'Mana', 'Exp', 'Level', 'Swallow', 'Buff', 'Debuff', 'Eats', 'Gas']
 sel = {k: fx[k] for k in KEEP}
 dst_dir = os.path.join(REPO, 'img', 'fx', 'game'); os.makedirs(dst_dir, exist_ok=True)
 used = set()
@@ -252,7 +252,8 @@ for f in sorted(used):
         k = m / max(w, h); im = im.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
     im.save(os.path.join(dst_dir, f.replace('sp_', '')), 'WEBP', quality=90, method=6)
 if SPRITES:
-    for n in ['StickerFist', 'StickerHeart', 'MouthOpen']:
+    # SpriteLibrary projectile sprites: StatsHealth = Heart, StatsAttack = Fist, StatsBoth = HeartFist, Gas = Gas2g
+    for n in ['StickerFist', 'StickerHeart', 'MouthOpen', 'Heart', 'Fist', 'HeartFist', 'Gas2g']:
         Image.open(os.path.join(SPRITES, n + '.png')).convert('RGBA').save(os.path.join(dst_dir, n + '.webp'), 'WEBP', quality=92, method=6)
 for e in sel.values():
     for s_ in e['systems']:

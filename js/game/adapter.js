@@ -85,19 +85,42 @@
     return { t: [side(1), side(2)], tr: [b.Trumpets || 0, b.OpponentTrumpets || 0] };
   }
 
+  // the perk whose ability this is (PerkTemplate abilities), and an ability's own projectile (ProjectileModel.Projectile:
+  // 0 Damage, 2 Health, 3 Attack, 4 HealthAndAttack, 9 GasYellow, 12 Absorb, 14 None, 15 ManaBurst, 16 Mouth)
+  let PERK_OF_ABILITY = null;
+  const perkOfAbility = (ab) => {
+    if (!PERK_OF_ABILITY) { PERK_OF_ABILITY = {}; for (const [p, pk] of Object.entries(D.perks || {})) for (const a of (pk && pk.abilities) || []) PERK_OF_ABILITY[a] = PERK_NAME[+p]; }
+    return PERK_OF_ABILITY[ab] || null;
+  };
+  const PROJ_OF_ABILITY = {};
+  const projOfAbility = (ab, lv) => {
+    const k = ab + ':' + lv; if (k in PROJ_OF_ABILITY) return PROJ_OF_ABILITY[k];
+    let found = null; const walk = (o) => { if (found != null || !o || typeof o !== 'object') return; if (/ProjectileModel$/.test(o.$type || '') && typeof o.Projectile === 'number') { found = o.Projectile; return; } for (const v of Object.values(o)) walk(v); };
+    walk(((D.abilities[ab] || {})[lv]) || null); return (PROJ_OF_ABILITY[k] = found);
+  };
+  // what the renderer needs from the activation an effect belongs to (set on Done<AbilityActivate>, cleared by a trade)
+  let cur = null;
+  const fromCur = (src, st) => { if (cur && cur.src === src) { if (cur.perk) st.perkSrc = cur.perk; if (cur.proj != null) st.proj = cur.proj; } return st; };
+
   /** one game log event -> zero or one site step (without its snapshot) */
   function step(e) {
     const w = e.cls, x = e.Event, c = x ? x.cls : null;
-    if (w === 'Try' && c === 'MinionTrade') return { kind: 'attack', a: key(x.attackerId), b: key(x.defenderId) };
-    if (w === 'Try' && c === 'MinionJumpAttack') return { kind: 'jump', src: key(x.TargetToThrow), tgt: key(x.TargetToThrowAt) };
-    if (w === 'Done' && c === 'AbilityActivate') return { kind: 'ability', src: key(x.MinionId), trig: 'Activated' };
-    if (w === 'Done' && c === 'DamageMinion') return x.Amount > 0 ? { kind: 'damage', src: key(x.SourceId), tgt: key(x.TargetId), n: x.Amount, dk: x.DamageType === 0 ? 'attack' : 'ability' } : { kind: 'block', tgt: key(x.TargetId) };
-    if (w === 'Done' && c === 'BuffMinion') return x.ResultAttackGained || x.ResultHealthGained ? { kind: 'buff', src: key(x.Source), tgt: key(x.TargetId), da: x.ResultAttackGained || 0, dh: x.ResultHealthGained || 0 } : null;
-    if (w === 'Done' && c === 'SetMinionStats') return { kind: 'buff', src: key(x.Source), tgt: key(x.Target), da: x.ResultAttackDelta || 0, dh: x.ResultHealthDelta || 0 };
+    if (w === 'Try' && c === 'MinionTrade') { cur = null; return { kind: 'attack', a: key(x.attackerId), b: key(x.defenderId) }; }
+    if (w === 'Try' && c === 'MinionJumpAttack') { cur = null; return { kind: 'jump', src: key(x.TargetToThrow), tgt: key(x.TargetToThrowAt) }; }
+    if (w === 'Done' && c === 'AbilityActivate') {
+      // AbilityActivate.Type: 0 the pet's own ability, 1 a perk's, 2 an ailment's
+      cur = { src: key(x.MinionId), perk: x.Type ? perkOfAbility(x.Ability) : null, proj: projOfAbility(x.Ability, x.Level) };
+      return { kind: 'ability', src: cur.src, trig: 'Activated' };
+    }
+    if (w === 'Done' && c === 'DamageMinion') return x.Amount > 0 ? fromCur(key(x.SourceId), { kind: 'damage', src: key(x.SourceId), tgt: key(x.TargetId), n: x.Amount, dk: x.DamageType === 0 ? 'attack' : 'ability' }) : { kind: 'block', tgt: key(x.TargetId) };
+    if (w === 'Done' && c === 'BuffMinion') return x.ResultAttackGained || x.ResultHealthGained ? fromCur(key(x.Source), { kind: 'buff', src: key(x.Source), tgt: key(x.TargetId), da: x.ResultAttackGained || 0, dh: x.ResultHealthGained || 0 }) : null;
+    // BoardView.SetMinionStats: a stat set that is not Positive plays the Gas splash, and a health loss shows as an orange number
+    if (w === 'Done' && c === 'SetMinionStats') return fromCur(key(x.Source), { kind: 'buff', set: true, pos: !!x.Positive, src: key(x.Source), tgt: key(x.Target), da: x.ResultAttackDelta || 0, dh: x.ResultHealthDelta || 0 });
     if (w === 'Done' && c === 'CopyMinionStats') return { kind: 'buff', src: key(x.CopyFrom), tgt: key(x.CopyTo), da: x.ResultAttackGained || 0, dh: x.ResultHealthGained || 0 };
     if (w === 'Done' && c === 'GiveMinionPerk') return { kind: 'perk', src: key(x.Source), tgt: key(x.TargetId), perk: PERK_NAME[x.Perk] };
     if (w === 'PerkLost') return { kind: 'perk', tgt: key(e.SourceId), lost: PERK_NAME[e.Perk] };
-    if (w === 'Done' && c === 'DestroyMinion') return { kind: 'faint', tgt: key(x.TargetId) };
+    // DestroyMinion's last field (the mark's damage type): 0 = killed by attack damage, anything else = abilities and destroy effects
+    if (w === 'Done' && c === 'DestroyMinion') return { kind: 'faint', tgt: key(x.TargetId), dt: x.DamageType || 0 };
     if (w === 'Done' && c === 'SummonMinion') return { kind: 'summon', src: key(x.SourceId), tgt: key(x.Minion && x.Minion.Id) };
     if (w === 'Done' && c === 'TransformMinion') return { kind: 'transform', tgt: key(x.Target) };
     if (w === 'Done' && (c === 'MoveMinion' || c === 'PushMinion')) return { kind: 'move', tgt: key(x.MinionId || x.TargetId) };
@@ -117,7 +140,7 @@
     for (const [s, owner] of [[1, 2], [0, 1]]) for (const p of teams[s] || []) {
       if (!p) continue; const inp = petInput(p, owner, ++uid, { packBack: owner === 1 && test.packBack ? teams[0].filter(Boolean).length : null, foodEaten: settings.foodEaten }); pets.push(inp); if (p.ctx) ctx.set(key(inp.Id), p.ctx);
     }
-    const log = [];
+    const log = []; cur = null;
     const ctxOf = (id) => ctx.get(key(id));
     let B = null;
     const push = (st) => {
