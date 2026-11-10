@@ -521,3 +521,4 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .bpet.active .bp-sprite { filter: drop-shadow(3px 0 0 #0f0) drop-shadow(-3px 0 0 #0f0) drop-shadow(0 3px 0 #0f0) drop-shadow(0 -3px 0 #0f0); }
 .bpet.attacking .bp-sprite { filter: drop-shadow(3px 0 0 #f00) drop-shadow(-3px 0 0 #f00) drop-shadow(0 3px 0 #f00) drop-shadow(0 -3px 0 #f00); }
 .bp-stat span, .bp-mana span { display: inline-block; }
+#btn-test.busy { opacity: .7; pointer-events: none; }

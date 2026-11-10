@@ -146,13 +146,11 @@
     settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
     rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
   };
-  let pendingReplay = null;
   let perkQuery = '';
   function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, settings: S.settings, rnd: S.rnd })); } catch (e) { } }
   function load() {
     let st = null;
     try { if (/^#[tr]=/.test(location.hash)) st = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(3))))); } catch (e) { }
-    if (st && location.hash.startsWith('#r=') && st.replay) { pendingReplay = st.replay; st.settings = Object.assign({}, S.settings, st.replay.settings); }
     if (!st) try { st = JSON.parse(localStorage.getItem('sap-sandbox') || 'null'); } catch (e) { }
     if (st) {
       if (st.teams) S.teams = st.teams.map(t => Array.from({ length: 5 }, (_, i) => (t[i] && D.pets[t[i].id] ? t[i] : null)));
@@ -687,13 +685,9 @@
       body.append(
         row('Turn number', 'For turn-based abilities (e.g. Werewolf)', num('turn', 1, 40)),
         row('Rolls this turn', 'For roll-based abilities (Fossa, Bunyip, Mana Hound…)', num('rolls', 0, 20)),
-        row('Battles fought', 'For Slime, Eagle Owl', num('battles', 0, 40)),
-        row('Food eaten this turn', 'Per pet: Dung Beetle, Blue Jay, Black Bear', num('foodEaten', 0, 10)),
         row('Transformations this turn', 'For Giant Pangasius', num('transforms', 0, 10)),
         row('Gold spent this turn', 'For Meerkat', num('goldSpent', 0, 40)),
-        row('Level 3 pets sold', 'For Jersey Devil', num('lvl3Sold', 0, 10)),
-        row('Fixed random seed', 'Same random targets every fight', tog('fixedSeed')),
-        row('Seed', null, num('seed', 0, 999999)));
+        row('Level 3 pets sold', 'For Jersey Devil', num('lvl3Sold', 0, 10)));
       p.append(body);
       const built = window.SAP_BUILD && new Date(window.SAP_BUILD);
       if (built && !isNaN(built)) {
@@ -724,60 +718,52 @@
     (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(() => toast('Link copied!'), () => toast('Link is in the address bar'));
   }
 
-  // ------------------------------------------------------------------ battle
-  function battleTeams() { return S.teams.map(t => t.map((p, slot) => p && ({ id: p.id, atk: p.atk, hp: p.hp, xp: p.xp, perk: p.perk, mana: p.mana || 0, slot, ctx: p.ctx })).filter(Boolean)); }
-  // Battles run on the game-exact engine (js/game/*: the game's own resolver and ability definitions).
-  function simulate(seed) { return window.SAPGame.adapter.run(battleTeams(), S.settings, seed); }
-  const scene = window.SAPBattle.create({
-    stage, D, petImg, foodImg, perkName, esc,
-    // PerkTemplate.Positive picks the splash a perk gain plays (Buff, or Debuff for an ailment)
-    perkPositive: pk => { const G = window.SAPGame && SAPGame.data, p = G && G.perks[G.enums.perk[pk]]; return p ? !!p.positive : true; },
-    trigLabel: t => TRIG_LABEL[t] || (t && t.startsWith('Count:') ? 'Counter' : t),
-    onBack: () => backToEdit(),
-    onAgain: () => startBattle(),
-    onSpeed: v => { S.settings.speed = v; save(); },
-    replayLink: () => replayLink(),
-    // hovering a pet in battle: same card as in the editor, plus its current stats
-    petTip: d => tipFor(d.id, d.l || 1, d.p, d.c, (d.id === 'WhiteWhale' || d.id === 'SarcasticFringehead') ? (d.sw || null) : undefined, { atk: d.a, hp: d.h }) + (d.sw && !['WhiteWhale', 'SarcasticFringehead'].includes(d.id) && D.pets[d.sw] ? `<br><span style="color:#2f6f2a">Swallowed <b>${esc(D.pets[d.sw].n)}</b></span>` : '') + `<br><span style="color:#7a6a55">In battle now: ${d.a}/${d.h}${d.m ? ` · ${d.m} mana` : ''}</span>`,
-    showTip: (node, html) => { tip.innerHTML = html; tip.hidden = false; posTip(node); },
-    hideTip: () => hideTip(),
-  });
-  let lastLog = null, lastSeed = 0;
-  // Replay link: both teams, looks, battle settings and the seed. The engine is deterministic, so opening it
-  // replays this exact fight.
-  const BATTLE_SETTINGS = ['turn', 'rolls', 'battles', 'foodEaten', 'transforms', 'goldSpent', 'lvl3Sold'];
-  function replayLink() {
-    const settings = {}; for (const k of BATTLE_SETTINGS) settings[k] = S.settings[k];
-    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, replay: { seed: lastSeed, settings } };
-    return location.href.split('#')[0] + '#r=' + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
+  // ------------------------------------------------------------------ battle (played by the game itself)
+  // "Test Battle" sends both teams to the game bridge (tools/game-bridge), which starts Super Auto Pets if needed and
+  // plays them in the game's own debug battle, offline, with the game's engine and animations.
+  const BRIDGE = 'http://127.0.0.1:47823';
+  const GE = window.SAPGame.data.enums;
+  const levelOf = xp => (xp >= 5 ? 3 : xp >= 2 ? 2 : 1);
+  function bridgeTeam(t) {
+    return t.filter(Boolean).map(p => ({
+      enum: +GE.minion[p.id], level: levelOf(p.xp || 0), exp: p.xp || 0, attack: p.atk, health: p.hp, mana: p.mana || 0,
+      perk: p.perk != null && p.perk !== '' && GE.perk[p.perk] != null ? +GE.perk[p.perk] : null,
+    }));
   }
-  function battleMeta() {
-    return {
-      turn: S.settings.turn, speed: S.settings.speed || 1,
-      teams: [0, 1].map(s => Object.assign({ name: S.names[s] }, S.meta[s])),
-    };
-  }
-  function startBattle(sameLog, forceSeed) {
+  let sending = false;
+  async function testBattle() {
     if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
-    const seed = forceSeed != null ? forceSeed : S.settings.fixedSeed ? S.settings.seed : (Math.random() * 1e9) | 0;
-    let res = sameLog;
-    if (!res) { try { res = simulate(seed); } catch (e) { toast("Can't simulate this battle: " + e.message); console.error(e); return; } }
-    if (!sameLog) lastSeed = seed;
-    lastLog = res.log;
-    document.body.classList.remove('edit'); document.body.classList.add('battle');
-    $('#odds').hidden = true;
-    hideTip();
-    scene.play(res.log, battleMeta());
+    if (sending) return;
+    const bad = S.teams.flat().filter(p => p && GE.minion[p.id] == null);
+    if (bad.length) { toast(`The game has no pet called ${bad[0].id}`); return; }
+    const btn = $('#btn-test'); sending = true; btn.classList.add('busy');
+    toast('Sending the battle to the game…');
+    try {
+      const r = await fetch(BRIDGE + '/battle', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player: bridgeTeam(S.teams[0]), opponent: bridgeTeam(S.teams[1]), turn: S.settings.turn,
+          // BoardModel counters the game's abilities read
+          board: { RollsThisTurn: S.settings.rolls, TransformationsThisTurn: S.settings.transforms, GoldSpent: S.settings.goldSpent, MaxLevelMinionsSold: S.settings.lvl3Sold } }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw Object.assign(new Error(j.error || 'The bridge returned an error'), { bridge: true });
+      toast('Playing in Super Auto Pets');
+    } catch (e) {
+      if (e.bridge) toast("The game couldn't play this battle: " + e.message);
+      else bridgeHelp();
+    } finally { sending = false; btn.classList.remove('busy'); }
   }
-  function backToEdit() {
-    scene.stop();
-    document.body.classList.remove('battle'); document.body.classList.add('edit');
-    renderEdit();
+  function bridgeHelp() {
+    openModal('form', p => {
+      p.append(el('div', { class: 'head' }, el('h2', {}, 'Start the game bridge')));
+      p.append(el('div', { class: 'body' },
+        el('p', {}, 'Test Battle plays your teams in Super Auto Pets itself, on this PC. It needs the game (from Steam) and the small bridge program running.'),
+        el('ol', {},
+          el('li', {}, 'Install Python 3 if you don’t have it.'),
+          el('li', {}, 'Download the sandbox (Code → Download ZIP on GitHub) and open the tools/game-bridge folder.'),
+          el('li', {}, 'Double-click start-bridge.bat and keep its window open.'),
+          el('li', {}, 'Press Test Battle again. The game starts if it isn’t open yet.')),
+        el('p', {}, el('small', {}, 'The battle runs offline inside the game; nothing is sent to the game’s servers.'))));
+    });
   }
-  document.addEventListener('keydown', e => {
-    if (!document.body.classList.contains('battle') || e.target.isContentEditable) return;
-    if (e.key === 'Escape') backToEdit();
-  });
 
   // ------------------------------------------------------------------ team settings (player, mascot, background, trophies, lives)
   const MASCOTS = ['Tyrannosaurus', 'Bee', 'BlueBird', 'BlueWhale', 'Bulldog', 'Capybara', 'Cat', 'Chameleon', 'Chicken', 'Crane', 'Crow', 'Dolphin', 'Donkey', 'Dove', 'Frog',
@@ -812,28 +798,9 @@
     });
   }
 
-  // ------------------------------------------------------------------ odds
-  async function runOdds() {
-    if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
-    const box = $('#odds'); box.hidden = false; box.innerHTML = '<span class="ol">Simulating…</span>';
-    const N = 500; const c = { win: 0, lose: 0, draw: 0 }; let failed = 0, why = '';
-    for (let i = 0; i < N; i++) {
-      // a battle that reaches a part of the game not ported yet is not counted (and is reported), never guessed
-      try { c[simulate(i * 7919 + 13).result]++; } catch (e) { failed++; why = why || e.message; }
-      if (i % 50 === 49) await wait(0);
-    }
-    const done = N - failed;
-    if (!done) { box.innerHTML = `<span class="ol">Can't simulate this matchup: ${esc(why)}</span>`; return; }
-    const pct = k => Math.round(c[k] / done * 1000) / 10;
-    box.innerHTML = `<span class="ol" style="color:#9fd6ff">${esc(S.names[0])} ${pct('win')}%</span>
-      <div class="bar"><i style="width:${pct('win')}%;background:#3fa8ff"></i><i style="width:${pct('draw')}%;background:#c9c0b0"></i><i style="width:${pct('lose')}%;background:#ff6a4a"></i></div>
-      <span class="ol" style="color:#ffb39f">${pct('lose')}% ${esc(S.names[1])}</span><span class="ol" style="font-size:16px">Draw ${pct('draw')}% · ${done} battles${failed ? ` · ${failed} skipped (${esc(why)})` : ''}</span>`;
-  }
-
   // ------------------------------------------------------------------ wiring
-  $('#btn-fight').addEventListener('click', () => startBattle());
-  $('#btn-odds').addEventListener('click', runOdds);
-  $('#btn-swap').addEventListener('click', () => { S.teams.reverse(); S.names.reverse(); S.meta.reverse(); S.bg = S.meta[0].bg; setBg(); $('#odds').hidden = true; renderEdit(); });
+  $('#btn-test').addEventListener('click', testBattle);
+  $('#btn-swap').addEventListener('click', () => { S.teams.reverse(); S.names.reverse(); S.meta.reverse(); S.bg = S.meta[0].bg; setBg(); renderEdit(); });
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-bg').addEventListener('click', () => openTeamSettings(0));
   $('#btn-share').addEventListener('click', share);
@@ -841,7 +808,7 @@
     const s = +b.dataset.side;
     if (b.dataset.act === 'random') openRandomizer(s);
     else if (b.dataset.act === 'look') openTeamSettings(s);
-    else { S.teams[s] = Array(5).fill(null); $('#odds').hidden = true; renderEdit(); }
+    else { S.teams[s] = Array(5).fill(null); renderEdit(); }
   }));
   $$('.tname').forEach((n, k) => {
     n.addEventListener('input', () => { S.names[k] = n.textContent.trim().slice(0, 20) || `Team ${k + 1}`; save(); });
@@ -856,9 +823,5 @@
   document.body.classList.add('edit');
   fit(); setBg(); renderEdit();
   if (S.meta[0].bg !== S.bg && D.bgs.includes(S.bg)) S.meta[0].bg = S.bg;
-  if (pendingReplay) {
-    history.replaceState(null, '', location.href.split('#')[0]);
-    save(); startBattle(null, pendingReplay.seed | 0);
-  }
-  window.SAP_SANDBOX = { S, simulate, STATUS, AB, startBattle, replayLink, get lastLog() { return lastLog; } };
+  window.SAP_SANDBOX = { S, STATUS, AB, testBattle, bridgeTeam };
 })();

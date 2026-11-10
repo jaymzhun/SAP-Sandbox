@@ -63,7 +63,6 @@ async function mouse(x, y, click) {
 async function click(sel) { const c = await centre(sel); if (!c) throw new Error('nothing to click: ' + sel); await mouse(c[0], c[1], true); }
 async function key(k) { const code = { Escape: 27, Enter: 13 }[k]; await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: k, windowsVirtualKeyCode: code }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: k, windowsVirtualKeyCode: code }); }
 const logLen = () => js(`document.querySelectorAll('.b-log li').length`);
-async function startBattle(speed = 1) { await js(`(() => { const X = SAP_SANDBOX; X.S.settings.speed = ${speed}; X.S.settings.fixedSeed = false; X.startBattle(); })()`); }
 async function rollTeams() {
   await js(`(() => { const rb = [...document.querySelectorAll('button')].find(b => /random/i.test(b.title || '')); rb && rb.click(); })()`);
   await until(`[...document.querySelectorAll('button')].some(b => /roll both/i.test(b.textContent))`, 3000);
@@ -104,112 +103,33 @@ T.picker = async () => {
   check(after === before + 1, `picking a pet should add it (had ${before}, now ${after})`);
 };
 
-T.battles = async () => {
-  await open();
-  const runs = [];
-  let unported = 0;
-  for (let r = 0; r < 12; r++) {
-    await rollTeams(); await startBattle(4);
-    // a few random teams use a part of the game the engine hasn't ported; the site says so in a toast: roll again
-    if (await js(`!document.body.classList.contains('battle') && /Unported/.test(document.querySelector('#toast').textContent)`)) {
-      if (++unported > 10) throw new Error('too many unported rolls'); r--; continue;
-    }
-    check(await until(`!!document.querySelector('.bscene.done') && !document.querySelector('.b-result').hidden`, 90000, 100), `battle ${r + 1} did not reach the result screen`);
-    const v = await js(`({ steps: SAP_SANDBOX.lastLog.length, lines: document.querySelectorAll('.b-log li').length, last: (document.querySelector('.b-log li:last-child') || {}).textContent || '', res: document.querySelector('.b-res-text').textContent })`);
-    check(/wins|Draw/.test(v.last), `battle ${r + 1}: the log does not end with the result (${v.last})`);
-    check(['Victory', 'Defeat', 'Draw'].includes(v.res), `battle ${r + 1}: result screen says ${v.res}`);
-    runs.push(v.steps);
-    if (r === 0) await shot('result');
-    await click('.b-res-btns [data-r="back"]'); check(await until(`document.body.classList.contains('edit') && !document.querySelector('.bscene')`, 3000), 'Back did not return to the editor');
-  }
-  return `${runs.length} battles, ${Math.min(...runs)}–${Math.max(...runs)} steps` + (unported ? `; ${unported} unported roll(s) skipped` : '');
-};
-
-T.controls = async () => {
-  await open(); await rollTeams(); await startBattle(1);
-  check(await until(`!!document.querySelector('.bscene.intro')`, 3000), 'no intro');
-  await sleep(800); await shot('intro');
-  check(await until(`!!document.querySelector('.bscene.live')`, 15000), 'the battle did not go live after the intro');
-  await until(`document.querySelectorAll('.b-log li').length >= 3`, 15000);
-  await shot('battle');
-  // pause holds the log; play resumes it
-  await click('.b-btn[data-b="pause"]');
-  check(await js(`document.querySelector('.b-btn[data-b="pause"] span').textContent`) === 'Play', 'Pause button did not switch to Play');
-  await sleep(400); const n0 = await logLen(); await sleep(1500);
-  check(await logLen() === n0, 'the battle kept going while paused');
-  await click('.b-btn[data-b="pause"]');
-  check(await until(`document.querySelectorAll('.b-log li').length > ${n0} || !!document.querySelector('.bscene.done')`, 5000), 'the battle did not resume');
-  // fast cycles ×2 → ×4 → off
-  const fast = [];
-  for (let i = 0; i < 3; i++) { await click('.b-btn[data-b="fast"]'); fast.push(await js(`document.querySelector('.b-btn[data-b="fast"] span').textContent`)); }
-  check(fast.join('|') === 'Fast ×2|Fast ×4|Fast', 'Fast button cycle: ' + fast.join(' → '));
-  // log panel
-  await click('.b-logbtn'); check(await js(`!document.querySelector('.b-log').hidden`), 'log did not open'); await click('.b-logbtn');
-  // skip → result; replay → plays again; Esc → editor
-  await click('.b-btn[data-b="skip"]');
-  check(await until(`!!document.querySelector('.bscene.done') && !document.querySelector('.b-result').hidden`, 3000), 'Skip did not show the result');
-  await click('.b-res-btns [data-r="replay"]');
-  check(await until(`!!document.querySelector('.bscene') && !document.querySelector('.bscene.done')`, 3000), 'Replay did not restart');
-  await sleep(500); await key('Escape');
-  check(await until(`document.body.classList.contains('edit') && !document.querySelector('.bscene')`, 3000), 'Esc did not leave the battle');
-};
-
-T.hover = async () => {
-  await open(); await rollTeams(); await startBattle(1);
-  check(await until(`!!document.querySelector('.bscene.live') && document.querySelectorAll('.b-log li').length >= 2`, 20000), 'battle not live');
-  // hover the back pet of the left team (least likely to faint at once)
-  const sel = `.bscene .bpet.side-0:not(.gone)`;
-  const pts = await js(`[...document.querySelectorAll(${JSON.stringify(sel)})].map(e => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.left]; }).sort((a, b) => a[2] - b[2])`);
-  check(pts.length, 'no pet to hover');
-  await mouse(pts[0][0], pts[0][1]);
-  check(await until(`!!document.querySelector('.bscene.held') && !document.querySelector('#tooltip').hidden`, 2000), 'hovering a pet did not hold the fight / show its card');
-  await sleep(400); const n0 = await logLen(); await sleep(1500);
-  const held = await js(`!!document.querySelector('.bscene.held')`);
-  check(!held || await logLen() === n0, 'the battle kept going while a pet was hovered');
-  await shot('hover');
-  await mouse(5, 5);
-  check(await until(`!document.querySelector('.bscene.held')`, 2000), 'moving away did not release the hold');
-  check(await until(`document.querySelectorAll('.b-log li').length > ${n0} || !!document.querySelector('.bscene.done')`, 5000), 'the battle did not continue after the hover');
-};
-
-T.replayLink = async () => {
-  await open(); await rollTeams(); await startBattle(4);
-  check(await until(`!!document.querySelector('.bscene.done')`, 90000, 100), 'battle did not finish');
-  const link = await js(`SAP_SANDBOX.replayLink()`), log = await js(`JSON.stringify(SAP_SANDBOX.lastLog)`);
-  check(/#r=/.test(link), 'no replay link');
-  check(await js(`document.querySelector('.b-res-link input').value`) === link, 'the result screen shows a different link');
-  // a query string makes it a real page load (a hash-only change would not re-run the page)
-  await open(link.replace(/^.*\/index\.html/, BASE + '?replay'), true);
-  check(await until(`document.body.classList.contains('battle') && !!SAP_SANDBOX.lastLog`, 10000), 'the replay link did not start the battle');
-  check(await js(`JSON.stringify(SAP_SANDBOX.lastLog)`) === log, 'the replay link gave a different battle');
-  check(!(await js(`location.hash`)), 'the hash was not cleared after loading the replay');
-};
-
-T.particles = async () => {
-  await open(); await rollTeams(); await startBattle(1);
-  check(await until(`!!document.querySelector('.bscene .b-pfx')`, 5000), 'no particle canvas');
-  // the rocket trail during the intro, then hit sticker pieces after the first attack
-  const painted = `(() => { const c = document.querySelector('.bscene .b-pfx'); if (!c) return 0; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 64) if (d[i] > 20) n++; return n; })()`;
-  check(await until(`${painted} > 50`, 8000, 40), 'no particles drawn during the intro');
-  check(await until(`[...document.querySelectorAll('.b-log li')].some(l => / attack$/.test(l.textContent))`, 30000), 'no attack');
-  check(await until(`${painted} > 20`, 2000, 30), 'no particles drawn on the first hit');
-  await shot('hit');
-  const tex = await js(`(async () => { const names = new Set(['StickerFist.webp', 'StickerHeart.webp', 'MouthOpen.webp']); for (const e of Object.values(SAP_FX_DATA)) for (const s of e.systems) { if (s.tex) names.add(s.tex); for (const sp of (s.uv && s.uv.sprites) || []) names.add(sp.img); }
-    const bad = []; for (const n of names) { const r = await fetch('img/fx/game/' + n); if (!r.ok) bad.push(n); } return { n: names.size, bad }; })()`);
-  check(!tex.bad.length, 'missing FX textures: ' + tex.bad.join(', '));
-  return `${tex.n} FX textures present`;
+// Test Battle sends both teams to the game bridge. fetch is stubbed: one run checks the request, one the help dialog
+// shown when the bridge isn't running.
+T.testBattle = async () => {
+  await open(); await rollTeams();
+  await js(`(() => { window.__sent = null; window.fetch = async (url, o) => { window.__sent = { url, body: JSON.parse(o.body) }; return new Response('{"ok":true}', { status: 200 }); }; })()`);
+  await click('#btn-test');
+  check(await until(`!!window.__sent`, 3000), 'Test Battle did not call the bridge');
+  const v = await js(`({ sent: window.__sent, teams: SAP_SANDBOX.S.teams.map(t => t.filter(Boolean).length) })`);
+  check(v.sent.url === 'http://127.0.0.1:47823/battle', 'wrong bridge URL: ' + v.sent.url);
+  check(v.sent.body.player.length === v.teams[0] && v.sent.body.opponent.length === v.teams[1], 'the request does not carry both teams');
+  const p = v.sent.body.player[0];
+  check(Number.isInteger(p.enum) && p.level >= 1 && p.attack >= 1 && p.health >= 1, 'bad pet in the request: ' + JSON.stringify(p));
+  check(await until(`/Playing in Super Auto Pets/.test(document.querySelector('#toast').textContent)`, 3000), 'no confirmation after sending');
+  await js(`window.fetch = async () => { throw new TypeError('Failed to fetch'); }`);
+  await sleep(300); await click('#btn-test');
+  check(await until(`!document.querySelector('#modal').hidden && /game bridge/.test(document.querySelector('#modal').textContent)`, 3000), 'no help when the bridge is not running');
+  await shot('bridge-help');
+  await key('Escape');
+  return `${v.teams[0]} vs ${v.teams[1]} pets sent`;
 };
 
 T.smallScreen = async () => {
   await viewport(960, 540);
   try {
     await open(); await rollTeams(); await shot('small-editor');
-    await startBattle(2);
-    check(await until(`!!document.querySelector('.bscene.live')`, 15000), 'battle not live on a small screen');
     const k = await js(`document.getElementById('stage').getBoundingClientRect().width`);
     check(Math.abs(k - 960) < 2, `stage should scale to 960 px wide, is ${k}`);
-    await sleep(1500); await shot('small-battle');
-    check(await until(`!!document.querySelector('.bscene.done')`, 90000, 100), 'battle did not finish on a small screen');
   } finally { await viewport(1280, 720); }
 };
 
