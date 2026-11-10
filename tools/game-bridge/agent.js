@@ -125,7 +125,27 @@ function fill(list, pets, side) {
   const f = new NativeFunction(add.readPointer(), 'void', ['pointer', 'pointer', 'pointer'], NF_OPTS);
   pets.forEach((p, i) => { step = `${side} pet ${i + 1} (${JSON.stringify(p)})`; f(list, template(p), add); });
 }
-const BOARD_INTS = ['RollsThisTurn', 'TransformationsThisTurn', 'GoldSpent', 'MaxLevelMinionsSold'];
+const BOARD_INTS = ['RollsThisTurn', 'TransformationsThisTurn', 'GoldSpent', 'MaxLevelMinionsSold', 'MinionsSummonedThisTurn', 'Victories'];
+// the board's pets: BoardModel.Minions is a Grid whose Items list holds a pet (or null) per cell
+function minionsOf(board) {
+  const grid = board.add(fieldOffset(board, 'Minions')).readPointer(); if (grid.isNull()) return [];
+  const list = grid.add(fieldOffset(grid, 'Items')).readPointer(); if (list.isNull()) return [];
+  const arr = list.add(fieldOffset(list, '_items')).readPointer(), n = list.add(fieldOffset(list, '_size')).readS32();
+  const out = [];
+  for (let i = 0; i < n; i++) { const m = arr.add(0x20 + i * 8).readPointer(); if (!m.isNull()) out.push(m); }
+  return out;
+}
+// per-pet values the template can't carry. PopulateBoard puts the n listed pets in slots 5-n .. 4 (x of MinionModel.Point)
+function setPetCounts(board, pets) {
+  for (const m of minionsOf(board)) {
+    const p = pets[m.add(fieldOffset(m, 'Point')).readS32() - (5 - pets.length)];
+    if (p && Number.isInteger(p.spells)) m.add(fieldOffset(m, 'SpellCountsThisTurn')).writeS32(p.spells);
+  }
+}
+// integer BoardModel counters some abilities read (rolls, gold spent, ...): each team's on its own board
+function setBoardInts(board, vals) {
+  for (const [k, v] of Object.entries(vals || {})) if (BOARD_INTS.includes(k) && Number.isInteger(v)) board.add(fieldOffset(board, k)).writeS32(v);
+}
 function buildBoards(spec) {
   step = 'builder'; const bb = pin(call(C.BattleBuilder, 'Test', [], 'pointer', []));
   const pb = call(C.BattleBuilder, 'get_PlayerBoard', ['this'], 'pointer', [bb]);
@@ -136,9 +156,9 @@ function buildBoards(spec) {
   const rnd = pin(api.il2cpp_object_new(C.CoreRandom)); call(C.CoreRandom, '.ctor', ['this', 'int'], 'void', [rnd, spec.seed | 0]);
   step = 'player board'; const p = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [pb, rnd]));
   step = 'opponent board'; const o = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [ob, rnd]));
-  step = 'board counters';
-  // integer BoardModel counters some abilities read (rolls, gold spent, ...), on both boards
-  for (const [k, v] of Object.entries(spec.board || {})) if (BOARD_INTS.includes(k) && Number.isInteger(v)) for (const b of [p, o]) b.add(fieldOffset(b, k)).writeS32(v);
+  const boards = spec.boards || { player: spec.board, opponent: spec.board };
+  step = 'board counters'; setBoardInts(p, boards.player); setBoardInts(o, boards.opponent);
+  step = 'foods eaten'; setPetCounts(p, spec.player); setPetCounts(o, spec.opponent);
   return { p, o };
 }
 

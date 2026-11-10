@@ -131,13 +131,23 @@ def focus_game():
 
 def clean_pet(p):
     out = {"enum": int(p["enum"]), "level": max(1, min(3, int(p.get("level") or 1)))}
-    for k in ("attack", "health", "exp", "mana", "perk"):
+    for k in ("attack", "health", "exp", "mana", "perk", "spells"):
         if p.get(k) is not None:
             out[k] = int(p[k])
     for k in ("attack", "health"):
         if k in out:
             out[k] = max(1, min(100, out[k]))
+    if "spells" in out:
+        out["spells"] = max(0, min(99, out["spells"]))
     return out
+
+
+# BoardModel counters abilities read; each team's go on its own board
+BOARD_KEYS = ("RollsThisTurn", "TransformationsThisTurn", "GoldSpent", "MaxLevelMinionsSold", "MinionsSummonedThisTurn", "Victories")
+
+
+def clean_board(b):
+    return {k: max(0, min(99, int(v))) for k, v in (b or {}).items() if k in BOARD_KEYS and isinstance(v, (int, float))}
 
 
 def play(spec):
@@ -146,7 +156,8 @@ def play(spec):
         raise ValueError("Both teams need at least one pet")
     battle = {"player": teams[0], "opponent": teams[1], "turn": max(1, min(30, int(spec.get("turn") or 1))),
               "seed": int(time.time() * 1000) & 0x7FFFFFFF,
-              "board": {k: max(0, min(99, int(v))) for k, v in (spec.get("board") or {}).items() if isinstance(v, (int, float))}}
+              # "boards": {player, opponent}; an older page sends one "board" for both
+              "boards": {side: clean_board((spec.get("boards") or {}).get(side, spec.get("board"))) for side in ("player", "opponent")}}
     with lock:
         try:
             api = agent()

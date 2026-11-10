@@ -724,12 +724,26 @@
   const BRIDGE = 'http://127.0.0.1:47823';
   const GE = window.SAPGame.data.enums;
   const levelOf = xp => (xp >= 5 ? 3 : xp >= 2 ? 2 : 1);
+  // a pet's own "This turn" value from the pet editor, else the Settings one
+  const own = (p, k) => p && p.ctx && p.ctx[k] != null && p.ctx[k] !== '';
   function bridgeTeam(t) {
     return t.filter(Boolean).map(p => ({
       enum: +GE.minion[p.id], level: levelOf(p.xp || 0), exp: p.xp || 0, attack: p.atk, health: p.hp, mana: p.mana || 0,
       perk: p.perk != null && p.perk !== '' && GE.perk[p.perk] != null ? +GE.perk[p.perk] : null,
+      // foods it ate this turn (MinionModel.SpellCountsThisTurn: Blue Jay, Black Bear, Dung Beetle)
+      spells: +(own(p, 'foodEaten') ? p.ctx.foodEaten : S.settings.foodEaten || 0),
     }));
   }
+  // one team's BoardModel counters (the game copies team 2's into the battle board's Opponent* fields)
+  const BOARD_KEYS = { rolls: 'RollsThisTurn', goldSpent: 'GoldSpent', transforms: 'TransformationsThisTurn', summoned: 'MinionsSummonedThisTurn',
+    lvl3Sold: 'MaxLevelMinionsSold', battles: 'Victories' };
+  function bridgeBoard(t) {
+    const out = {};
+    for (const [k, f] of Object.entries(BOARD_KEYS)) { const p = t.find(x => own(x, k)); out[f] = +(p ? p.ctx[k] : S.settings[k] || 0); }
+    return out;
+  }
+  // the battle has one turn number: a pet's own (Werewolf, Amphisbaena) wins over Settings
+  const bridgeTurn = () => { const p = S.teams.flat().find(x => own(x, 'turn')); return +(p ? p.ctx.turn : S.settings.turn || 1); };
   let sending = false;
   async function testBattle() {
     if (!S.teams[0].some(Boolean) || !S.teams[1].some(Boolean)) { toast('Both teams need at least one pet'); return; }
@@ -742,9 +756,8 @@
       const r = await fetch(BRIDGE + '/battle', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         // both teams are stored front pet first. The game fills the player's board from the end of the list (last pet = front),
         // so team 1 goes back to front; the opponent's board is mirrored by the game and takes front-first order
-        body: JSON.stringify({ player: bridgeTeam(S.teams[0]).reverse(), opponent: bridgeTeam(S.teams[1]), turn: S.settings.turn,
-          // BoardModel counters the game's abilities read
-          board: { RollsThisTurn: S.settings.rolls, TransformationsThisTurn: S.settings.transforms, GoldSpent: S.settings.goldSpent, MaxLevelMinionsSold: S.settings.lvl3Sold } }) });
+        body: JSON.stringify({ player: bridgeTeam(S.teams[0]).reverse(), opponent: bridgeTeam(S.teams[1]), turn: bridgeTurn(),
+          boards: { player: bridgeBoard(S.teams[0]), opponent: bridgeBoard(S.teams[1]) } }) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw Object.assign(new Error(j.error || 'The bridge returned an error'), { bridge: true });
       toast('Playing in Super Auto Pets');
@@ -825,5 +838,5 @@
   document.body.classList.add('edit');
   fit(); setBg(); renderEdit();
   if (S.meta[0].bg !== S.bg && D.bgs.includes(S.bg)) S.meta[0].bg = S.bg;
-  window.SAP_SANDBOX = { S, STATUS, AB, testBattle, bridgeTeam };
+  window.SAP_SANDBOX = { S, STATUS, AB, testBattle, bridgeTeam, bridgeBoard };
 })();

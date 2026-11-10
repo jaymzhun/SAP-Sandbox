@@ -23,5 +23,8 @@ The game window comes to the front and plays the battle.
 Notes:
 
 - Don't play online while the bridge is attached. Close the game, or the bridge window, before going online.
+- "This turn" values (rolls, gold spent, transformations, friends summoned, level 3 pets sold, battles won, turn number,
+  foods each pet ate) come from each pet's editor, or from Settings when left blank. Each team gets its own values.
+  A swallowed pet (White Whale, Sarcastic Fringehead) isn't sent to the game yet.
 - Every battle gets a new random seed, so luck-based abilities can turn out differently each time you press the button.
 - A game update can rename the classes the agent uses. If **Test Battle** reports an error after an update, the agent needs updating.

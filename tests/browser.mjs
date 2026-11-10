@@ -116,7 +116,11 @@ T.testBattle = async () => {
   check(v.sent.body.player.at(-1).enum === v.fronts[0] && v.sent.body.opponent[0].enum === v.fronts[1], 'team order sent to the game is wrong');
   check(v.sent.url === 'http://127.0.0.1:47823/battle', 'wrong bridge URL: ' + v.sent.url);
   check(v.sent.body.player.length === v.teams[0] && v.sent.body.opponent.length === v.teams[1], 'the request does not carry both teams');
+  const bd = v.sent.body.boards;
+  check(bd && ['player', 'opponent'].every(s => Number.isInteger(bd[s].RollsThisTurn) && Number.isInteger(bd[s].GoldSpent)), 'each team needs its own counters: ' + JSON.stringify(bd));
+  check(Number.isInteger(v.sent.body.turn), 'no turn number sent');
   const p = v.sent.body.player[0];
+  check(Number.isInteger(p.spells), 'pets need their foods eaten this turn: ' + JSON.stringify(p));
   check(Number.isInteger(p.enum) && p.level >= 1 && p.attack >= 1 && p.health >= 1, 'bad pet in the request: ' + JSON.stringify(p));
   check(await until(`/Playing in Super Auto Pets/.test(document.querySelector('#toast').textContent)`, 3000), 'no confirmation after sending');
   await js(`window.fetch = async () => { throw new TypeError('Failed to fetch'); }`);
