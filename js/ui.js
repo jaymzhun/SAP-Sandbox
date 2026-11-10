@@ -740,7 +740,9 @@
     toast('Sending the battle to the game…');
     try {
       const r = await fetch(BRIDGE + '/battle', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ player: bridgeTeam(S.teams[0]), opponent: bridgeTeam(S.teams[1]), turn: S.settings.turn,
+        // both teams are stored front pet first. The game fills the player's board from the end of the list (last pet = front),
+        // so team 1 goes back to front; the opponent's board is mirrored by the game and takes front-first order
+        body: JSON.stringify({ player: bridgeTeam(S.teams[0]).reverse(), opponent: bridgeTeam(S.teams[1]), turn: S.settings.turn,
           // BoardModel counters the game's abilities read
           board: { RollsThisTurn: S.settings.rolls, TransformationsThisTurn: S.settings.transforms, GoldSpent: S.settings.goldSpent, MaxLevelMinionsSold: S.settings.lvl3Sold } }) });
       const j = await r.json().catch(() => ({}));

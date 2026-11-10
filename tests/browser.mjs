@@ -110,7 +110,10 @@ T.testBattle = async () => {
   await js(`(() => { window.__sent = null; window.fetch = async (url, o) => { window.__sent = { url, body: JSON.parse(o.body) }; return new Response('{"ok":true}', { status: 200 }); }; })()`);
   await click('#btn-test');
   check(await until(`!!window.__sent`, 3000), 'Test Battle did not call the bridge');
-  const v = await js(`({ sent: window.__sent, teams: SAP_SANDBOX.S.teams.map(t => t.filter(Boolean).length) })`);
+  const v = await js(`({ sent: window.__sent, teams: SAP_SANDBOX.S.teams.map(t => t.filter(Boolean).length),
+    fronts: SAP_SANDBOX.S.teams.map(t => SAP_SANDBOX.bridgeTeam(t)[0].enum) })`);
+  // the game wants team 1 back to front (front pet last) and team 2 front first
+  check(v.sent.body.player.at(-1).enum === v.fronts[0] && v.sent.body.opponent[0].enum === v.fronts[1], 'team order sent to the game is wrong');
   check(v.sent.url === 'http://127.0.0.1:47823/battle', 'wrong bridge URL: ' + v.sent.url);
   check(v.sent.body.player.length === v.teams[0] && v.sent.body.opponent.length === v.teams[1], 'the request does not carry both teams');
   const p = v.sent.body.player[0];
