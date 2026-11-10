@@ -78,12 +78,13 @@ The `Vector3` statics are zero +0x00, one +0x0c, left +0x30 and right +0x3c. DOT
 | Land | `MinionView.DOLand` | DOScale((1.2, 0.8, 1), 0.1) OutQuad and DOLocalMoveY(−0.05, 0.1), each yoyo ×2 |
 | Stat text | `DOBuffAttack/Health`, `DOMana`, `DOLoseAttack/Health` | pet punch 1 (loss 0.7); TMP text DOPunchScale(one·2 or one·0.7, 0.3, 3, 1) |
 | Fumble | `MinionView.DOFumble` | colour red → white 0.5 s; DOPunchPosition(right·0.2, 0.5, 20, 1) |
-| Attack | `TradeAggregator.<TradeAnimation>` | wind-up DOLocalMoveX(−0.15·gap) and DOLocalRotate(±15°), both 200 ms InQuint, relative; release DOLocalMoveX(+0.5·gap, or 0.75) and rotate to 0, 100 ms InQuint; await the hits; back DOLocalMoveX 70 ms Linear |
-| Damage number | `BoardView.DamageMinion` | FxText amount += damage; DOJump(rel (0, 0.5), power 0.2, 1 jump, 0.5 s); lifetime 1 s; hit particles; sounds |
-| Projectile | `BoardView.<PlayProjectileAsync>d__29`, `FxBase.Jump` | source DOPunchScale 1; sprite scale 0 → 0.75 in 0.1 s; DOJump(target, 1.5 ± 0.1, 1, ProjectileDuration) Linear; optional DORotate 360·duration (LocalAxisAdd) |
+| Attack | `TradeAggregator.<TradeAnimation>` | wind-up DOLocalMoveX(−0.15·gap) and DOLocalRotate(±15°), both 200 ms InQuint, relative; release DOLocalMoveX(+0.5·gap, or 0.75) and rotate to 0, 100 ms InQuint; await the hits; back DOLocalMoveX 70 ms Linear. The tween target is a child of the MinionView (+0x50), so the level badge and stats stay put; `TradeAggregator.Run` highlights both pets red (1, 0, 0) |
+| Damage number | `BoardView.DamageMinion` | FxText amount += damage; DOJump(rel (0, 0.5), power 0.2, 1 jump, 0.5 s); lifetime 1 s; SetPunch(true); colour red (1, 0, 0) when the 7th argument is set (DamageRenderer passes 1), else orange (1, 0.56, 0.37), white for a crit; StickerBlast when the splash argument is null, else PlaySplash(it); sounds |
+| Stat set | `BoardView.SetMinionStats` | health lower: camera shake, DamageMinion(\|Δ\|, orange, splash 5 Gas); otherwise not Positive: shake and Gas splash; Positive: Buff splash |
+| Projectile | `BoardView.<PlayProjectileAsync>d__29`, `FxBase.Jump` | source DOPunchScale 1; sprite scale 0 → 0.75 in 0.1 s; DOJump(target, 1.5 ± 0.1, 1, ProjectileDuration) Linear; optional DORotate 360·duration (LocalAxisAdd). Sprite from `SpriteLibrary` (sharedassets1 27847) by Projectile: 0 Rock, 1 SuperRock, 2 Heart, 3 Fist, 4 HeartFist, 5 Chocolate, 9 Gas2g, 10 Coin, 11 ManaPotion, 12 VampireMouth, 15 ManaRock, 16 MouthOpen; Heart / Fist / HeartFist don't spin. A perk's ability uses the perk's sprite (d__24, `PerkAsset.GetSprite`) |
 | Stat gain | `BoardView.GainStat` | FxGain amount += n (scale 0.6); Sequence: DOMove rel (∓0.25, +1) 0.25 s OutBack, interval 0.5 s, DOScale 0 in 0.2 s InQuad |
-| Buff | `GiveMinionBuffRenderer` | projectile, then `BuffAfterFX` (splash, set stat, GainStat, DOBuffAttack / Health), then GiveMinionBuffDelay |
-| Perk | `GiveMinionPerkRenderer`, `BoardView.GiveMinionPerk` | projectile, splash, SetPerk, DOLaunchProjectile (= punch 1), GiveMinionBuffDelay |
+| Buff | `GiveMinionBuffRenderer` | projectile (`ProjectileUtility.GetBuff(attack > 0, health > 0)`), then `BuffAfterFX` (splash, set stat, GainStat, DOBuffAttack / Health), then GiveMinionBuffDelay |
+| Perk | `GiveMinionPerkRenderer`, `BoardView.GiveMinionPerk` | projectile, splash (the renderer passes true: Eats for a positive perk, Debuff for an ailment), SetPerk, DOLaunchProjectile (= punch 1), GiveMinionBuffDelay |
 | Faint | `DestroyMinionRenderer`, `BoardView.DestroyPunch` | kind 0: DOJump to the camera viewport edge ±1 unit, power DestroyPunchJumpPower, duration \|dx\|·0.025 / DestroyPunchSpeedFactor (default ease), trail particles on the same jump, camera Shake 0.5, mascot pose 3; other kinds: `TryDestroyPuff` (puff particles, hide); then DestroyMinionPuffDelay |
 | Faint group | `DestroyAggregator.Run` | each destroy delayed Random.Range(50, 200) ms (0 for kind 0), all awaited together |
 | Summon | `SummonMinionRenderer`, `SummonMinionAsync` | normal: place + DOLaunchProjectile + sound; kind 0: start outside the camera, DOMoveX 0.7 s Linear, DOMoveY +2 in 0.35 s OutQuad then back in 0.35 s InQuad, DOLand; then SummonMinionDelay |
@@ -102,14 +103,16 @@ The `Vector3` statics are zero +0x00, one +0x0c, left +0x30 and right +0x3c. DOT
 | Effect | Prefab (file, path id) | Where the game plays it | Site step |
 |---|---|---|---|
 | StickerBlast | `StickerBlastFX` + Glow (sharedassets2 1065) | `DamageMinion`, at the pet; turned 180° about y for a player pet | damage, remove, ability hits |
-| Smoke | `SmokeFX` + Glow (1098, root scale 2) | `TryDestroyPuff`, `TransformMinion` | transform |
+| Smoke | `SmokeFX` + Glow (1098, root scale 2) | `TryDestroyPuff`, `TransformMinion` | transform, puffed faint |
 | SmokeTrail | `SmokeTrailFX` (1102; world space, 3 particles per unit moved) | `DestroyPunch` (rides the jump); `UIBattleIntro` rocket (Follow offset y −0.5, AutoDestroy 2 s) | faint, intro |
 | Smash | `SmashFX` + StarBurst + Glow (1088) | `DestroyPunch`, at the end point past the screen edge | faint |
 | Mana | `ManaFX` + MagicDust + CenterGlow (1097) | `GiveMinionMana` | mana |
 | Exp / Level | `ExpFX` (1089), `LevelFX` + 4 children (1068) | `GiveMinionExp`: Exp, then Level on a level-up or Exp again | xp |
 | Swallow | `SwallowFX` + Paper (1067) | `CloseMouth` | swallow |
-| Buff | `BuffFX` + Glow (sharedassets1 13293) | `PlaySplash(1)`: `BuffAfterFX`, positive `GiveMinionPerk` | buff, perk |
+| Buff | `BuffFX` + Glow (sharedassets1 13293) | `PlaySplash(1)`: `BuffAfterFX`, positive `GiveMinionPerk` | buff |
 | Debuff | `BuffNegativeFX` + Glow (sharedassets1 13286) | `PlaySplash(2)`: `GiveMinionPerk` for a perk whose `PerkTemplate.Positive` is false | perk (ailment) |
+| Eats | sharedassets1 13289 (sticker pieces) | `PlaySplash(0)`: `GiveMinionPerk` with its last argument set, for a positive perk | perk |
+| Gas | sharedassets1 13267 | `PlaySplash(5)`: `SetMinionStats` when not Positive | stat loss (Skunk) |
 
 `PlaySplash` types: 0 Eats, 1 Buff, 2 Debuff, 3 Ability, 4 PermanentBuff, 5 Gas, 6 SmallBuff. The ParticlesLibrary fields are in that order from +0x20 (sharedassets1 28430). `PerkTemplate.Positive` is at +0x4c, the byte `GiveMinionPerk` tests.
 

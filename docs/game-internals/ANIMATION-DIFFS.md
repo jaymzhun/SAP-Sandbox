@@ -4,28 +4,29 @@ Phase 3 rebuilt `js/battle.js` from the game's render code: `RenderSystems.*`, `
 
 This file lists every place where the site still differs from the game, and why.
 
-**Reference footage has not been compared yet.** That needs recordings of real battles from your game (see the last section). Until then, the items below are only checked against the game code, not against video.
+Since then the site has been compared with a YouTube recording of real battles (see the last section). Where the code couldn't say, the footage decided, and those rows say so.
 
 ## Matches the game code
 
 | Effect | What the site now does (game source) |
 |---|---|
 | Board layout | 120 px per unit (orthographic camera size 3). Slots are 1 unit apart and shifted 0.2 away from the middle, so the front pets sit at 556 / 724 px, centre line y 436 (level3 scene, `BoardView.GetWorldPosition`). The old site had 552 / 728. |
-| Attack | Wind-up 15% of the gap back with a 15° lean (200 ms, InQuint). Lunge 50% of the gap forward while straightening (100 ms, InQuint). The hits play, then a linear 70 ms return (`TradeAggregator.TradeAnimation`). |
+| Attack | Only the sprite moves: the level badge and stats stay in the slot (`TradeAnimation` tweens a child of the MinionView). Both pets get a red outline (`TradeAggregator.Run` → `Highlight(red)`). Wind-up 15% of the gap back with a 15° lean (200 ms, InQuint). Lunge 50% of the gap forward while straightening (100 ms, InQuint). The hits play, then a linear 70 ms return (`TradeAggregator.TradeAnimation`). |
 | Hit shake | `DOShakePosition`: 0.5 s, strength 0.2 units, vibrato 100, randomness 90, fading out (`MinionView.DODamage`). |
-| Damage number | One number per pet that adds up repeated hits. It jumps 0.5 units up with a 0.2-unit hop over 0.5 s (OutQuad) and despawns after 1 s (`BoardView.DamageMinion`). |
-| Projectiles (snipes, buffs, perks) | The source punches. The sprite grows 0 → 0.75 in 0.1 s while jumping to the target: arc 1.5 ± 0.1 units, 400 ms (ProjectileDuration), linear, turning 144° (`PlayProjectileAsync` → `FxBase.Jump`). |
+| Damage number | One number per pet that adds up repeated hits. It jumps 0.5 units up with a 0.2-unit hop over 0.5 s (OutQuad) and despawns after 1 s (`BoardView.DamageMinion`). It punches in from about 2.2× to 1× over 0.22 s (`FxText.SetPunch`; the punch settings aren't in the decompiles, so the numbers are **measured from the footage**). Red for damage, orange for a stat set. |
+| Projectiles (snipes, buffs, perks) | The source punches. The sprite grows 0 → 0.75 in 0.1 s while jumping to the target: arc 1.5 ± 0.1 units, 400 ms (ProjectileDuration), linear, turning 144° (`PlayProjectileAsync` → `FxBase.Jump`). The sprite comes from `SpriteLibrary` by the Projectile value: Rock for damage, Heart / Fist / HeartFist for health / attack / both (`ProjectileUtility.GetBuff`; these don't spin), Gas2g, ManaRock, or none when the ability's ProjectileModel says so. Damage from a perk throws the perk's own sprite (`PerkAsset.GetSprite`). |
 | Stat gain | An attack or health icon showing "+N", added up per pet. It moves (∓0.25, +1) units over 0.25 s (OutBack), holds 0.5 s, then shrinks to 0 over 0.2 s (InQuad). The pet punches (scale 1) and the stat text punches ×2 over 0.3 s (vibrato 3); for losses these are 0.7 (`BuffAfterFX`, `GainStat`, `DOBuffAttack` / `DOLoseAttack`). It is followed by GiveMinionBuffDelay 100 ms. |
 | Punch | `DOPunchScale`: Vector3.one·0.2s over 0.5s seconds, vibrato 10, elasticity 1. It uses DOTween's segment maths (decaying alternating segments, each OutQuad). |
-| Perk gain | Perk sprite projectile, then the pet punches (1), then 100 ms (`GiveMinionPerkRenderer`). |
-| Faint | The pet is punched off the board in an almost flat jump (power 0.05 units) to 1 unit past the screen edge. It takes \|dx\|·0.025 / 0.4 s, about 0.35 s from the front, then DestroyMinionPuffDelay 300 ms (`DestroyPunch`). Faints that happen together play at once (`DestroyAggregator`, WhenAll). The old site used a 700 ms high arc with a 540° spin. |
+| Perk gain | Perk sprite projectile, then the Eats splash (sticker pieces; Debuff for an ailment), the pet punches (1), then 100 ms (`GiveMinionPerkRenderer` → `GiveMinionPerk(…, true)`). |
+| Stat loss (Skunk) | `SetMinionStats` when not Positive: the gas cloud is thrown, the Gas splash plays, the pet shakes and an orange number shows the health lost. The gas projectile is **from the footage**: the default sprite for this path isn't in the decompiles. |
+| Faint | Kill type 0 (attack damage) punches the pet off; anything else puffs it (SmokeFX, then hidden; `DestroyMinionRenderer` / `TryDestroyPuff`). In a trade the TradeAggregator decides and that branch isn't fully readable: **from the footage**, when both front pets die they puff, and when only one dies it's punched. The punch: the pet is punched off the board in an almost flat jump (power 0.05 units) to 1 unit past the screen edge. It takes \|dx\|·0.025 / 0.4 s, about 0.35 s from the front, then DestroyMinionPuffDelay 300 ms (`DestroyPunch`). Faints that happen together play at once (`DestroyAggregator`, WhenAll). The old site used a 700 ms high arc with a 540° spin. |
 | Summon | The pet appears in its slot and punches (scale 1), then SummonMinionDelay 500 ms (`SummonMinionAsync`). The old site added a puff and a pop. |
 | Move | 400 ms (MinionMoveDuration), InOutQuad. The sprite turns dx·8° over the first 70% and springs back with OutBack (overshoot \|angle/5\|) over the last 30% (`MoveMinion`). |
 | Experience | The pet punches (1), then GiveMinionExpDelay 200 ms (`GiveMinionExp`). |
 | Mana | The pet punches (1) and the mana text punches ×2 (`GiveMinionMana` / `DOMana`). |
 | Jump attack | The pet jumps to the target plus ThrowMinion.DestinationOffset (0.35, −0.8): height 1.5, 420 ms, turning −510°, linear (`ThrowMinion`). |
 | Swallow | Lasts 0.3 + \|dx\|·0.04 s (`GetSwallowDuration`). |
-| Ability | The pet's outline is highlighted, then AbilityHighlightDelay 100 ms (`AbilityAggregator`, `MinionView.Highlight`). |
+| Ability | The pet's outline is highlighted green, then AbilityHighlightDelay 100 ms (`AbilityAggregator`, `MinionView.Highlight`). |
 | Intro (RocketLanding) | Each pet rides its rocket to the slot (0.75 s, OutQuad). The rocket shrinks and jumps away (0.25 s + 0.5 s, jump power 1.5). The pet lands with `DOLand`: scale (1.2, 0.8) and dip 0.05 units over 0.1 s OutQuad, then back. |
 | Landing squash | `DOLand` as above. |
 | Font | The game's own `LapsusPro-Bold.ttf`. |
@@ -37,18 +38,17 @@ This file lists every place where the site still differs from the game, and why.
 1. **Particles: what is still approximate or not hooked up.**
    - **Unity runtime details.** `js/fx.js` re-implements Shuriken from Unity's documented behaviour, not from engine code. The details I couldn't read are listed in ANIMATION.md, "Particles": dampen timing, stretched-billboard orientation, sprite aspect and max size.
    - **Draw order.** The particles draw above the pets. The game's sorting layers for pets and particles weren't compared.
-   - **Stat losses.** `buff` steps with negative numbers play the Buff splash, as `BuffAfterFX` does. Some stat losses in the game go through `SetMinionStats`, which plays the Gas splash (type 5), or through `DamageMinion`. I haven't traced which engine events take which path. `remove` steps use the hit effect.
+   - **Stat losses.** Stat sets that aren't Positive now play the Gas path (see the table). Other `buff` steps with negative numbers still play the Buff splash, as `BuffAfterFX` does. `remove` steps use the hit effect.
    - **Rocket trail offset.** The trail follows the rocket 0.5 units below it. The x offset is −0.125 × a value from the intro object that isn't decoded, so the site uses 0.
    - **Not hooked up yet.**
      - CriticalHitFX: the engine log has no critical-hit flag.
      - The Ability splash (`GenericAbility`) and the summon's SoundFX notes: when these play isn't traced.
-     - Eats (sticker pieces), when a perk comes from food.
      - The game's reduced-effects setting, which turns the Buff splash into Eats.
 2. **Ability card bounce.** When an ability fires, the game also pops the pet's ability card (or perk card) beside it (`CardController.BounceAbilityCard` / `BouncePerkCard`; TweenSettings.Cards: scale 0.9 → 1 over 0.4 s OutBack, bounce 0.1 / 0.2 s). The site only highlights the pet. **Decided: keep the highlight only.** The card stays a hover card, which also pauses the fight.
 3. **Screen shake on a punched faint.** `BoardView.Shake(camera, 0.5)` calls `BestCamera.ShakeStart` with a preset that isn't in the decompiles; the Ghidra daemon is down, so I can't decompile more. The site doesn't shake.
 4. **Mascot reaction.** On a faint the game sets the owner's mascot pose 3 (`MascotView.AddPose`). The site's mascots don't react during the fight yet: the pose name for 3 isn't mapped, and the art is the mascot set the site already has.
 5. **Faint vertical offset.** DestroyPunch adds `Random.Range(?)` to the end height. The range arguments were lost in the decompile, so the site uses 0.
-6. **Puff vs punch.** The game punches a pet off when the destroy kind is 0 and puffs it otherwise (`TryDestroyPuff`). The engine log doesn't carry the kind, so every faint is a punch.
+6. **Puff vs punch in trades.** Done (see the table), but the trade rule is read from the footage, not the code.
 7. **Trumpet summons.** Summons of kind 0 (the trumpet / "outside" summon) drop in from off-screen: 0.7 s in x, a 2-unit hop up 0.35 s OutQuad and down 0.35 s InQuad, then DOLand. The log doesn't say which summon kind it is, so all summons use the in-slot punch.
 8. **Jump-attack return.** After the throw the game teleports the pet (ThrowMinion.AfterTeleportDelay 0). Where it teleports to isn't in the decompiled part; the site snaps it back to its slot. The sign of DestinationOffset.x per side is also inferred, and the target is reached 0.35 short.
 9. **Swallow mouth.** The game fires a mouth sprite at the target and closes it (`FireMouth` / `CloseMouth`). The site moves and shrinks the swallowed pet into the swallower over the game's duration, without a mouth sprite.
@@ -69,8 +69,8 @@ This file lists every place where the site still differs from the game, and why.
     - Perk activating: a perk flash plus a punch.
 14. **Text pop-ups.** "Blocked!" and notes are still site text. The game shows these differently, and that path hasn't been read. "+N xp" and "Level up!" are gone: experience now plays the game's Exp / Level particles.
 15. **Result screen.** Not rebuilt: the game's end-of-battle UI is a separate canvas prefab that hasn't been decoded.
-16. **Fast mode.** The game has DefaultTimings and FastTimings slots but ships only one asset, and how its fast mode scales time is unread. The site divides every duration by its speed setting (×2 / ×4).
+16. **Fast mode.** `BattleController.SetFastfoward` sets the time scale to setting × 1.35 + 1, and the reference video was recorded with fast mode on (the dimmed button is the active one). The default speed setting isn't in the files, so the game's fast speed is still unknown. The site divides every duration by its speed setting (×2 / ×4).
 
 ## Reference footage (Phase 3 step 2)
 
-To compare side by side I need recordings of specific battles from your game, with known teams. If you record a few (teams I give you, played in the game), I'll set up the same teams on the site and compare them frame by frame. I can't record the game myself without playing online.
+Compared against https://www.youtube.com/watch?v=YaG_UH8zT6Q (1080p, 30 fps, fast mode on): attacks and numbers throughout; stat gains 0:40; snipes 2:15; perks 3:28; summons 4:36 and 9:26; widespread gains 5:56; ailments 8:06; stat loss (Skunk) 10:50. In fast mode a damage number lives about 0.47 s, which matches the game's 1 s at normal speed.

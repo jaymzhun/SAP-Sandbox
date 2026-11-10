@@ -195,12 +195,12 @@
       });
       e.innerHTML = `
         <div class="bp-lvl"><span class="bp-lv-t">Lvl</span><span class="bp-lv-n"></span><div class="bp-xp"></div></div>
-        <div class="bp-body">
+        <div class="bp-move"><div class="bp-body">
           <img class="bp-sprite" alt="">
           <img class="bp-perk" alt="">
           <img class="bp-band" src="${FX('Bandage')}" alt="">
           <div class="bp-mana"><span></span></div>
-        </div>
+        </div></div>
         <div class="bp-stats"><div class="bp-stat atk"><span></span></div><div class="bp-stat hp"><span></span></div></div>
         <div class="trig"><img src="img/ui/Lightning.webp" alt=""><span></span></div>`;
       update(e, d, true);
@@ -317,21 +317,31 @@
       clearTimeout(e._hl); e._hl = setTimeout(() => e.classList.remove('active'), ms(500));
     }
     // BoardView.DamageMinion: one FxText per pet that adds up repeated damage; it jumps (0, +0.5) with power 0.2 over 0.5 s
-    // (default ease OutQuad) and despawns after 1 s
+    // (default ease OutQuad) and despawns after 1 s. FxText.SetPunch turns on the text's punch component, whose settings are
+    // not in the decompiled code: the reference video shows the number starting at about 2.2× and settling to 1× over
+    // about 0.22 s (ease-in). Colour (FxText.SetColor): red (1, 0, 0) for damage, orange (1, 0.56, 0.37) for a stat set.
+    const NUM_PUNCH = { from: 2.2, ms: 220 };
     function bigNumber(u, n, color = 'red') {
       const q = posOf(u); if (!q) return;
       let f = state.nums.get(u);
-      if (f && f.isConnected) { f._n += n; f.textContent = String(f._n); }
-      else { f = fxEl('b-num ' + color, q[0], q[1], String(n)); f._n = n; state.nums.set(u, f); }
+      if (f && f.isConnected && f._c === color) { f._n += n; f.textContent = String(f._n); }
+      else { f = fxEl('b-num ' + color, q[0], q[1], String(n)); f._n = n; f._c = color; state.nums.set(u, f); }
       clearTimeout(f._t); f._t = setTimeout(() => { f.remove(); if (state.nums.get(u) === f) state.nums.delete(u); }, ms(1000));
-      tween(f, ms(500), k => ({ transform: `translate(-50%,-50%) translateY(${-(0.5 * U * k + jumpY(k, 0.2 * U))}px)` }), EASE.outQuad);
+      const pk = NUM_PUNCH.ms / 500;
+      tween(f, ms(500), (k, t) => {
+        const s = t < pk ? NUM_PUNCH.from - (NUM_PUNCH.from - 1) * EASE.inQuad(t / pk) : 1;
+        const kk = EASE.outQuad(t);
+        return { transform: `translate(-50%,-50%) translateY(${-(0.5 * U * kk + jumpY(kk, 0.2 * U))}px) scale(${s})` };
+      });
     }
     // BoardView.GainStat: an FxGain icon per stat that adds up; moves (∓0.25, +1) over 0.25 s OutBack, waits 0.5 s, shrinks to 0 in 0.2 s InQuad
     function gainIcon(u, which, n) {
       const q = posOf(u); if (!q || !n) return;
       const key = u + ':' + which; let f = state.gains.get(key);
-      if (f && f.isConnected) { f._n += n; f.querySelector('span').textContent = (f._n > 0 ? '+' : '') + f._n; return; }
-      f = fxEl('b-gain ' + which + (n < 0 ? ' neg' : ''), q[0], q[1], `<span>${n > 0 ? '+' : ''}${n}</span>`); f._n = n; state.gains.set(key, f);
+      // the sign sits outside the icon, the number inside it (reference video)
+      const txt = v => `<b>${v < 0 ? '−' : '+'}</b><span>${Math.abs(v)}</span>`;
+      if (f && f.isConnected) { f._n += n; f.innerHTML = txt(f._n); return; }
+      f = fxEl('b-gain ' + which + (n < 0 ? ' neg' : ''), q[0], q[1], txt(n)); f._n = n; state.gains.set(key, f);
       const dx = (which === 'hp' ? 0.25 : -0.25) * U, dy = -U;
       const base = 'translate(-50%,-50%) scale(.6)';
       (async () => {
@@ -349,13 +359,33 @@
     }
     // BoardView.PlayProjectileAsync → FxBase.Jump: the source punches (1), the sprite grows 0 → 0.75 in 0.1 s while it jumps to the
     // target (jump power 1.5 ± 0.1, ProjectileDuration 400 ms, Ease.Linear), spinning 360°·duration
-    async function projectile(fromU, toU, kind, img) {
+    // The sprite comes from SpriteLibrary by the Projectile value (<PlayProjectileAsync>d__23): Damage → Rock, Health → Heart,
+    // Attack → Fist, HealthAndAttack → HeartFist, GasYellow → Gas2g, ManaBurst → ManaRock; stat sprites don't spin. A perk's
+    // ability throws the perk's own sprite (d__24, PerkAsset.GetSprite).
+    const PROJ = { 0: ['Rock', true], 2: ['game/Heart', false], 3: ['game/Fist', false], 4: ['game/HeartFist', false], 9: ['game/Gas2g', true], 15: ['ManaRock', true] };
+    const projImg = p => PROJ[p] ? FX(PROJ[p][0]) : null;
+    // ProjectileUtility.GetBuff(attack > 0, health > 0), else HealthAndAttack
+    const buffProj = (da, dh) => da > 0 && dh > 0 ? 4 : da > 0 ? 3 : dh > 0 ? 2 : 4;
+    // the projectile a step throws: the ability's own ProjectileModel wins, then the perk's sprite, then the default for the kind
+    function stepProj(st, kind, mine) {
+      if (st.proj === 14) return null;                                   // Projectile.None
+      if (st.proj != null && PROJ[st.proj]) return { img: projImg(st.proj), spin: PROJ[st.proj][1] };
+      if (kind === 'hit') return st.perkSrc ? { img: foodImg(st.perkSrc), perk: true, spin: true } : { img: FX(st.mana ? 'ManaRock' : 'Rock'), spin: true };
+      if (kind === 'buff') {
+        const da = mine.reduce((a, s) => a + (s.da || 0), 0), dh = mine.reduce((a, s) => a + (s.dh || 0), 0);
+        // a stat set that isn't Positive (Skunk) throws the gas cloud in the reference video
+        if (st.set && !st.pos && (da < 0 || dh < 0)) return { img: projImg(9), spin: true };
+        return { img: projImg(buffProj(da, dh)), spin: false };
+      }
+      return null;
+    }
+    async function projectile(fromU, toU, kind, img, opts = {}) {
       const a = posOf(fromU), b = posOf(toU);
       if (!a || !b || fromU === toU) return;
       punch(fromU, 1);
-      const p = fxEl('b-proj ' + (img ? 'img ' : '') + (kind || ''), a[0], a[1], img ? `<img src="${img}" alt="">` : '');
+      const p = fxEl('b-proj ' + (img ? 'img ' : '') + (opts.perk ? 'perk ' : '') + (kind || ''), a[0], a[1], img ? `<img src="${img}" alt="">` : '');
       const dx = b[0] - a[0], dy = b[1] - a[1], power = (1.5 + (Math.random() * .2 - .1)) * U, dur = T.projectile;
-      const spin = 360 * dur / 1000, grow = 100 / dur;
+      const spin = opts.spin === false ? 0 : 360 * dur / 1000, grow = 100 / dur;
       await tween(p, ms(dur), k => ({ transform: `translate(-50%,-50%) translate(${dx * k}px,${dy * k - jumpY(k, power)}px) rotate(${-spin * k}deg) scale(${.75 * Math.min(1, k / grow)})` }));
       p.remove();
     }
@@ -384,6 +414,22 @@
     }
     // BoardView.DestroyPunch: the pet is punched off the board: DOJump to just past the camera edge (viewport x 0 or 1, then 1 unit
     // further) with jump power DestroyPunchJumpPower 0.05, taking |dx|·0.025 / DestroyPunchSpeedFactor 0.4 seconds (default OutQuad)
+    // BoardView.TryDestroyPuff: the SmokeFX particles at the pet, and the pet is hidden
+    async function puffOut(u) {
+      const e = state.els.get(u); if (!e) return;
+      fx('Smoke', u);
+      state.els.delete(u); e.classList.add('gone'); e.remove();
+    }
+    // Which faint the game plays. DestroyMinionRenderer: kill type 0 (attack damage) → DestroyPunch, anything else → puff.
+    // Inside a trade the TradeAggregator decides, and that branch is only partly readable; the reference video shows both
+    // front pets puffing when they knock each other out and the lone loser being punched off when only one dies.
+    function faintKind(st, grp) {
+      if (st.dt) return 'puff';
+      const tr = state.trade;
+      if (tr && tr.includes(st.tgt) && tr.every(u => grp.some(x => x.tgt === u && !x.dt))) return 'puff';
+      return 'punch';
+    }
+    const destroyOut = (st, grp) => faintKind(st, grp) === 'puff' ? puffOut(st.tgt) : faintOut(st.tgt);
     async function faintOut(u) {
       const e = state.els.get(u); if (!e) return;
       state.els.delete(u); e.classList.add('gone');
@@ -473,20 +519,34 @@
       const tgts = [...new Set(grp.map(st => st.tgt))];
       await Promise.all(tgts.filter(t => t !== grp[0].src).map(t => {
         const pk = kind === 'perk' ? grp.find(st => st.tgt === t).perk : null;
-        if (kind === 'hit') return projectile(grp[0].src, t, 'rock', FX(grp.find(st => st.tgt === t).mana ? 'ManaRock' : 'Rock'));
-        return projectile(grp[0].src, t, kind === 'buff' ? 'heal' : '', pk ? foodImg(pk) : undefined);
+        const mine = grp.filter(st => st.tgt === t);
+        if (kind === 'hit' || kind === 'buff') { const pj = stepProj(mine[0], kind, mine); return pj ? projectile(grp[0].src, t, kind === 'hit' ? 'rock' : 'heal', pj.img, pj) : null; }
+        return projectile(grp[0].src, t, '', pk ? foodImg(pk) : undefined, { perk: true });
       }));
       if (my !== gen || !root) throw STALE;
       render(grp[grp.length - 1].snap);
       for (const t of tgts) {
         const mine = grp.filter(st => st.tgt === t);
         if (kind === 'hit') { hitFx(t); shake(t); const n = mine.reduce((a, st) => a + (st.kind === 'damage' ? st.n : -(st.dh || 0)), 0); if (n) { bigNumber(t, n); statPunch(t, 'hp', 0.7); } }
-        else if (kind === 'buff') { splash(t, 'Buff'); buffFx(t, mine.reduce((a, st) => a + (st.da || 0), 0), mine.reduce((a, st) => a + (st.dh || 0), 0)); }
+        else if (kind === 'buff') statFx(t, mine);
         else if (kind === 'perk') { const pk = (mine.find(st => st.perk) || {}).perk; if (pk) splash(t, perkSplash(pk)); punch(t, 1); }
       }
       await W(kind === 'hit' ? 130 : T.buffDelay);
     }
-    const perkSplash = pk => (ctx.perkPositive ? ctx.perkPositive(pk) : true) ? 'Buff' : 'Debuff';
+    // BoardView.GiveMinionPerk with its last argument set (GiveMinionPerkRenderer always passes it): a perk plays the Eats
+    // splash (the sticker pieces), an ailment Debuff
+    const perkSplash = pk => (ctx.perkPositive ? ctx.perkPositive(pk) : true) ? 'Eats' : 'Debuff';
+    // BoardView.SetMinionStats: a health loss shakes the pet and shows an orange FxText with the Gas splash; any other
+    // non-Positive change shakes it with the Gas splash; a Positive one plays Buff. The stat icons rise as in BuffAfterFX.
+    function statFx(u, mine) {
+      const da = mine.reduce((a, st) => a + (st.da || 0), 0), dh = mine.reduce((a, st) => a + (st.dh || 0), 0);
+      const loss = mine.some(st => st.set && !st.pos);
+      if (!loss) { splash(u, 'Buff'); buffFx(u, da, dh); return; }
+      splash(u, 'Gas'); shake(u);
+      if (dh < 0) { bigNumber(u, -dh, 'orange'); statPunch(u, 'hp', 0.7); }
+      if (da) { gainIcon(u, 'atk', da); statPunch(u, 'atk', da > 0 ? 2 : 0.7); }
+      if (dh > 0) { gainIcon(u, 'hp', dh); statPunch(u, 'hp', 2); }
+    }
     // BoardView.BuffAfterFX: the stat changes, its FxGain icon rises, the pet punches (1, or 0.7 for a loss) and so does the stat text
     function buffFx(u, da, dh) {
       if (da) { gainIcon(u, 'atk', da); statPunch(u, 'atk', da > 0 ? 2 : 0.7); }
@@ -496,7 +556,7 @@
     async function faintAll(grp, my) {
       await attackBack();
       for (const st of grp) logLine(describe(st));
-      await Promise.all(grp.map(st => faintOut(st.tgt)));
+      await Promise.all(grp.map(st => destroyOut(st, grp)));
       if (my !== gen || !root) throw STALE;
       render(grp[grp.length - 1].snap);
       await wait(ms(T.puffDelay));
@@ -506,6 +566,7 @@
     async function attackBack() {
       const pb = state.pendingBack; if (!pb) return; state.pendingBack = null;
       await Promise.all(pb.map(([e, x]) => e.isConnected ? tween(e, ms(T.back), k => ({ transform: `translateX(${x * (1 - k)}px)` })).then(() => { e.style.transform = ''; }) : null));
+      for (const [e] of pb) { const p = e.closest('.bpet'); if (p) p.classList.remove('attacking'); }
     }
     async function step(st, my) {
       const sp = state.speed, W = ms => wait(ms / sp).then(() => { if (my !== gen || !root) throw STALE; });
@@ -519,9 +580,14 @@
         case 'attack': {
           // TradeAggregator.TradeAnimation: wind-up back 15% of the gap with a 15° lean (200 ms InQuint), then forward 50% of the
           // gap while straightening (100 ms InQuint); the hits play, then attackBack() returns them
-          const a = state.els.get(st.a), b = state.els.get(st.b);
+          // TradeAggregator.Run highlights both pets red; TradeAnimation tweens a child of the MinionView (+0x50), so only the
+          // sprite moves and the level badge and stats stay in the slot
+          const a0 = state.els.get(st.a), b0 = state.els.get(st.b);
+          state.trade = [st.a, st.b];
+          const a = a0 && a0.querySelector('.bp-move'), b = b0 && b0.querySelector('.bp-move');
           if (a && b) {
-            const dist = Math.abs(parseFloat(b.style.left) - parseFloat(a.style.left));
+            a0.classList.add('attacking'); b0.classList.add('attacking');
+            const dist = Math.abs(parseFloat(b0.style.left) - parseFloat(a0.style.left));
             const lunge = async (e, dir) => {
               await tween(e, ms(T.windup), k => ({ transform: `translateX(${-dir * .15 * dist * k}px) rotate(${-dir * T.attackRot * k}deg)` }), EASE.inQuint);
               await tween(e, ms(T.release), k => ({ transform: `translateX(${dir * dist * (-.15 + .5 * k)}px) rotate(${-dir * T.attackRot * (1 - k)}deg)` }), EASE.inQuint);
@@ -536,6 +602,7 @@
         case 'jump': {
           // BoardView.ThrowMinion: DOLocalJump to the target plus ThrowMinion.DestinationOffset (0.35, −0.8), height 1.5,
           // 420 ms, turning −510° (Ease.Linear); the pet is then teleported back (AfterTeleportDelay 0)
+          state.trade = null;
           const a = state.els.get(st.src), q = posOf(st.tgt), p0 = posOf(st.src);
           if (a && q && p0) {
             const dir = sideOf(st.src) === 0 ? 1 : -1;
@@ -546,19 +613,19 @@
           break;
         }
         case 'damage': {
-          if (st.dk !== 'attack' && st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX(st.mana ? 'ManaRock' : 'Rock'));
+          if (st.dk !== 'attack' && st.src && st.src !== st.tgt) { const pj = stepProj(st, 'hit', [st]); if (pj) await projectile(st.src, st.tgt, 'rock', pj.img, pj); }
           hitFx(st.tgt); shake(st.tgt); bigNumber(st.tgt, st.n); statPunch(st.tgt, 'hp', 0.7);
           render(st.snap); await W(st.dk === 'attack' ? 120 : 130); break;
         }
         case 'remove': {
-          if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'rock', FX('Rock'));
+          if (st.src && st.src !== st.tgt) { const pj = stepProj(st, 'hit', [st]); if (pj) await projectile(st.src, st.tgt, 'rock', pj.img, pj); }
           hitFx(st.tgt); shake(st.tgt); if (st.dh) { bigNumber(st.tgt, -st.dh); statPunch(st.tgt, 'hp', 0.7); }
           render(st.snap); await W(130); break;
         }
         case 'block': floatText(st.tgt, 'Blocked!', 'block'); render(st.snap); await W(220); break;
         case 'buff': {
-          if (st.src && st.src !== st.tgt) await projectile(st.src, st.tgt, 'heal');
-          render(st.snap); splash(st.tgt, 'Buff'); buffFx(st.tgt, st.da || 0, st.dh || 0);
+          if (st.src && st.src !== st.tgt) { const pj = stepProj(st, 'buff', [st]); if (pj) await projectile(st.src, st.tgt, 'heal', pj.img, pj); }
+          render(st.snap); statFx(st.tgt, [st]);
           await W(T.buffDelay); break;
         }
         case 'perk':
@@ -567,7 +634,7 @@
           render(st.snap); if (st.perk) { splash(st.tgt, perkSplash(st.perk)); punch(st.tgt, 1); } await W(T.buffDelay); break;
         case 'perkfx': { const e = state.els.get(st.src); if (e) flash(e.querySelector('.bp-perk')); punch(st.src, 1); render(st.snap); await W(T.abilityHighlight); break; }
         // DestroyMinionRenderer: DestroyPunch, then DestroyMinionPuffDelay 300 ms
-        case 'faint': await faintOut(st.tgt); render(st.snap); await W(T.puffDelay); break;
+        case 'faint': await destroyOut(st, [st]); render(st.snap); await W(T.puffDelay); break;
         // SummonMinionRenderer: placed and punched (in render), then SummonMinionDelay 500 ms
         case 'summon': render(st.snap); await W(T.summonDelay); break;
         case 'summonfail': break;
@@ -616,7 +683,7 @@
 
     async function play(log, meta) {
       const my = ++gen;
-      state.log = log; state.meta = meta; state.i = 0; state.els = new Map(); state.names = new Map(); state.nums = new Map(); state.gains = new Map(); state.pendingBack = null; state.playing = true;
+      state.log = log; state.meta = meta; state.i = 0; state.els = new Map(); state.names = new Map(); state.nums = new Map(); state.gains = new Map(); state.pendingBack = null; state.trade = null; state.playing = true;
       if (meta.speed) state.speed = meta.speed;
       build(meta);
       try {
@@ -646,7 +713,7 @@
       $r('.b-fade').classList.add('out'); $r('.b-intro').classList.add('out');
       root.querySelectorAll('.b-mascot').forEach(m => m.classList.add('in'));
       $r('.b-arena').innerHTML = ''; $r('.b-fx').innerHTML = ''; if (PFX) PFX.clear();
-      state.els = new Map(); state.names = new Map(); state.nums = new Map(); state.gains = new Map(); state.pendingBack = null;
+      state.els = new Map(); state.names = new Map(); state.nums = new Map(); state.gains = new Map(); state.pendingBack = null; state.trade = null;
       const L = $r('.b-log ol'); L.innerHTML = '';
       for (const st of state.log) { if (st.snap) st.snap.t.forEach((t, s) => t.forEach(d => state.names.set(d.u, { id: d.id, side: s }))); const h = describe(st); if (h) L.append(el('li', '', h)); }
       if (L.lastElementChild) L.lastElementChild.classList.add('cur');
