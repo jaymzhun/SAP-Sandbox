@@ -74,11 +74,20 @@ def agent():
 
 
 def scene(api, timeout):
-    """The current scene name, waiting for a frame to run it (None if no frame ran in time)."""
+    """The current scene name, waiting for a frame to run it (None if no frame ran in time).
+    Raises frida.InvalidOperationError if the game was closed."""
     box = {}
-    th = threading.Thread(target=lambda: box.setdefault("v", api.scene()), daemon=True)
+
+    def run():
+        try:
+            box["v"] = api.scene()
+        except Exception as e:
+            box["e"] = e
+    th = threading.Thread(target=run, daemon=True)
     th.start()
     th.join(timeout)
+    if "e" in box:
+        raise box["e"]
     return box.get("v")
 
 
@@ -86,6 +95,8 @@ def wait_ready(api):
     """Waits until the game has finished starting up (the menu or a battle is showing)."""
     t = time.time()
     while time.time() - t < 150:
+        if state["session"] is None or state["session"].is_detached:
+            raise frida.InvalidOperationError("the game was closed")
         s = scene(api, 5)
         if s in ("Menu", "Battle", "Build"):
             return s
@@ -142,7 +153,7 @@ def play(spec):
             wait_ready(api)
             state["status"] = "starting the battle"
             api.play_battle(battle)
-        except frida.InvalidOperationError:
+        except (frida.InvalidOperationError, frida.ProcessNotFoundError):
             detach()  # the game was closed; try once more with a fresh start
             api = agent()
             wait_ready(api)
