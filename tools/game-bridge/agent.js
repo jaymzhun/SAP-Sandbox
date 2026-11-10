@@ -25,8 +25,8 @@ fn('il2cpp_object_get_class', 'pointer', ['pointer']);
 fn('il2cpp_string_chars', 'pointer', ['pointer']);
 fn('il2cpp_string_length', 'int', ['pointer']);
 fn('il2cpp_gc_wbarrier_set_field', 'void', ['pointer', 'pointer', 'pointer']);
-fn('il2cpp_gchandle_new', 'uint32', ['pointer', 'bool']);
-fn('il2cpp_gchandle_free', 'void', ['uint32']);
+fn('il2cpp_gchandle_new', 'pointer', ['pointer', 'bool']);  // Il2CppGCHandle is pointer-sized in Unity 6
+fn('il2cpp_gchandle_free', 'void', ['pointer']);
 
 // game methods: managed exceptions unwind through IL2CPP's own (C++) handlers
 const NF_OPTS = { exceptions: 'propagate' };
@@ -119,22 +119,24 @@ function template(p) {
   opt('set_Attack', p.attack); opt('set_Health', p.health); opt('set_Perk', p.perk); opt('set_Exp', p.exp); opt('set_Mana', p.mana);
   return t;
 }
-function fill(list, pets) {
+let step = '';
+function fill(list, pets, side) {
   const lk = api.il2cpp_object_get_class(list), add = method(lk, 'Add', 1);
   const f = new NativeFunction(add.readPointer(), 'void', ['pointer', 'pointer', 'pointer'], NF_OPTS);
-  for (const p of pets) f(list, template(p), add);
+  pets.forEach((p, i) => { step = `${side} pet ${i + 1} (${JSON.stringify(p)})`; f(list, template(p), add); });
 }
 const BOARD_INTS = ['RollsThisTurn', 'TransformationsThisTurn', 'GoldSpent', 'MaxLevelMinionsSold'];
 function buildBoards(spec) {
-  const bb = pin(call(C.BattleBuilder, 'Test', [], 'pointer', []));
+  step = 'builder'; const bb = pin(call(C.BattleBuilder, 'Test', [], 'pointer', []));
   const pb = call(C.BattleBuilder, 'get_PlayerBoard', ['this'], 'pointer', [bb]);
   const ob = call(C.BattleBuilder, 'get_OpponentBoard', ['this'], 'pointer', [bb]);
-  fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [pb]), spec.player);
-  fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [ob]), spec.opponent);
-  call(C.BattleBuilder, 'SetTurn', ['this', 'int'], 'pointer', [bb, spec.turn || 1]);
+  fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [pb]), spec.player, 'player');
+  fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [ob]), spec.opponent, 'opponent');
+  step = 'turn'; call(C.BattleBuilder, 'SetTurn', ['this', 'int'], 'pointer', [bb, spec.turn || 1]);
   const rnd = pin(api.il2cpp_object_new(C.CoreRandom)); call(C.CoreRandom, '.ctor', ['this', 'int'], 'void', [rnd, spec.seed | 0]);
-  const p = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [pb, rnd]));
-  const o = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [ob, rnd]));
+  step = 'player board'; const p = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [pb, rnd]));
+  step = 'opponent board'; const o = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [ob, rnd]));
+  step = 'board counters';
   // integer BoardModel counters some abilities read (rolls, gold spent, ...), on both boards
   for (const [k, v] of Object.entries(spec.board || {})) if (BOARD_INTS.includes(k) && Number.isInteger(v)) for (const b of [p, o]) b.add(fieldOffset(b, k)).writeS32(v);
   return { p, o };
@@ -148,7 +150,8 @@ rpc.exports = {
       classes();
       for (const h of handles) api.il2cpp_gchandle_free(h);
       handles = [];
-      const { p, o } = buildBoards(spec);
+      let p, o;
+      try { ({ p, o } = buildBoards(spec)); } catch (e) { throw new Error(`building the teams failed at ${step}: ${e.message}`); }
       const d = pin(api.il2cpp_object_new(C.DebugBoardModel)); call(C.DebugBoardModel, '.ctor', ['this'], 'void', [d]);
       setField(d, 'Board', p); setField(d, 'OpponentBoard', o);
       setStatic(C.Memory, 'Battle', NULL); setStatic(C.Memory, 'DebugBoard', d);
