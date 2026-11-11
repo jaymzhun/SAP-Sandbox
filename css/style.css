@@ -434,11 +434,6 @@ body.battle .tname { pointer-events: none; }
 .b-res-btns .obtn { font-size: 24px; padding: 10px 22px 14px; }
 body.battle #topbar, body.battle .team-head, body.battle #arena, body.battle #trumpets, body.battle #phase, body.battle #battlebar, body.battle #logpanel, body.battle #result { display: none !important; }
 
-.mascotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
-.mascotcell { background: #fff7e8; border-radius: 12px; box-shadow: 0 0 0 2px #1d1a17; aspect-ratio: 1; display: grid; place-items: center; cursor: pointer; }
-.mascotcell img { width: 86%; height: 86%; object-fit: contain; }
-.mascotcell.on { box-shadow: 0 0 0 4px var(--orange), 0 0 0 7px #1d1a17; background: #ffe9a8; }
-.team-tools .sbtn[data-act="look"] img { width: 40px; height: 40px; }
 /* result layout tuned to the game's proportions */
 .b-result { display: block; }
 .b-result.in { background: rgba(8,6,12,.72); }
