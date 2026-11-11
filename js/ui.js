@@ -182,7 +182,7 @@
   const toStage = (cx, cy) => { const r = stage.getBoundingClientRect(); return [(cx - r.left) / scale, (cy - r.top) / scale]; };
 
   // ------------------------------------------------------------------ geometry
-  const PET_W = 104, PET_H = 150, TOP = 300;
+  const PET_W = 104, PET_H = 150, TOP = 255; // pets stand on the path like in the game (feet about 3/4 down it)
   const slotX = (side, i) => (side === 0 ? 578 - i * 114 : 702 + i * 114) - PET_W / 2;
   const center = (side, i) => [slotX(side, i) + PET_W / 2, TOP + 70];
 
