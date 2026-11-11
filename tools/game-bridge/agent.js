@@ -109,7 +109,7 @@ function classes() {
     'Spacewood.Core.Models.CoreRandom', 'Spacewood.Unity.Model.DebugBoardModel', 'Spacewood.Unity.Memory', 'Spacewood.Unity.Utilities.SceneU']) C[n.split('.').pop()] = cls(n);
   C.ok = true;
 }
-// a pet: { enum, level, attack, health, perk, exp, mana } (game enum values)
+// a pet: { enum, level, attack, health, perk, exp, mana } (game enum values); null is an empty slot
 function template(p) {
   const T = C.MinionParsingTemplate, t = api.il2cpp_object_new(T);
   call(T, '.ctor', ['this'], 'void', [t]);
@@ -123,7 +123,7 @@ let step = '';
 function fill(list, pets, side) {
   const lk = api.il2cpp_object_get_class(list), add = method(lk, 'Add', 1);
   const f = new NativeFunction(add.readPointer(), 'void', ['pointer', 'pointer', 'pointer'], NF_OPTS);
-  pets.forEach((p, i) => { step = `${side} pet ${i + 1} (${JSON.stringify(p)})`; f(list, template(p), add); });
+  pets.forEach((p, i) => { step = `${side} pet ${i + 1} (${JSON.stringify(p)})`; f(list, p ? template(p) : NULL, add); });
 }
 const BOARD_INTS = ['RollsThisTurn', 'TransformationsThisTurn', 'GoldSpent', 'MaxLevelMinionsSold', 'MinionsSummonedThisTurn', 'Victories'];
 // the board's pets: BoardModel.Minions is a Grid whose Items list holds a pet (or null) per cell

@@ -151,8 +151,9 @@ def clean_board(b):
 
 
 def play(spec):
-    teams = [[clean_pet(p) for p in spec.get(side) or []][:5] for side in ("player", "opponent")]
-    if not teams[0] or not teams[1]:
+    # five slots per side; None is an empty slot, kept so the game plays the gap
+    teams = [[clean_pet(p) if p else None for p in spec.get(side) or []][:5] for side in ("player", "opponent")]
+    if not any(teams[0]) or not any(teams[1]):
         raise ValueError("Both teams need at least one pet")
     battle = {"player": teams[0], "opponent": teams[1], "turn": max(1, min(30, int(spec.get("turn") or 1))),
               "seed": int(time.time() * 1000) & 0x7FFFFFFF,
@@ -223,8 +224,16 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class Server(ThreadingHTTPServer):
+    # on Windows, address reuse lets a second bridge bind the same port and silently share requests with an old one
+    allow_reuse_address = False
+
+
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    try:
+        server = Server(("127.0.0.1", PORT), Handler)
+    except OSError:
+        sys.exit("The game bridge is already running in another window. Close that window first, then start this one again.")
     print(f"Game bridge running on http://127.0.0.1:{PORT}  (Ctrl+C to stop)")
     print("Press 'Test Battle' in the sandbox to play the teams in Super Auto Pets.", flush=True)
     if "--open" in sys.argv:
