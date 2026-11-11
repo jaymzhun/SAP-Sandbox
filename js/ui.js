@@ -143,13 +143,12 @@
   const S = {
     teams: [Array(5).fill(null), Array(5).fill(null)],
     names: ['Team 1', 'Team 2'],
-    meta: [{ player: 'Player 1', mascot: 'Tyrannosaurus', bg: 'FieldBattle', trophies: 0, lives: 5 }, { player: 'Player 2', mascot: 'Bee', bg: 'FrontYardBattle', trophies: 0, lives: 5 }],
     bg: 'FieldBattle',
     settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, summoned: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
     rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
   };
   let perkQuery = '';
-  function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, settings: S.settings, rnd: S.rnd })); } catch (e) { } }
+  function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, bg: S.bg, settings: S.settings, rnd: S.rnd })); } catch (e) { } }
   function load() {
     let st = null;
     try { if (/^#[tr]=/.test(location.hash)) st = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(3))))); } catch (e) { }
@@ -157,7 +156,6 @@
     if (st) {
       if (st.teams) S.teams = st.teams.map(t => Array.from({ length: 5 }, (_, i) => (t[i] && D.pets[t[i].id] ? t[i] : null)));
       if (st.names) S.names = st.names;
-      if (st.meta) st.meta.forEach((m, k) => { if (m && S.meta[k]) Object.assign(S.meta[k], m); if (!D.bgs.includes(S.meta[k].bg)) S.meta[k].bg = 'FieldBattle'; });
       if (st.bg && D.bgs.includes(st.bg)) S.bg = st.bg;
       if (st.settings) Object.assign(S.settings, st.settings);
       if (st.rnd) Object.assign(S.rnd, st.rnd);
@@ -256,7 +254,6 @@
       }
     }
     $$('.tname').forEach((n, k) => { if (document.activeElement !== n) n.textContent = S.names[k]; });
-    $$('.sbtn[data-act="look"]').forEach(b => { $('img', b).src = `img/mascot/${S.meta[+b.dataset.side].mascot}_Battle.webp`; });
     save();
   }
 
@@ -698,8 +695,8 @@
 
   // ------------------------------------------------------------------ settings / bg / share
   function openSettings() {
-    openModal('form', p => {
-      p.append(el('div', { class: 'head' }, el('h2', {}, 'Battle settings')));
+    openModal('form bgsize', p => {
+      p.append(el('div', { class: 'head' }, el('h2', {}, 'Settings')));
       const body = el('div', { class: 'body' });
       const o = S.settings;
       const num = (key, min, max) => { const i = el('input', { type: 'number', min, max, value: o[key], style: 'width:90px' }); i.addEventListener('change', () => { o[key] = Math.max(min, Math.min(max, +i.value | 0)); i.value = o[key]; save(); }); return i; };
@@ -712,6 +709,15 @@
         row('Gold spent this turn', 'For Meerkat', num('goldSpent', 0, 40)),
         row('Friends summoned this turn', 'For Night Crawler', num('summoned', 0, 20)),
         row('Level 3 pets sold', 'For Jersey Devil', num('lvl3Sold', 0, 10)));
+      // the sandbox's background
+      body.append(el('div', { class: 'section-title', style: 'margin-top:10px' }, 'Background'));
+      const g = el('div', { class: 'bggrid' });
+      for (const b of D.bgs) {
+        const c = el('div', { class: 'bgcell' + (b === S.bg ? ' on' : ''), style: `background-image:url('img/bg/${b}.webp')` }, el('span', {}, b.replace(/Battle$/, '').replace(/([a-z])([A-Z])/g, '$1 $2')));
+        c.addEventListener('click', () => { S.bg = b; setBg(); save(); $$('.bgcell', g).forEach(x => x.classList.toggle('on', x === c)); });
+        g.append(c);
+      }
+      body.append(g);
       p.append(body);
       const built = window.SAP_BUILD && new Date(window.SAP_BUILD);
       if (built && !isNaN(built)) {
@@ -722,21 +728,9 @@
     });
   }
   function setBg() { $('#bg').style.backgroundImage = `url('img/bg/${S.bg}.webp')`; document.body.classList.toggle('bg-white', S.bg === 'WhiteBattle'); }
-  function openBg() {
-    openModal('form bgsize', p => {
-      p.append(el('div', { class: 'head' }, el('h2', {}, 'Scene')));
-      const body = el('div', { class: 'body' }); const g = el('div', { class: 'bggrid' });
-      for (const b of D.bgs) {
-        const c = el('div', { class: 'bgcell' + (b === S.bg ? ' on' : ''), style: `background-image:url('img/bg/${b}.webp')` }, el('span', {}, b.replace(/Battle$/, '').replace(/([a-z])([A-Z])/g, '$1 $2')));
-        c.addEventListener('click', () => { S.bg = b; setBg(); save(); $$('.bgcell', g).forEach(x => x.classList.toggle('on', x === c)); });
-        g.append(c);
-      }
-      body.append(g); p.append(body);
-    });
-  }
   function share() {
     // settings travel with the link: shared values like gold spent live only there
-    const st = { teams: S.teams, names: S.names, bg: S.bg, meta: S.meta, settings: S.settings };
+    const st = { teams: S.teams, names: S.names, bg: S.bg, settings: S.settings };
     const h = '#t=' + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
     history.replaceState(null, '', h);
     const url = location.href;
@@ -825,50 +819,15 @@
   }
   const bridgeHelp = () => openGuide(true);
 
-  // ------------------------------------------------------------------ team settings (player, mascot, background, trophies, lives)
-  const MASCOTS = ['Tyrannosaurus', 'Bee', 'BlueBird', 'BlueWhale', 'Bulldog', 'Capybara', 'Cat', 'Chameleon', 'Chicken', 'Crane', 'Crow', 'Dolphin', 'Donkey', 'Dove', 'Frog',
-    'Jellyfish', 'Lion', 'Lobster', 'Ox', 'Panda', 'Parrot', 'Penguin', 'Racoon', 'RedPanda', 'Shark', 'Sheep', 'Snail', 'Starfish', 'Swordfish', 'Turtle', 'None'];
-  function openTeamSettings(side) {
-    const m = S.meta[side];
-    openModal('form bgsize', p => {
-      p.append(el('div', { class: 'head' }, el('h2', {}, `${S.names[side]} — battle look`)));
-      const body = el('div', { class: 'body' });
-      const row = (label, sub, ctl) => el('div', { class: 'frow' }, el('div', {}, label, sub ? el('small', {}, sub) : null), ctl);
-      const txt = (key, max) => { const i = el('input', { type: 'text', value: m[key], maxlength: max, class: 'search', style: 'flex:0 0 260px' }); i.addEventListener('input', () => { m[key] = i.value.slice(0, max); save(); }); return i; };
-      const num = (key, min, max) => { const i = el('input', { type: 'number', min, max, value: m[key], style: 'width:90px' }); i.addEventListener('change', () => { m[key] = Math.max(min, Math.min(max, +i.value | 0)); i.value = m[key]; save(); }); return i; };
-      body.append(row('Player name', 'Shown on the name plate', txt('player', 18)),
-        row('Trophies', 'Shown on the name plate and result screen', num('trophies', 0, 9)),
-        row('Lives', null, num('lives', 1, 10)));
-      body.append(el('div', { class: 'section-title', style: 'margin-top:10px' }, 'Mascot'));
-      const mg = el('div', { class: 'mascotgrid' });
-      for (const k of MASCOTS) {
-        const c = el('div', { class: 'mascotcell' + (m.mascot === k ? ' on' : ''), title: k }, el('img', { src: `img/mascot/${k}_Battle.webp`, alt: k, loading: 'lazy' }));
-        c.addEventListener('click', () => { m.mascot = k; save(); $$('.mascotcell', mg).forEach(x => x.classList.toggle('on', x === c)); });
-        mg.append(c);
-      }
-      body.append(mg);
-      body.append(el('div', { class: 'section-title', style: 'margin-top:10px' }, 'Battle background'));
-      const g = el('div', { class: 'bggrid' });
-      for (const b of D.bgs) {
-        const c = el('div', { class: 'bgcell' + (b === m.bg ? ' on' : ''), style: `background-image:url('img/bg/${b}.webp')` }, el('span', {}, b.replace(/Battle$/, '').replace(/([a-z])([A-Z])/g, '$1 $2')));
-        c.addEventListener('click', () => { m.bg = b; if (side === 0) { S.bg = b; setBg(); } save(); $$('.bgcell', g).forEach(x => x.classList.toggle('on', x === c)); });
-        g.append(c);
-      }
-      body.append(g); p.append(body);
-    });
-  }
-
   // ------------------------------------------------------------------ wiring
   $('#btn-test').addEventListener('click', testBattle);
-  $('#btn-swap').addEventListener('click', () => { S.teams.reverse(); S.names.reverse(); S.meta.reverse(); S.bg = S.meta[0].bg; setBg(); renderEdit(); });
+  $('#btn-swap').addEventListener('click', () => { S.teams.reverse(); S.names.reverse(); renderEdit(); });
   $('#btn-settings').addEventListener('click', openSettings);
-  $('#btn-bg').addEventListener('click', () => openTeamSettings(0));
   $('#btn-share').addEventListener('click', share);
   $('#btn-help').addEventListener('click', () => openGuide(false));
   $$('.team-tools .sbtn').forEach(b => b.addEventListener('click', () => {
     const s = +b.dataset.side;
     if (b.dataset.act === 'random') openRandomizer(s);
-    else if (b.dataset.act === 'look') openTeamSettings(s);
     else { S.teams[s] = Array(5).fill(null); renderEdit(); }
   }));
   $$('.tname').forEach((n, k) => {
@@ -883,6 +842,5 @@
   }
   document.body.classList.add('edit');
   fit(); setBg(); renderEdit();
-  if (S.meta[0].bg !== S.bg && D.bgs.includes(S.bg)) S.meta[0].bg = S.bg;
   window.SAP_SANDBOX = { S, STATUS, AB, testBattle, bridgeTeam, bridgeBoard };
 })();

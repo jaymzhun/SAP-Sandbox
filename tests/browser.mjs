@@ -153,6 +153,19 @@ T.sharedGold = async () => {
   return 'gold spent shared; guide opens';
 };
 
+// the background is picked in Settings; the per-team look (mascot, names, trophies, lives) is gone
+T.settingsBackground = async () => {
+  await open();
+  check(!(await js(`!!document.querySelector('#btn-bg, .sbtn[data-act="look"]')`)), 'the team look buttons should be gone');
+  await click('#btn-settings');
+  check(await until(`!document.querySelector('#modal').hidden && document.querySelectorAll('#panel .bgcell').length > 3`, 3000), 'Settings has no background picker');
+  const pick = await js(`(() => { const c = [...document.querySelectorAll('#panel .bgcell')].find(x => !x.classList.contains('on')); c.click(); return c.textContent; })()`);
+  const v = await js(`({ bg: SAP_SANDBOX.S.bg, css: document.querySelector('#bg').style.backgroundImage, saved: JSON.parse(localStorage.getItem('sap-sandbox')).bg })`);
+  check(v.css.includes(v.bg) && v.saved === v.bg, 'picking a background should apply and save it: ' + JSON.stringify(v));
+  await sleep(500); await shot('settings'); await key('Escape');
+  return `picked ${pick}`;
+};
+
 T.smallScreen = async () => {
   await viewport(960, 540);
   try {
