@@ -31,5 +31,6 @@ Notes:
   are set per pet, falling back to Settings when left blank.
   A swallowed pet (White Whale, Sarcastic Fringehead) isn't sent to the game yet.
 - Some antivirus programs warn about Frida, because it attaches to another program.
+- Empty slots are kept: a team with its front slot empty starts the battle with that gap (Emu, Door Head Ant).
 - Every battle gets a new random seed, so luck-based abilities can turn out differently each time you press the button.
 - A game update can rename the classes the agent uses. If **Test Battle** reports an error after an update, the agent needs updating.

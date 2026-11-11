@@ -745,8 +745,9 @@
   const levelOf = xp => (xp >= 5 ? 3 : xp >= 2 ? 2 : 1);
   // a pet's own "This turn" value from the pet editor, else the Settings one
   const own = (p, k) => p && p.ctx && p.ctx[k] != null && p.ctx[k] !== '';
+  // all five slots, front first; an empty slot is null so the game keeps the gap (Emu, Door Head Ant, ...)
   function bridgeTeam(t) {
-    return t.filter(Boolean).map(p => ({
+    return Array.from({ length: 5 }, (_, i) => t[i] || null).map(p => p && ({
       enum: +GE.minion[p.id], level: levelOf(p.xp || 0), exp: p.xp || 0, attack: p.atk, health: p.hp, mana: p.mana || 0,
       perk: p.perk != null && p.perk !== '' && GE.perk[p.perk] != null ? +GE.perk[p.perk] : null,
       // foods it ate this turn (MinionModel.SpellCountsThisTurn: Blue Jay, Black Bear, Dung Beetle)
