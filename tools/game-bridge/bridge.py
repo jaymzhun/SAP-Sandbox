@@ -139,6 +139,9 @@ def clean_pet(p):
             out[k] = max(1, min(100, out[k]))
     if "spells" in out:
         out["spells"] = max(0, min(99, out["spells"]))
+    mem = p.get("memory")  # a swallowed pet: {"ability": AbilityEnum, "minion": MinionEnum}
+    if isinstance(mem, dict) and isinstance(mem.get("ability"), int) and isinstance(mem.get("minion"), int):
+        out["memory"] = {"ability": mem["ability"], "minion": mem["minion"]}
     return out
 
 

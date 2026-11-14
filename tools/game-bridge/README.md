@@ -29,7 +29,7 @@ Notes:
 - Rolls, gold spent, transformations, friends summoned, level 3 pets sold and the turn number are one shared value
   each: changing one in a pet's editor changes Settings and every other pet that uses it. Foods eaten and battles won
   are set per pet, falling back to Settings when left blank.
-  A swallowed pet (White Whale, Sarcastic Fringehead) isn't sent to the game yet.
+  A swallowed pet (Beluga Whale, Sarcastic Fringehead) goes into the pet's memory in the game, so it comes out on faint.
 - Some antivirus programs warn about Frida, because it attaches to another program.
 - Empty slots are kept: a team with its front slot empty starts the battle with that gap (Emu, Door Head Ant).
 - Every battle gets a new random seed, so luck-based abilities can turn out differently each time you press the button.

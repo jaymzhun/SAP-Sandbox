@@ -528,3 +528,8 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .panel.guide .body a { color: #1d5fa8; font-weight: bold; }
 .panel.guide .section-title { margin-top: 12px; }
 .panel.guide .support-note { margin: 0 0 6px; }
+
+/* Min / Max under the attack and health steppers */
+.minmax { display: flex; gap: 8px; }
+.minmax button { min-width: 58px; padding: 4px 10px; font: 16px 'Lapsus'; color: #fff; background: url('../img/ui/ButtonShadeGrey.webp') center / 100% 100%; border-radius: 9px; -webkit-text-stroke: 0.15em var(--ink); paint-order: stroke fill; }
+.minmax button:hover { filter: brightness(1.1); }
