@@ -149,6 +149,13 @@ def clean_pet(p):
 BOARD_KEYS = ("RollsThisTurn", "TransformationsThisTurn", "GoldSpent", "MaxLevelMinionsSold", "MinionsSummonedThisTurn", "Victories")
 
 
+def clean_toy(t):
+    """A team's toy: {"enum": MinionEnum, "level": 1-3}, or None."""
+    if not isinstance(t, dict) or not isinstance(t.get("enum"), int):
+        return None
+    return {"enum": t["enum"], "level": max(1, min(3, int(t.get("level") or 1)))}
+
+
 def clean_board(b):
     return {k: max(0, min(99, int(v))) for k, v in (b or {}).items() if k in BOARD_KEYS and isinstance(v, (int, float))}
 
@@ -161,7 +168,8 @@ def play(spec):
     battle = {"player": teams[0], "opponent": teams[1], "turn": max(1, min(30, int(spec.get("turn") or 1))),
               "seed": int(time.time() * 1000) & 0x7FFFFFFF,
               # "boards": {player, opponent}; an older page sends one "board" for both
-              "boards": {side: clean_board((spec.get("boards") or {}).get(side, spec.get("board"))) for side in ("player", "opponent")}}
+              "boards": {side: clean_board((spec.get("boards") or {}).get(side, spec.get("board"))) for side in ("player", "opponent")},
+              "toys": {side: clean_toy((spec.get("toys") or {}).get(side)) for side in ("player", "opponent")}}
     with lock:
         try:
             api = agent()

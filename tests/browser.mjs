@@ -189,6 +189,28 @@ T.swallowAndMinMax = async () => {
   return 'swallowed pets sent; min/max work';
 };
 
+// each team's toy: the button left of the dice opens a picker like the pet one; the toy goes to the game with its level
+T.toys = async () => {
+  await open();
+  const order = await js(`[...document.querySelectorAll('.team-tools')].map(t => [...t.querySelectorAll('.sbtn')].map(b => b.dataset.act).join(','))`);
+  check(order[0] === 'toy,random,clear' && order[1] === 'clear,toy,random', 'the toy button should sit left of the dice: ' + JSON.stringify(order));
+  await click('.sbtn[data-act="toy"][data-side="1"]');
+  check(await until(`!document.querySelector('#modal').hidden && document.querySelectorAll('#panel .pcard').length > 50`, 3000), 'the toy picker did not open with the toys');
+  const n = await js(`document.querySelectorAll('#panel .pcard').length`);
+  await js(`[...document.querySelectorAll('#panel .chip')].find(b => b.textContent === 'Level 2').click()`);
+  await sleep(400); await shot('toy-picker');
+  await js(`[...document.querySelectorAll('#panel .pcard')].find(c => c.textContent.includes('Tennis Ball')).click()`);
+  check(await until(`document.querySelector('#modal').hidden`, 2000), 'picking a toy should close the picker');
+  const v = await js(`({ toy: SAP_SANDBOX.S.toys[1], sent: SAP_SANDBOX.bridgeToy(SAP_SANDBOX.S.toys[1]), img: document.querySelector('.sbtn[data-act="toy"][data-side="1"] img').getAttribute('src'),
+    lv: document.querySelector('.sbtn[data-act="toy"][data-side="1"] .lv').textContent, other: SAP_SANDBOX.S.toys[0] })`);
+  check(v.toy && v.toy.id === 'TennisBall' && v.toy.lvl === 2 && v.sent.enum === 478 && v.sent.level === 2 && v.img.endsWith('TennisBall.webp') && v.lv === '2' && v.other === null,
+    'the toy was not set for team 2: ' + JSON.stringify(v));
+  const broken = await js(`Promise.all(Object.keys(SAP_SANDBOX.TOYS).map(id => new Promise(r => { const i = new Image(); i.onload = () => r(null); i.onerror = () => r(id); i.src = 'img/toys/' + id + '.webp'; }))).then(a => a.filter(Boolean))`);
+  check(!broken.length, 'toys without an image: ' + broken.join(', '));
+  await shot('toy-chosen');
+  return `${n} toys; Tennis Ball level 2 for team 2`;
+};
+
 T.smallScreen = async () => {
   await viewport(960, 540);
   try {

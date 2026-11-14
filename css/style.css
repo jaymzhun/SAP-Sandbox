@@ -533,3 +533,11 @@ body.bg-white .slot:hover { background: rgba(0,0,0,.08); border-color: rgba(0,0,
 .minmax { display: flex; gap: 8px; }
 .minmax button { min-width: 58px; padding: 4px 10px; font: 16px 'Lapsus'; color: #fff; background: url('../img/ui/ButtonShadeGrey.webp') center / 100% 100%; border-radius: 9px; -webkit-text-stroke: 0.15em var(--ink); paint-order: stroke fill; }
 .minmax button:hover { filter: brightness(1.1); }
+
+/* toy button (left of the dice): the chosen toy and its level, or a faded toy when there's none */
+.sbtn.toy { position: relative; }
+.sbtn.toy img { width: 38px; height: 38px; }
+.sbtn.toy.empty img { opacity: .45; filter: grayscale(1) drop-shadow(0 2px 0 rgba(0,0,0,.45)); }
+.sbtn.toy .lv { position: absolute; right: -6px; bottom: -6px; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 10px; background: var(--orange); box-shadow: 0 0 0 2px var(--ink); font: 14px/20px 'Lapsus'; color: #fff; }
+.sbtn.toy.empty .lv { display: none; }
+.pcard.on { background: #ffe9a8; box-shadow: 0 0 0 4px var(--orange), 0 0 0 7px var(--ink); }
