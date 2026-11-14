@@ -166,6 +166,10 @@ function buildBoards(spec) {
   const ob = call(C.BattleBuilder, 'get_OpponentBoard', ['this'], 'pointer', [bb]);
   fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [pb]), spec.player, 'player');
   fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [ob]), spec.opponent, 'opponent');
+  // a toy is one more template: PopulateBoard summons a relic-type template as the team's toy without using a pet slot
+  const toys = spec.toys || {};
+  if (toys.player) fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [pb]), [toys.player], 'player toy');
+  if (toys.opponent) fill(call(C.BoardBuilder, 'get_Minions', ['this'], 'pointer', [ob]), [toys.opponent], 'opponent toy');
   step = 'turn'; call(C.BattleBuilder, 'SetTurn', ['this', 'int'], 'pointer', [bb, spec.turn || 1]);
   const rnd = pin(api.il2cpp_object_new(C.CoreRandom)); call(C.CoreRandom, '.ctor', ['this', 'int'], 'void', [rnd, spec.seed | 0]);
   step = 'player board'; const p = pin(call(C.BoardBuilder, 'ToModel', ['this', 'pointer'], 'pointer', [pb, rnd]));

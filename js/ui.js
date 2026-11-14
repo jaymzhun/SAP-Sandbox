@@ -140,15 +140,43 @@
     if (ico && turtle.length) ico.href = `img/pets/${turtle[Math.floor(Math.random() * turtle.length)]}.webp`;
   }
 
+  // ------------------------------------------------------------------ toys (from the game's own data)
+  // active toys: regular ones (tiers 1-6, with health, break when knocked out) and cursed ones
+  // a toy ability's trigger (Ability.Trigger.$type) as the game words it; battle = it can go off in a battle
+  const TOY_TRIG = { TriggerStartBattle: ['Start of battle', 1], TriggerBeforeDeath: ['Break', 1], TriggerDeath: ['Break', 1],
+    TriggerEmptyFriendlyFront: ['Empty front space', 1], TriggerAllEnemiesFaint: ['All enemies faint', 1], TriggerAllFriendsFaint: ['All friends faint', 1],
+    TriggerPushed: ['Pushed', 1], TriggerCharged: ['Charged', 1], TriggerEndTurn: ['End turn', 0], TriggerStartTurn: ['Start of turn', 0],
+    TriggerSummon: ['Gained', 0], TriggerRoll: ['Roll', 0], TriggerPlayMinion: ['Buy pet', 0], TriggerLevelup: ['Level-up', 0], TriggerComposite: ['', 0] };
+  const TOYS = (() => {
+    const G = window.SAPGame.data, name = {}, out = {};
+    for (const [k, v] of Object.entries(G.enums.minion)) name[v] = k;
+    for (const [e, t] of Object.entries(G.minions)) {
+      if (t.type !== 1 || !t.raw || !t.raw.Active || !/^Relic/.test(name[e] || '')) continue;
+      const id = name[e].replace(/^Relic/, '');
+      // each ability with text: its trigger and its text per level
+      const abs = t.abilities.map(a => {
+        const tx = G.text[a.e] || {}; if (!tx[1]) return null;
+        const ty = (((G.abilities[a.e] || {})[1] || {}).Trigger || {}).$type || '';
+        const [trig, battle] = TOY_TRIG[ty.replace(/^Triggers\./, '')] || ['', 0];
+        return { trig, battle: !!battle, text: [1, 2, 3].map(lv => tx[lv] || tx[1]) };
+      }).filter(Boolean);
+      out[id] = { id, e: +e, n: t.name, t: t.tier, hp: t.health, cursed: t.relicType === 1, abs,
+        ab: [0, 1, 2].map(i => abs.map(a => a.text[i]).join(' ')), shop: !abs.some(a => a.battle) };
+    }
+    return out;
+  })();
+  const toyImg = id => `img/toys/${id}.webp`;
+
   const S = {
     teams: [Array(5).fill(null), Array(5).fill(null)],
     names: ['Team 1', 'Team 2'],
+    toys: [null, null], // each team's toy: { id, lvl } (id = the game's toy name without 'Relic')
     bg: 'FieldBattle',
     settings: { turn: 10, rolls: 0, battles: 5, foodEaten: 0, transforms: 0, goldSpent: 0, summoned: 0, lvl3Sold: 0, fixedSeed: false, seed: 1234, speed: 1 },
     rnd: { pack: 'All', maxTier: 6, size: 5, levels: true, perks: true, bonus: 8, theme: 'Random' },
   };
   let perkQuery = '';
-  function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, bg: S.bg, settings: S.settings, rnd: S.rnd })); } catch (e) { } }
+  function save() { try { localStorage.setItem('sap-sandbox', JSON.stringify({ teams: S.teams, names: S.names, toys: S.toys, bg: S.bg, settings: S.settings, rnd: S.rnd })); } catch (e) { } }
   function load() {
     let st = null;
     try { if (/^#[tr]=/.test(location.hash)) st = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(3))))); } catch (e) { }
@@ -156,6 +184,7 @@
     if (st) {
       if (st.teams) S.teams = st.teams.map(t => Array.from({ length: 5 }, (_, i) => (t[i] && D.pets[t[i].id] ? t[i] : null)));
       if (st.names) S.names = st.names;
+      if (st.toys) S.toys = [0, 1].map(k => (st.toys[k] && TOYS[st.toys[k].id] ? st.toys[k] : null));
       if (st.bg && D.bgs.includes(st.bg)) S.bg = st.bg;
       if (st.settings) Object.assign(S.settings, st.settings);
       if (st.rnd) Object.assign(S.rnd, st.rnd);
@@ -254,6 +283,7 @@
       }
     }
     $$('.tname').forEach((n, k) => { if (document.activeElement !== n) n.textContent = S.names[k]; });
+    renderToys();
     save();
   }
 
@@ -738,11 +768,89 @@
   function setBg() { $('#bg').style.backgroundImage = `url('img/bg/${S.bg}.webp')`; document.body.classList.toggle('bg-white', S.bg === 'WhiteBattle'); }
   function share() {
     // settings travel with the link: shared values like gold spent live only there
-    const st = { teams: S.teams, names: S.names, bg: S.bg, settings: S.settings };
+    const st = { teams: S.teams, names: S.names, toys: S.toys, bg: S.bg, settings: S.settings };
     const h = '#t=' + btoa(unescape(encodeURIComponent(JSON.stringify(st))));
     history.replaceState(null, '', h);
     const url = location.href;
     (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(() => toast('Link copied!'), () => toast('Link is in the address bar'));
+  }
+
+  // ------------------------------------------------------------------ toy picker
+  const toyState = { tier: 'All', q: '', lvl: 1 };
+  const toyTier = d => (d.cursed ? 'Cursed' : d.t);
+  function toyTip(d, lv) {
+    const lines = d.abs.map(a => (a.trig ? `<b>${esc(a.trig)}</b> → ` : '') + fmtAbility(a.text[lv - 1]));
+    return `<b>${esc(d.n)}</b> · ${d.cursed ? 'Cursed toy' : 'Tier ' + d.t + ' toy'} · Level ${lv}<br>` + (lines.length ? lines.join('<br>') : '<i>No ability text</i>')
+      + (d.shop ? '<br><i>Shop only: no effect in battle.</i>' : '');
+  }
+  function renderToys() {
+    $$('.sbtn[data-act="toy"]').forEach(b => {
+      const t = S.toys[+b.dataset.side], d = t && TOYS[t.id];
+      $('img', b).src = d ? toyImg(d.id) : toyImg('Balloon');
+      b.classList.toggle('empty', !d);
+      $('.lv', b).textContent = d ? t.lvl : '';
+      b.title = d ? `${d.n} (level ${t.lvl}): click to change` : 'Choose a toy';
+    });
+  }
+  function openToyPicker(side) {
+    const cur = S.toys[side];
+    if (cur) toyState.lvl = cur.lvl;
+    openModal('picker', p => {
+      p.append(el('div', { class: 'head' }, el('h2', {}, `Choose a toy for ${S.names[side]}`)));
+      const filters = el('div', { class: 'filters' });
+      for (const t of ['All', 1, 2, 3, 4, 5, 6, 'Cursed']) {
+        const b = el('button', { class: 'tier-tab' }, typeof t === 'number' ? 'Tier ' + t : t);
+        b.addEventListener('click', () => { toyState.tier = t; draw(); });
+        b.dataset.t = t; filters.append(b);
+      }
+      const search = el('input', { class: 'search', placeholder: 'Search toys or abilities…', value: toyState.q });
+      search.addEventListener('input', () => { toyState.q = search.value; draw(); });
+      filters.append(search);
+      // second row: the toy's level, and removing the current toy
+      const opts = el('div', { class: 'filters' });
+      for (const lv of [1, 2, 3]) {
+        const b = el('button', { class: 'chip' }, 'Level ' + lv); b.dataset.lv = lv;
+        b.addEventListener('click', () => { toyState.lvl = lv; if (S.toys[side]) { S.toys[side].lvl = lv; save(); renderToys(); } draw(); });
+        opts.append(b);
+      }
+      if (cur) {
+        const none = el('button', { class: 'chip' }, 'No toy');
+        none.addEventListener('click', () => { S.toys[side] = null; save(); renderToys(); closeModal(); });
+        opts.append(none);
+      }
+      const body = el('div', { class: 'body' }); const grid = el('div', { class: 'grid' }); body.append(grid);
+      p.append(filters, opts, body);
+      function draw() {
+        $$('.tier-tab', filters).forEach(b => b.classList.toggle('on', String(b.dataset.t) === String(toyState.tier)));
+        $$('.chip[data-lv]', opts).forEach(b => b.classList.toggle('on', +b.dataset.lv === toyState.lvl));
+        const q = toyState.q.trim().toLowerCase();
+        const list = Object.values(TOYS).filter(d => {
+          if (q) { const hay = (d.n + ' ' + d.ab[0]).toLowerCase(); return hay.includes(q) || q.split(/\s+/).every(w => hay.includes(w)); }
+          return toyState.tier === 'All' || String(toyTier(d)) === String(toyState.tier);
+        });
+        const order = d => (d.cursed ? 99 : d.t);
+        list.sort((a, b) => order(a) - order(b) || a.n.localeCompare(b.n));
+        grid.innerHTML = '';
+        if (!list.length) grid.append(el('div', { class: 'section-title' }, 'No toys match.'));
+        let last = null;
+        for (const d of list) {
+          const tt = toyTier(d);
+          if (toyState.tier === 'All' && !q && tt !== last) { last = tt; grid.append(el('div', { class: 'section-title' }, d.cursed ? 'Cursed toys' : 'Tier ' + tt)); }
+          const card = el('div', { class: 'pcard' + (cur && cur.id === d.id ? ' on' : '') },
+            el('img', { class: 'sp', src: toyImg(d.id), alt: '', loading: 'lazy' }),
+            el('div', { class: 'pname' }, d.n),
+            el('div', { class: 'pst' }, el('img', { src: UI('Heart_1'), alt: '' }), String(d.hp)),
+            el('div', { class: 'tier' }, d.cursed ? '☠' : 'T' + d.t));
+          if (d.shop) card.append(el('div', { class: 'tag', title: 'Shop only: no effect in battle' }, 'shop'));
+          card.addEventListener('click', () => { S.toys[side] = { id: d.id, lvl: toyState.lvl }; save(); renderToys(); closeModal(); });
+          attachTip(card, () => toyTip(d, toyState.lvl));
+          grid.append(card);
+        }
+        body.scrollTop = 0;
+      }
+      draw();
+      setTimeout(() => search.focus(), 50);
+    });
   }
 
   // ------------------------------------------------------------------ battle (played by the game itself)
@@ -787,6 +895,8 @@
     for (const [k, f] of Object.entries(BOARD_KEYS)) { const p = !SHARED_CTX.has(k) && t.find(x => own(x, k)); out[f] = +(p ? p.ctx[k] : S.settings[k] || 0); }
     return out;
   }
+  // a team's toy: the game's MinionEnum and the toy's level
+  const bridgeToy = t => (t && TOYS[t.id] ? { enum: TOYS[t.id].e, level: t.lvl || 1 } : null);
   // the battle's turn number (shared: Werewolf and Amphisbaena edit the Settings value)
   const bridgeTurn = () => +(S.settings.turn || 1);
   let sending = false;
@@ -802,7 +912,8 @@
         // both teams are stored front pet first. The game fills the player's board from the end of the list (last pet = front),
         // so team 1 goes back to front; the opponent's board is mirrored by the game and takes front-first order
         body: JSON.stringify({ player: bridgeTeam(S.teams[0]).reverse(), opponent: bridgeTeam(S.teams[1]), turn: bridgeTurn(),
-          boards: { player: bridgeBoard(S.teams[0]), opponent: bridgeBoard(S.teams[1]) } }) });
+          boards: { player: bridgeBoard(S.teams[0]), opponent: bridgeBoard(S.teams[1]) },
+          toys: { player: bridgeToy(S.toys[0]), opponent: bridgeToy(S.toys[1]) } }) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw Object.assign(new Error(j.error || 'The bridge returned an error'), { bridge: true });
       toast('Playing in Super Auto Pets');
@@ -847,13 +958,14 @@
 
   // ------------------------------------------------------------------ wiring
   $('#btn-test').addEventListener('click', testBattle);
-  $('#btn-swap').addEventListener('click', () => { S.teams.reverse(); S.names.reverse(); renderEdit(); });
+  $('#btn-swap').addEventListener('click', () => { S.teams.reverse(); S.names.reverse(); S.toys.reverse(); renderEdit(); });
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-share').addEventListener('click', share);
   $('#btn-help').addEventListener('click', () => openGuide(false));
   $$('.team-tools .sbtn').forEach(b => b.addEventListener('click', () => {
     const s = +b.dataset.side;
     if (b.dataset.act === 'random') openRandomizer(s);
+    else if (b.dataset.act === 'toy') openToyPicker(s);
     else { S.teams[s] = Array(5).fill(null); renderEdit(); }
   }));
   $$('.tname').forEach((n, k) => {
@@ -868,5 +980,5 @@
   }
   document.body.classList.add('edit');
   fit(); setBg(); renderEdit();
-  window.SAP_SANDBOX = { S, STATUS, AB, testBattle, bridgeTeam, bridgeBoard };
+  window.SAP_SANDBOX = { S, STATUS, AB, TOYS, testBattle, bridgeTeam, bridgeBoard, bridgeToy };
 })();
