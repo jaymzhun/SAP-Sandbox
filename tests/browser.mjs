@@ -171,6 +171,24 @@ T.settingsBackground = async () => {
   return `picked ${pick}`;
 };
 
+// a swallowed pet goes to the game as a memory under the ability that reads it; Min / Max set attack and health
+T.swallowAndMinMax = async () => {
+  await open();
+  await js(`localStorage.setItem('sap-sandbox', JSON.stringify({ teams: [[{ id: 'WhiteWhale', atk: 3, hp: 5, xp: 0, perk: null, ctx: { swallowed: 'Mammoth' } }, null, null, null, null],
+    [{ id: 'SarcasticFringehead', atk: 2, hp: 2, xp: 0, perk: null, ctx: { swallowed: 'Ant' } }, null, null, null, null]] }))`);
+  await open(BASE, false);
+  const mem = await js(`SAP_SANDBOX.S.teams.map(t => SAP_SANDBOX.bridgeTeam(t)[0].memory)`);
+  // the game files Beluga Whale's swallowed pet under ability 213 and Sarcastic Fringehead's under 853 (MinionCatalogueMemory)
+  check(mem[0] && mem[0].ability === 213 && mem[0].minion === 45 && mem[1] && mem[1].ability === 853 && mem[1].minion === 0, 'swallowed pets are not sent to the game: ' + JSON.stringify(mem));
+  await click('.pet[data-side="0"][data-i="0"]');
+  check(await until(`document.querySelectorAll('#modal:not([hidden]) .minmax button').length === 4`, 3000), 'no Min / Max buttons for attack and health');
+  await js(`(() => { const [a, h] = document.querySelectorAll('.minmax'); a.querySelectorAll('button')[1].click(); h.querySelectorAll('button')[0].click(); })()`);
+  const v = await js(`({ atk: SAP_SANDBOX.S.teams[0][0].atk, hp: SAP_SANDBOX.S.teams[0][0].hp, shown: [...document.querySelectorAll('.stepper input')].slice(0, 2).map(i => i.value) })`);
+  check(v.atk === 50 && v.hp === 1 && v.shown[0] === '50' && v.shown[1] === '1', 'Max attack / Min health did not apply: ' + JSON.stringify(v));
+  await sleep(300); await shot('min-max'); await key('Escape');
+  return 'swallowed pets sent; min/max work';
+};
+
 T.smallScreen = async () => {
   await viewport(960, 540);
   try {

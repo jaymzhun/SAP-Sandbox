@@ -106,7 +106,8 @@ const C = {};
 function classes() {
   if (C.ok) return;
   for (const n of ['Spacewood.Core.Models.Builder.BattleBuilder', 'Spacewood.Core.Models.Builder.BoardBuilder', 'Spacewood.Core.Models.MinionParsingTemplate',
-    'Spacewood.Core.Models.CoreRandom', 'Spacewood.Unity.Model.DebugBoardModel', 'Spacewood.Unity.Memory', 'Spacewood.Unity.Utilities.SceneU']) C[n.split('.').pop()] = cls(n);
+    'Spacewood.Core.Models.CoreRandom', 'Spacewood.Unity.Model.DebugBoardModel', 'Spacewood.Unity.Memory', 'Spacewood.Unity.Utilities.SceneU',
+    'Spacewood.Core.Models.MinionBrain', 'Spacewood.Core.Models.MinionMemory']) C[n.split('.').pop()] = cls(n);
   C.ok = true;
 }
 // a pet: { enum, level, attack, health, perk, exp, mana } (game enum values); null is an empty slot
@@ -135,11 +136,24 @@ function minionsOf(board) {
   for (let i = 0; i < n; i++) { const m = arr.add(0x20 + i * 8).readPointer(); if (!m.isNull()) out.push(m); }
   return out;
 }
+// a swallowed pet (White Whale, Sarcastic Fringehead): a MinionMemory with its MinionEnum, in the pet's MinionBrain
+// under the ability whose catalogue reads it
+function remember(m, mem) {
+  let brain = m.add(fieldOffset(m, 'MinionMemories')).readPointer();
+  if (brain.isNull()) {
+    brain = api.il2cpp_object_new(C.MinionBrain); call(C.MinionBrain, '.ctor', ['this'], 'void', [brain]);
+    setField(m, 'MinionMemories', brain);
+  }
+  const mm = api.il2cpp_object_new(C.MinionMemory); call(C.MinionMemory, '.ctor', ['this'], 'void', [mm]);
+  const off = fieldOffset(mm, 'MinionEnum'); mm.add(off).writeU8(1); mm.add(off + 4).writeS32(mem.minion); // Nullable<MinionEnum>
+  call(C.MinionBrain, 'Add', ['this', 'int', 'pointer'], 'void', [brain, mem.ability, mm]);
+}
 // per-pet values the template can't carry. PopulateBoard puts the n listed pets in slots 5-n .. 4 (x of MinionModel.Point)
 function setPetCounts(board, pets) {
   for (const m of minionsOf(board)) {
     const p = pets[m.add(fieldOffset(m, 'Point')).readS32() - (5 - pets.length)];
     if (p && Number.isInteger(p.spells)) m.add(fieldOffset(m, 'SpellCountsThisTurn')).writeS32(p.spells);
+    if (p && p.memory) { step = 'swallowed pet'; remember(m, p.memory); }
   }
 }
 // integer BoardModel counters some abilities read (rolls, gold spent, ...): each team's on its own board

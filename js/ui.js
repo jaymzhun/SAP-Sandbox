@@ -471,7 +471,9 @@
         else if (st.status === 'shop' && CARRIES_OVER.has(p.id)) info.append(el('div', { class: 'support-note good' }, 'Shop ability, but what it did this turn carries into the battle: set it under "This turn" below.'));
         else if (st.status === 'shop') info.append(el('div', { class: 'support-note shop' }, !st.goldShop ? 'This ability only works in the shop, so it has no effect in battle (same as the game).' : 'This ability triggers in battle, but it only affects gold or the shop, so it changes nothing in the fight.'));
         else if (st.status === 'passive') info.append(el('div', { class: 'support-note good' }, 'Passive ability: always active in battle.'));
-        if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, ctxKeys(p.id).every(k => SHARED_CTX.has(k))
+        if (ctxKeys(p.id).length) info.append(el('div', { class: 'support-note good' }, ctxKeys(p.id).every(k => k === 'swallowed')
+          ? 'Pick the shop pet it swallowed below. The game summons it when this pet faints.'
+          : ctxKeys(p.id).every(k => SHARED_CTX.has(k))
           ? 'Set what happened in the shop this turn below. It’s shared with Settings and every pet that uses it.'
           : 'Set what happened in the shop this turn below (blank uses Settings).'));
         top.append(spr, info);
@@ -487,6 +489,12 @@
           const minus = el('button', {}, '−'), plus = el('button', {}, '+');
           minus.addEventListener('click', () => set(p[key] - 1)); plus.addEventListener('click', () => set(p[key] + 1));
           c.append(el('div', { class: 'stepper' }, minus, el('div', { class: 'val ' + key }, el('img', { src: UI(icon), alt: '' }), inp), plus));
+          if (key !== 'mana') { // jump straight to the lowest or highest the pet can have
+            const lo = key === 'hp' ? 1 : 0;
+            const mn = el('button', { title: `Set ${label.toLowerCase()} to ${lo}` }, 'Min'), mx = el('button', { title: `Set ${label.toLowerCase()} to ${max}` }, 'Max');
+            mn.addEventListener('click', () => set(lo)); mx.addEventListener('click', () => set(max));
+            c.append(el('div', { class: 'minmax' }, mn, mx));
+          }
           return c;
         };
         ctr.append(stepper('Attack', 'atk', 'Fist'), stepper('Health', 'hp', 'Heart_1'));
@@ -745,6 +753,22 @@
   const levelOf = xp => (xp >= 5 ? 3 : xp >= 2 ? 2 : 1);
   // a pet's own "This turn" value from the pet editor, else the Settings one
   const own = (p, k) => p && p.ctx && p.ctx[k] != null && p.ctx[k] !== '';
+  // a pet's swallowed shop pet (White Whale, Sarcastic Fringehead) lives in its MinionBrain under the ability whose
+  // MinionCatalogueMemory reads it; found from the game's own ability data
+  const MEM_ABILITY = {};
+  function memoryAbility(e) {
+    if (e in MEM_ABILITY) return MEM_ABILITY[e];
+    const G = window.SAPGame.data; let found = null;
+    for (const a of ((G.minions[e] || {}).abilities || [])) for (const ab of Object.values(G.abilities[a.e] || {})) {
+      const m = JSON.stringify(ab).match(/MinionCatalogueMemory"[^}]*?"Ability":(\d+)/); if (m) { found = +m[1]; break; }
+    }
+    return (MEM_ABILITY[e] = found);
+  }
+  function bridgeMemory(p) {
+    const sw = p.ctx && p.ctx.swallowed; if (!sw || GE.minion[sw] == null) return null;
+    const ability = memoryAbility(+GE.minion[p.id]);
+    return ability == null ? null : { ability, minion: +GE.minion[sw] };
+  }
   // all five slots, front first; an empty slot is null so the game keeps the gap (Emu, Door Head Ant, ...)
   function bridgeTeam(t) {
     return Array.from({ length: 5 }, (_, i) => t[i] || null).map(p => p && ({
@@ -752,6 +776,7 @@
       perk: p.perk != null && p.perk !== '' && GE.perk[p.perk] != null ? +GE.perk[p.perk] : null,
       // foods it ate this turn (MinionModel.SpellCountsThisTurn: Blue Jay, Black Bear, Dung Beetle)
       spells: +(own(p, 'foodEaten') ? p.ctx.foodEaten : S.settings.foodEaten || 0),
+      memory: bridgeMemory(p),
     }));
   }
   // one team's BoardModel counters (the game copies team 2's into the battle board's Opponent* fields)
