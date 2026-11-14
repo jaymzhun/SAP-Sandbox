@@ -189,11 +189,11 @@ T.swallowAndMinMax = async () => {
   return 'swallowed pets sent; min/max work';
 };
 
-// each team's toy: the button left of the dice opens a picker like the pet one; the toy goes to the game with its level
+// each team's toy: the button on the outer side of the dice opens a picker like the pet one; the toy goes to the game with its level
 T.toys = async () => {
   await open();
   const order = await js(`[...document.querySelectorAll('.team-tools')].map(t => [...t.querySelectorAll('.sbtn')].map(b => b.dataset.act).join(','))`);
-  check(order[0] === 'toy,random,clear' && order[1] === 'clear,toy,random', 'the toy button should sit left of the dice: ' + JSON.stringify(order));
+  check(order[0] === 'toy,random,clear' && order[1] === 'clear,random,toy', 'the toy button should sit on the outer side of the dice: ' + JSON.stringify(order));
   await click('.sbtn[data-act="toy"][data-side="1"]');
   check(await until(`!document.querySelector('#modal').hidden && document.querySelectorAll('#panel .pcard').length > 50`, 3000), 'the toy picker did not open with the toys');
   const n = await js(`document.querySelectorAll('#panel .pcard').length`);

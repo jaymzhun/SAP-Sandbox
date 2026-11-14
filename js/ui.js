@@ -839,7 +839,6 @@
           const card = el('div', { class: 'pcard' + (cur && cur.id === d.id ? ' on' : '') },
             el('img', { class: 'sp', src: toyImg(d.id), alt: '', loading: 'lazy' }),
             el('div', { class: 'pname' }, d.n),
-            el('div', { class: 'pst' }, el('img', { src: UI('Heart_1'), alt: '' }), String(d.hp)),
             el('div', { class: 'tier' }, d.cursed ? '☠' : 'T' + d.t));
           if (d.shop) card.append(el('div', { class: 'tag', title: 'Shop only: no effect in battle' }, 'shop'));
           card.addEventListener('click', () => { S.toys[side] = { id: d.id, lvl: toyState.lvl }; save(); renderToys(); closeModal(); });
